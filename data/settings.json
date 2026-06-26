@@ -1,0 +1,17 @@
+{
+  "app_name": "Конструктор ИИ-агентов",
+  "run_mode": "fake",
+  "database_path": "./data/agents.db",
+  "tools_catalog_path": null,
+  "use_llm_planner": true,
+  "llm_base_url": "http://192.168.1.157:1234",
+  "llm_model_name": "openai/gpt-oss-120b",
+  "llm_temperature": 0.2,
+  "llm_timeout_seconds": 120,
+  "com_safe_mode": true,
+  "com_worker_timeout_seconds": 20,
+  "outlook_mail_days": 7,
+  "outlook_mail_max_results": 10,
+  "outlook_calendar_days_forward": 7,
+  "outlook_calendar_max_results": 10
+}

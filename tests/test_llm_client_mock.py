@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
+from urllib.error import HTTPError
 from urllib.error import URLError
 
 import pytest
@@ -183,4 +185,60 @@ def test_client_does_not_make_real_http_request(monkeypatch: pytest.MonkeyPatch)
 
     assert called["urlopen"] is True
     assert response.content == "{\"ok\": true}"
+
+
+def test_client_retries_without_response_format_on_http_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если endpoint не поддерживает response_format, клиент повторяет запрос без него."""
+    payloads: list[dict] = []
+
+    def fake_urlopen(http_request, timeout):
+        payload = json.loads(http_request.data.decode("utf-8"))
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise HTTPError(
+                http_request.full_url,
+                400,
+                "Bad Request",
+                hdrs=None,
+                fp=BytesIO(b"response_format is not supported"),
+            )
+        return FakeHTTPResponse(
+            {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+        )
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.request.urlopen",
+        fake_urlopen,
+    )
+
+    response = OpenAICompatibleLLMClient(LLMConfig()).complete(make_request())
+
+    assert response.content == "{\"ok\": true}"
+    assert payloads[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in payloads[1]
+
+
+def test_http_error_includes_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP error включает тело ответа для диагностики model/endpoint ошибок."""
+
+    def fake_urlopen(http_request, timeout):
+        raise HTTPError(
+            http_request.full_url,
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b'{"error":"model not found"}'),
+        )
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.request.urlopen",
+        fake_urlopen,
+    )
+
+    with pytest.raises(LLMResponseError, match="model not found"):
+        OpenAICompatibleLLMClient(LLMConfig()).complete(make_request())
 

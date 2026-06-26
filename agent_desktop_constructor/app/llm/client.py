@@ -29,24 +29,18 @@ class OpenAICompatibleLLMClient:
         """Выполнить chat completion запрос и вернуть текст ответа."""
         endpoint = self._build_endpoint()
         payload = self._build_payload(llm_request)
-        http_request = request.Request(
-            endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-
         try:
-            with request.urlopen(
-                http_request,
-                timeout=self._config.timeout_seconds,
-            ) as response:
-                raw_bytes = response.read()
+            raw_bytes = self._post_payload(endpoint, payload)
         except error.HTTPError as exc:
-            raise LLMResponseError(f"LLM endpoint вернул HTTP {exc.code}") from exc
+            if exc.code == 400 and llm_request.response_format is not None:
+                fallback_payload = dict(payload)
+                fallback_payload.pop("response_format", None)
+                try:
+                    raw_bytes = self._post_payload(endpoint, fallback_payload)
+                except error.HTTPError as retry_exc:
+                    self._raise_http_response_error(retry_exc)
+            else:
+                self._raise_http_response_error(exc)
         except (error.URLError, TimeoutError, OSError) as exc:
             raise LLMConnectionError(f"Не удалось подключиться к LLM endpoint: {exc}") from exc
 
@@ -57,6 +51,33 @@ class OpenAICompatibleLLMClient:
 
         content = self._extract_content(raw_payload)
         return LLMResponse(content=content, raw=raw_payload)
+
+    def _post_payload(self, endpoint: str, payload: dict) -> bytes:
+        """Отправить JSON payload и вернуть raw bytes ответа."""
+        http_request = request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        with request.urlopen(
+            http_request,
+            timeout=self._config.timeout_seconds,
+        ) as response:
+            return response.read()
+
+    def _raise_http_response_error(self, exc: error.HTTPError) -> None:
+        """Выбросить LLMResponseError с телом HTTP-ответа, если оно доступно."""
+        details = _read_http_error_body(exc)
+        message = f"LLM endpoint вернул HTTP {exc.code}"
+        if details:
+            message += f": {details}"
+        raise LLMResponseError(message) from exc
+
 
     def _build_endpoint(self) -> str:
         """Собрать URL /v1/chat/completions."""
@@ -87,4 +108,19 @@ class OpenAICompatibleLLMClient:
         if not isinstance(content, str):
             raise LLMResponseError("LLM endpoint вернул content не строкой")
         return content
+
+
+def _read_http_error_body(exc: error.HTTPError, max_chars: int = 1000) -> str:
+    """Безопасно прочитать тело HTTPError для диагностики."""
+    try:
+        body = exc.read()
+    except Exception:
+        return ""
+    if not body:
+        return ""
+    if isinstance(body, bytes):
+        text = body.decode("utf-8", errors="replace")
+    else:
+        text = str(body)
+    return text.strip()[:max_chars]
 

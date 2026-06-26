@@ -7,7 +7,9 @@ from agent_desktop_constructor.tools.fake_task_control_tools import (
     FakeReportBuildTaskReportTool,
     register_fake_task_control_tools,
 )
+from agent_desktop_constructor.tools.onec_tools import register_onec_readonly_tools
 from agent_desktop_constructor.tools.registry import ToolRegistry
+from agent_desktop_constructor.workers.onec_worker import OneCReadOnlyWorker
 from agent_desktop_constructor.workers.subprocess_com_worker import SubprocessComWorker
 
 
@@ -17,17 +19,28 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
 
     if config.run_mode == AppRunMode.FAKE:
         register_fake_task_control_tools(registry)
+        register_onec_readonly_tools(
+            registry,
+            OneCReadOnlyWorker(),
+            skip_existing=True,
+        )
         return registry
 
     if config.run_mode == AppRunMode.OUTLOOK_READONLY:
         worker = SubprocessComWorker()
         register_outlook_com_tools(registry, worker)
+        register_onec_readonly_tools(registry, OneCReadOnlyWorker())
         _apply_com_timeout(registry, config)
         registry.register(FakeReportBuildTaskReportTool())
         return registry
 
     if config.run_mode == AppRunMode.OFFLINE:
         register_fake_task_control_tools(registry)
+        register_onec_readonly_tools(
+            registry,
+            OneCReadOnlyWorker(),
+            skip_existing=True,
+        )
         return registry
 
     raise ValueError(f"Неизвестный run_mode: {config.run_mode}")

@@ -1,0 +1,19 @@
+---
+description: Правила использования pywin32 и COM worker-слоя
+alwaysApply: true
+---
+
+# COM Workers
+
+- `pywin32` используется только для Windows COM.
+- `pywin32` нельзя импортировать в UI, Builder, Runtime, Gateway, Registry, Storage и модели `AgentSpec`.
+- COM вызывается только через worker-слой.
+- UI не должен вызывать COM напрямую.
+- Runtime не должен вызывать COM напрямую.
+- Каждый COM Worker должен возвращать структурированный `WorkerResult`.
+- COM Worker не должен выбрасывать `ImportError` наружу.
+- Если COM недоступен, нужно вернуть `COM_NOT_AVAILABLE`.
+- `email.send` через COM запрещён до явного включения безопасного режима отправки.
+- Все COM-тесты должны проходить без установленного Outlook, Word, Excel или 1С.
+- Реальные COM-тесты должны быть помечены отдельно и не запускаться по умолчанию.
+- Нельзя хранить состояние COM-вызова только в памяти Runtime.

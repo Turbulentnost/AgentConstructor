@@ -1,0 +1,291 @@
+{
+  "tools": [
+    {
+      "name": "outlook.search_mail",
+      "title": "Поиск писем Outlook",
+      "description": "Ищет письма Outlook по периоду, папке и ключевым словам.",
+      "category": "outlook",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "folder": {"type": "string"},
+          "days": {"type": "integer"},
+          "query": {"type": "string"},
+          "max_results": {"type": "integer"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "messages": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
+      "examples": [
+        "Найти письма за последние 7 дней",
+        "Найти письма со словами поручение, выполнить, подготовить"
+      ],
+      "planner_hint": "Безопасное read-действие. Можно использовать для поиска писем за период. Используй, когда нужно найти письма, которые могут содержать поручения, договорённости, согласования или входящие данные."
+    },
+    {
+      "name": "outlook.read_calendar",
+      "title": "Чтение календаря Outlook",
+      "description": "Читает события календаря Outlook.",
+      "category": "outlook",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "events": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
+      "examples": [
+        "Найти встречи на сегодня",
+        "Найти совещания за последние 7 дней"
+      ],
+      "planner_hint": "Безопасное read-действие. Используй, когда нужно прочитать ближайшие события календаря Outlook. Не создаёт и не изменяет события."
+    },
+    {
+      "name": "outlook.read_tasks",
+      "title": "Чтение задач Outlook",
+      "description": "Читает задачи пользователя из Outlook.",
+      "category": "outlook",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "tasks": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent"],
+      "examples": [
+        "Получить активные задачи пользователя"
+      ],
+      "planner_hint": "Используй, когда нужно сверить уже существующие задачи или поручения."
+    },
+    {
+      "name": "report.build_task_report",
+      "title": "Формирование отчёта по поручениям",
+      "description": "Формирует отчёт по найденным поручениям.",
+      "category": "report",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "report_text": {"type": "string"},
+          "task_count": {"type": "integer"},
+          "risk_count": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent"],
+      "examples": [
+        "Сформировать отчёт по найденным поручениям"
+      ],
+      "planner_hint": "Используй после анализа писем, встреч и задач для формирования итогового отчёта."
+    },
+    {
+      "name": "email.create_draft",
+      "title": "Создание черновика письма",
+      "description": "Создаёт черновик письма в Outlook.",
+      "category": "email",
+      "side_effect_level": "create_draft",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent"],
+      "examples": [
+        "Подготовить черновик письма с отчётом"
+      ],
+      "planner_hint": "Используй, если нужно подготовить письмо, но не отправлять его."
+    },
+    {
+      "name": "email.send",
+      "title": "Отправка письма",
+      "description": "Отправляет письмо через Outlook.",
+      "category": "email",
+      "side_effect_level": "dangerous",
+      "execution_mode": "com_worker",
+      "requires_human_approval": true,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sent": {"type": "boolean"},
+          "message_id": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent"],
+      "examples": [
+        "Отправить письмо руководителю после подтверждения"
+      ],
+      "planner_hint": "Используй только если пользователь явно попросил отправить письмо. Всегда требует подтверждения человека. На текущем этапе реальная отправка через Outlook COM отключена безопасным режимом. Инструмент остаётся dangerous и требует подтверждения."
+    },
+    {
+      "name": "word.extract_text",
+      "title": "Извлечение текста Word",
+      "description": "Извлекает текст из Word-документа.",
+      "category": "word",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent"],
+      "examples": [
+        "Извлечь текст из документа Word"
+      ],
+      "planner_hint": "Используй, когда нужно прочитать содержимое документа Word."
+    },
+    {
+      "name": "filesystem.search_files",
+      "title": "Поиск файлов",
+      "description": "Ищет файлы в разрешённых папках.",
+      "category": "filesystem",
+      "side_effect_level": "read",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "files": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent"],
+      "examples": [
+        "Найти документ по названию",
+        "Найти файлы с кодом НД"
+      ],
+      "planner_hint": "Используй, когда нужно найти документ по названию, коду или ключевым словам."
+    },
+    {
+      "name": "smk.search_documents",
+      "title": "Поиск документов СМК",
+      "description": "Ищет документы в базе знаний СМК.",
+      "category": "smk",
+      "side_effect_level": "read",
+      "execution_mode": "external_api",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "documents": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent"],
+      "examples": [
+        "Найти связанные нормативные документы"
+      ],
+      "planner_hint": "Используй, когда нужно найти связанные нормативные документы, процессы или требования."
+    },
+    {
+      "name": "llm.generate_text",
+      "title": "Генерация текста",
+      "description": "Генерирует текстовый ответ через локальную языковую модель.",
+      "category": "llm",
+      "side_effect_level": "create_draft",
+      "execution_mode": "llm",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["generic_agent"],
+      "examples": [
+        "Сформировать текстовый ответ"
+      ],
+      "planner_hint": "Используй только для универсального агента, если нет специализированных инструментов."
+    },
+    {
+      "name": "report.build_meeting_summary",
+      "title": "Формирование материалов совещания",
+      "description": "Формирует сводку, повестку или протокол совещания.",
+      "category": "report",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "summary_text": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["meeting_agent"],
+      "examples": [
+        "Подготовить протокол совещания"
+      ],
+      "planner_hint": "Используй после сбора контекста встречи для подготовки повестки, сводки или протокола."
+    },
+    {
+      "name": "report.build_document_analysis_report",
+      "title": "Формирование отчёта анализа документа",
+      "description": "Формирует отчёт по результатам анализа документа.",
+      "category": "report",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "report_text": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent"],
+      "examples": [
+        "Сформировать отчёт анализа документа"
+      ],
+      "planner_hint": "Используй после извлечения и анализа текста документа для подготовки итогового отчёта."
+    },
+    {
+      "name": "document.approve",
+      "title": "Утверждение документа",
+      "description": "Утверждает документ в целевой системе после отдельного подтверждения.",
+      "category": "document",
+      "side_effect_level": "dangerous",
+      "execution_mode": "external_api",
+      "requires_human_approval": true,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "approved": {"type": "boolean"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent"],
+      "examples": [
+        "Утвердить документ после отдельного бизнес-подтверждения"
+      ],
+      "planner_hint": "Используй только если утверждение явно разрешено бизнес-процедурой и подтверждено человеком."
+    }
+  ]
+}

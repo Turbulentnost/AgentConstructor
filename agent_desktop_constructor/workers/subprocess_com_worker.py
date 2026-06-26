@@ -1,0 +1,95 @@
+"""Worker-обёртка, изолирующая COM-вызовы в отдельном Python-процессе."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+from pydantic import ValidationError
+
+from agent_desktop_constructor.workers.base import BaseWorker
+from agent_desktop_constructor.workers.models import WorkerResult, WorkerTask
+
+
+class SubprocessComWorker(BaseWorker):
+    """Запускает COM-задачи в subprocess и защищает основной процесс timeout-ом."""
+
+    def __init__(self, module_name: str | None = None) -> None:
+        """Создать subprocess worker для указанного entrypoint-модуля."""
+        self._module_name = (
+            module_name or "agent_desktop_constructor.workers.com_worker_process"
+        )
+
+    def execute(self, task: WorkerTask) -> WorkerResult:
+        """Выполнить WorkerTask в дочернем процессе и вернуть WorkerResult."""
+        command = [sys.executable, "-m", self._module_name]
+        try:
+            completed = subprocess.run(
+                command,
+                input=task.model_dump_json(),
+                capture_output=True,
+                text=True,
+                timeout=task.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = _safe_process_text(exc.stderr)
+            details = f"COM worker не ответил за {task.timeout_seconds} секунд"
+            if stderr:
+                details += f". Последний stderr: {stderr.strip()}"
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="WORKER_TIMEOUT",
+                error_message=details,
+            )
+        except Exception as exc:
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="WORKER_PROCESS_ERROR",
+                error_message=str(exc),
+            )
+
+        parsed_result = _parse_worker_result(task.task_id, completed.stdout)
+        if parsed_result is not None:
+            return parsed_result
+
+        if completed.returncode != 0:
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="WORKER_PROCESS_ERROR",
+                error_message=_build_process_error_message(completed.stderr),
+            )
+
+        return WorkerResult(
+            task_id=task.task_id,
+            ok=False,
+            error_type="INVALID_WORKER_RESPONSE",
+            error_message="COM worker вернул невалидный JSON в stdout",
+        )
+
+
+def _parse_worker_result(task_id: str, stdout: str) -> WorkerResult | None:
+    """Попытаться распарсить stdout дочернего процесса как WorkerResult."""
+    try:
+        return WorkerResult.model_validate_json(stdout)
+    except (ValueError, ValidationError):
+        return None
+
+
+def _build_process_error_message(stderr: str) -> str:
+    """Собрать понятное сообщение об ошибке дочернего процесса."""
+    if stderr.strip():
+        return stderr.strip()
+    return "COM worker process завершился с ошибкой без stderr"
+
+
+def _safe_process_text(value: str | bytes | None) -> str:
+    """Безопасно привести stdout/stderr из subprocess exception к строке."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value

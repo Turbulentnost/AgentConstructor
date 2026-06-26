@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent_desktop_constructor"
+version = "0.1.0"
+description = "Python desktop-приложение для построения и исполнения спецификаций ИИ-агентов."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic",
+    "pytest",
+    "sqlalchemy",
+    "PySide6",
+    "pywin32 >= 306 ; sys_platform == 'win32'",
+]
+
+[tool.setuptools.packages.find]
+include = ["agent_desktop_constructor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

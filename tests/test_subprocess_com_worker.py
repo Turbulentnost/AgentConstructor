@@ -41,6 +41,7 @@ def test_email_send_returns_disabled_for_safety() -> None:
 
     assert result.ok is False
     assert result.error_type == "SEND_DISABLED_FOR_SAFETY"
+    assert "Отправка писем" in (result.error_message or "")
 
 
 def test_email_create_draft_returns_disabled_for_safety() -> None:

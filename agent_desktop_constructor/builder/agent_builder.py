@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from agent_desktop_constructor.app.llm.models import LLMPlanningResult
 from agent_desktop_constructor.builder.data_requirements import DataRequirementAnalyzer
 from agent_desktop_constructor.builder.graph_templates import (
     AgentTemplateName,
@@ -10,6 +11,7 @@ from agent_desktop_constructor.builder.graph_templates import (
 from agent_desktop_constructor.builder.template_selector import TemplateSelector
 from agent_desktop_constructor.core.models.agent_spec import (
     AgentActionLevel,
+    AgentDataRequirement,
     AgentGoal,
     AgentRuntimeLimits,
     AgentSpec,
@@ -44,6 +46,8 @@ class AgentBuilder:
         template_selector: TemplateSelector | None = None,
         data_requirement_analyzer: DataRequirementAnalyzer | None = None,
         tools_catalog: ToolsCatalog | None = None,
+        llm_planner: object | None = None,
+        use_llm_planner: bool = False,
     ) -> None:
         """Создать AgentBuilder с переданными или дефолтными зависимостями."""
         self._template_selector = template_selector or TemplateSelector()
@@ -51,6 +55,8 @@ class AgentBuilder:
             data_requirement_analyzer or DataRequirementAnalyzer()
         )
         self.tools_catalog = tools_catalog or load_tools_catalog()
+        self._llm_planner = llm_planner
+        self._use_llm_planner = use_llm_planner
 
     def build_from_request(self, user_request: str) -> AgentSpec:
         """Построить валидный AgentSpec из пользовательского запроса."""
@@ -59,11 +65,20 @@ class AgentBuilder:
             raise ValueError("user_request не должен быть пустым")
 
         template_name = self._template_selector.select_template(normalized_request)
+        llm_planning_result = self._plan_with_llm_if_enabled(
+            normalized_request,
+            template_name,
+        )
         graph_nodes = get_graph_template(template_name)
         data_requirements = self._data_requirement_analyzer.analyze(
             normalized_request,
             template_name,
         )
+        if (
+            llm_planning_result is not None
+            and llm_planning_result.needs_human_or_new_tool
+        ):
+            data_requirements.append(self._build_new_tool_or_human_requirement())
 
         agent_spec = AgentSpec(
             agent_id=str(uuid4()),
@@ -80,6 +95,45 @@ class AgentBuilder:
         )
         validate_agent_spec_tools_against_catalog(agent_spec, self.tools_catalog)
         return agent_spec
+
+    def _plan_with_llm_if_enabled(
+        self,
+        normalized_request: str,
+        template_name: str,
+    ) -> LLMPlanningResult | None:
+        """Получить LLM-подсказку, не доверяя ей построение AgentSpec."""
+        if not self._use_llm_planner:
+            return None
+        if self._llm_planner is None:
+            raise ValueError("use_llm_planner=True требует llm_planner")
+
+        planning_result = self._llm_planner.plan(normalized_request, template_name)
+        self._validate_llm_selected_tools(planning_result)
+        return planning_result
+
+    def _validate_llm_selected_tools(
+        self,
+        planning_result: LLMPlanningResult,
+    ) -> None:
+        """Повторно проверить tool_name из LLMPlanningResult через ToolsCatalog."""
+        self.tools_catalog.validate_tool_names(
+            [tool.tool_name for tool in planning_result.selected_tools]
+        )
+
+    def _build_new_tool_or_human_requirement(self) -> AgentDataRequirement:
+        """Добавить требование, если LLM считает, что нужен человек или новый tool."""
+        return AgentDataRequirement(
+            name="new_tool_or_human_needed",
+            description=(
+                "Модель считает, что подходящего инструмента нет или нужно участие "
+                "человека."
+            ),
+            source_type="human",
+            required=True,
+            can_agent_find=False,
+            default_value=None,
+            ask_human_if_missing=True,
+        )
 
     def _build_goal(self, user_request: str, template_name: str) -> AgentGoal:
         """Сформировать цель агента для выбранного шаблона."""

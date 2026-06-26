@@ -20,6 +20,11 @@ class OpenAICompatibleLLMClient:
         """Сохранить конфигурацию локальной LLM."""
         self._config = config
 
+    @property
+    def config(self) -> LLMConfig:
+        """Вернуть конфигурацию клиента для сборки LLMRequest."""
+        return self._config
+
     def complete(self, llm_request: LLMRequest) -> LLMResponse:
         """Выполнить chat completion запрос и вернуть текст ответа."""
         endpoint = self._build_endpoint()

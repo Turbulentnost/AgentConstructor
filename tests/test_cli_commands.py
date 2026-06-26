@@ -6,6 +6,20 @@ import sys
 
 from agent_desktop_constructor.app.cli import commands
 from agent_desktop_constructor.app.cli.main import main
+from agent_desktop_constructor.app.core.app_mode import AppRunMode
+from agent_desktop_constructor.app.core.bootstrap import ApplicationContainer
+from agent_desktop_constructor.app.core.config import AppConfig
+from agent_desktop_constructor.app.core.services.agent_application_service import (
+    AgentApplicationService,
+)
+from agent_desktop_constructor.builder.agent_builder import AgentBuilder
+from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
+from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
+from agent_desktop_constructor.tools.fake_task_control_tools import (
+    FakeReportBuildTaskReportTool,
+)
+from agent_desktop_constructor.tools.gateway import ToolGateway
+from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.workers.base import BaseWorker
 from agent_desktop_constructor.workers.models import WorkerResult, WorkerTask
 
@@ -74,6 +88,27 @@ class CliFakeWorker(BaseWorker):
         )
 
 
+def make_fake_outlook_container() -> ApplicationContainer:
+    """Собрать fake ApplicationContainer для CLI без Outlook."""
+    config = AppConfig(run_mode=AppRunMode.OUTLOOK_READONLY)
+    agent_builder = AgentBuilder()
+    registry = ToolRegistry()
+    register_outlook_com_tools(registry, CliFakeWorker())
+    registry.register(FakeReportBuildTaskReportTool())
+    gateway = ToolGateway(registry)
+    runtime = SimpleAgentRuntime(gateway)
+    agent_service = AgentApplicationService(agent_builder, runtime)
+    return ApplicationContainer(
+        config=config,
+        tools_catalog=agent_builder.tools_catalog,
+        agent_builder=agent_builder,
+        tool_registry=registry,
+        tool_gateway=gateway,
+        runtime=runtime,
+        agent_service=agent_service,
+    )
+
+
 def test_build_agent_prints_agent_spec(capsys) -> None:
     """build-agent строит AgentSpec и печатает его поля."""
     exit_code = commands.build_agent(TASK_CONTROL_REQUEST)
@@ -109,9 +144,15 @@ def test_run_fake_calls_expected_fake_tools(capsys) -> None:
     assert "report.build_task_report: ok" in output
 
 
-def test_test_send_block_shows_two_level_blocking(capsys) -> None:
+def test_test_send_block_shows_two_level_blocking(monkeypatch, capsys) -> None:
     """test-send-block показывает gateway и worker safe-mode блокировку."""
-    exit_code = commands.test_send_block(worker_factory=CliFakeWorker)
+    monkeypatch.setattr(
+        commands,
+        "build_application_container",
+        lambda config: make_fake_outlook_container(),
+    )
+
+    exit_code = commands.test_send_block()
 
     output = capsys.readouterr().out
     assert exit_code == 0
@@ -120,9 +161,11 @@ def test_test_send_block_shows_two_level_blocking(capsys) -> None:
     assert "real_send_executed: false" in output
 
 
-def test_diagnose_outlook_command_builds_with_fake_worker(capsys) -> None:
+def test_diagnose_outlook_command_builds_with_fake_worker(monkeypatch, capsys) -> None:
     """diagnose-outlook можно выполнить без реального COM через fake worker."""
-    exit_code = commands.diagnose_outlook(worker_factory=CliFakeWorker)
+    monkeypatch.setattr(commands, "SubprocessComWorker", CliFakeWorker)
+
+    exit_code = commands.diagnose_outlook()
 
     output = capsys.readouterr().out
     assert exit_code == 0
@@ -151,12 +194,15 @@ def test_cli_modules_do_not_import_redis_or_celery() -> None:
     assert not any(module_name.startswith("celery.") for module_name in sys.modules)
 
 
-def test_run_outlook_readonly_works_with_fake_worker(capsys) -> None:
+def test_run_outlook_readonly_works_with_fake_worker(monkeypatch, capsys) -> None:
     """run-outlook-readonly тестируется через fake worker без Outlook."""
-    exit_code = commands.run_outlook_readonly(
-        TASK_CONTROL_REQUEST,
-        worker_factory=CliFakeWorker,
+    monkeypatch.setattr(
+        commands,
+        "build_application_container",
+        lambda config: make_fake_outlook_container(),
     )
+
+    exit_code = commands.run_outlook_readonly(TASK_CONTROL_REQUEST)
 
     output = capsys.readouterr().out
     assert exit_code == 0

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sys
+import subprocess
+
+import pytest
 
 from agent_desktop_constructor.app.cli import commands
 from agent_desktop_constructor.app.cli.main import main
@@ -24,6 +27,13 @@ from agent_desktop_constructor.workers.base import BaseWorker
 from agent_desktop_constructor.workers.models import WorkerResult, WorkerTask
 
 TASK_CONTROL_REQUEST = "Создай агента, который проверяет Outlook и находит поручения"
+
+
+@pytest.fixture(autouse=True)
+def configure_tmp_cli_db(monkeypatch, tmp_path) -> None:
+    """Не давать CLI tests писать в реальную ./data/agents.db."""
+    monkeypatch.setenv("AGENT_APP_DATABASE_PATH", str(tmp_path / "cli-tests.db"))
+    monkeypatch.setenv("AGENT_APP_RUN_MODE", "fake")
 
 
 class CliFakeWorker(BaseWorker):
@@ -106,6 +116,11 @@ def make_fake_outlook_container() -> ApplicationContainer:
         tool_gateway=gateway,
         runtime=runtime,
         agent_service=agent_service,
+        session_factory=None,
+        agent_repository=None,
+        run_repository=None,
+        audit_repository=None,
+        tool_call_log_repository=None,
     )
 
 
@@ -175,8 +190,27 @@ def test_diagnose_outlook_command_builds_with_fake_worker(monkeypatch, capsys) -
 
 def test_cli_modules_import_without_pyside6() -> None:
     """CLI-модули не импортируют PySide6."""
-    assert "PySide6" not in sys.modules
-    assert not any(module_name.startswith("PySide6.") for module_name in sys.modules)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import agent_desktop_constructor.app.cli.commands; "
+                "import agent_desktop_constructor.app.cli.main; "
+                "print(any(name == 'PySide6' or name.startswith('PySide6.') "
+                "for name in sys.modules))"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "False"
 
 
 def test_cli_modules_do_not_import_pywin32_directly() -> None:

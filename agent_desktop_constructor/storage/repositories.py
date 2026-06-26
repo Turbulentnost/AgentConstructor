@@ -10,6 +10,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from agent_desktop_constructor.app.core.models.human_approval import (
+    HumanApprovalRecord,
+    HumanApprovalStatus,
+)
+from agent_desktop_constructor.app.core.models.run_events import AgentRunEvent
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
@@ -17,8 +22,10 @@ from agent_desktop_constructor.core.models.runtime_state import (
 )
 from agent_desktop_constructor.storage.entities import (
     AgentEntity,
+    AgentRunEventEntity,
     AgentRunEntity,
     AuditLogEntity,
+    HumanApprovalRequestEntity,
     ToolCallLogEntity,
 )
 
@@ -261,6 +268,253 @@ class ToolCallLogRepository:
                 }
                 for entity in entities
             ]
+
+
+class RunEventRepository:
+    """Репозиторий журнала событий выполнения агента."""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        """Сохранить фабрику сессий."""
+        self._session_factory = session_factory
+
+    def add_event(self, event: AgentRunEvent) -> None:
+        """Сохранить событие выполнения агента."""
+        entity = AgentRunEventEntity(
+            event_id=event.event_id,
+            run_id=event.run_id,
+            event_type=event.event_type.value,
+            node_id=event.node_id,
+            tool_name=event.tool_name,
+            message=event.message,
+            details_json=to_json_text(event.details),
+            created_at=event.created_at,
+        )
+        with self._session_factory() as session:
+            session.add(entity)
+            session.commit()
+
+    def list_events(self, run_id: str) -> list[AgentRunEvent]:
+        """Вернуть события запуска в порядке создания."""
+        with self._session_factory() as session:
+            entities = session.scalars(
+                select(AgentRunEventEntity)
+                .where(AgentRunEventEntity.run_id == run_id)
+                .order_by(AgentRunEventEntity.created_at, AgentRunEventEntity.id)
+            ).all()
+            return [self._to_event(entity) for entity in entities]
+
+    def list_recent_events(self, limit: int = 100) -> list[AgentRunEvent]:
+        """Вернуть последние события выполнения."""
+        safe_limit = max(1, int(limit))
+        with self._session_factory() as session:
+            entities = session.scalars(
+                select(AgentRunEventEntity)
+                .order_by(
+                    AgentRunEventEntity.created_at.desc(),
+                    AgentRunEventEntity.id.desc(),
+                )
+                .limit(safe_limit)
+            ).all()
+            return [self._to_event(entity) for entity in entities]
+
+    def delete_events_for_run(self, run_id: str) -> None:
+        """Удалить события конкретного запуска."""
+        with self._session_factory() as session:
+            entities = session.scalars(
+                select(AgentRunEventEntity).where(
+                    AgentRunEventEntity.run_id == run_id
+                )
+            ).all()
+            for entity in entities:
+                session.delete(entity)
+            session.commit()
+
+    def _to_event(self, entity: AgentRunEventEntity) -> AgentRunEvent:
+        """Восстановить AgentRunEvent из ORM entity."""
+        try:
+            details = from_json_text(entity.details_json)
+        except ValueError as exc:
+            raise ValueError(
+                f"Некорректный details_json события {entity.event_id!r}: {exc}"
+            ) from exc
+
+        return AgentRunEvent.model_validate(
+            {
+                "event_id": entity.event_id,
+                "run_id": entity.run_id,
+                "event_type": entity.event_type,
+                "node_id": entity.node_id,
+                "tool_name": entity.tool_name,
+                "message": entity.message,
+                "details": details,
+                "created_at": entity.created_at,
+            }
+        )
+
+
+class HumanApprovalRepository:
+    """Репозиторий очереди подтверждений человека."""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        """Сохранить фабрику сессий."""
+        self._session_factory = session_factory
+
+    def create_request(self, record: HumanApprovalRecord) -> None:
+        """Создать pending-запрос подтверждения."""
+        with self._session_factory() as session:
+            if session.get(HumanApprovalRequestEntity, record.approval_id) is not None:
+                raise ValueError(
+                    f"Запрос подтверждения {record.approval_id!r} уже существует"
+                )
+
+            entity = HumanApprovalRequestEntity(
+                approval_id=record.approval_id,
+                run_id=record.run_id,
+                agent_id=record.agent_id,
+                node_id=record.node_id,
+                tool_name=record.tool_name,
+                question=record.question,
+                options_json=self._options_to_json(record.options),
+                status=record.status.value,
+                selected_option=record.selected_option,
+                comment=record.comment,
+                created_at=record.created_at,
+                answered_at=record.answered_at,
+            )
+            session.add(entity)
+            session.commit()
+
+    def get_request(self, approval_id: str) -> HumanApprovalRecord:
+        """Вернуть запрос подтверждения по approval_id."""
+        with self._session_factory() as session:
+            entity = session.get(HumanApprovalRequestEntity, approval_id)
+            if entity is None:
+                raise ValueError(
+                    f"Запрос подтверждения с approval_id={approval_id!r} не найден"
+                )
+            return self._to_record(entity)
+
+    def list_pending(self, agent_id: str | None = None) -> list[HumanApprovalRecord]:
+        """Вернуть pending-запросы, при необходимости только для одного агента."""
+        statement = (
+            select(HumanApprovalRequestEntity)
+            .where(HumanApprovalRequestEntity.status == HumanApprovalStatus.PENDING.value)
+            .order_by(HumanApprovalRequestEntity.created_at)
+        )
+        if agent_id is not None:
+            statement = statement.where(HumanApprovalRequestEntity.agent_id == agent_id)
+
+        with self._session_factory() as session:
+            entities = session.scalars(statement).all()
+            return [self._to_record(entity) for entity in entities]
+
+    def list_for_run(self, run_id: str) -> list[HumanApprovalRecord]:
+        """Вернуть все запросы подтверждения конкретного запуска."""
+        with self._session_factory() as session:
+            entities = session.scalars(
+                select(HumanApprovalRequestEntity)
+                .where(HumanApprovalRequestEntity.run_id == run_id)
+                .order_by(HumanApprovalRequestEntity.created_at)
+            ).all()
+            return [self._to_record(entity) for entity in entities]
+
+    def answer_request(
+        self,
+        approval_id: str,
+        status: HumanApprovalStatus,
+        selected_option: str,
+        comment: str | None = None,
+    ) -> HumanApprovalRecord:
+        """Зафиксировать решение человека по pending-запросу."""
+        if status not in {HumanApprovalStatus.APPROVED, HumanApprovalStatus.REJECTED}:
+            raise ValueError("status должен быть approved или rejected")
+        if not selected_option.strip():
+            raise ValueError("selected_option не должен быть пустым")
+
+        with self._session_factory() as session:
+            entity = session.get(HumanApprovalRequestEntity, approval_id)
+            if entity is None:
+                raise ValueError(
+                    f"Запрос подтверждения с approval_id={approval_id!r} не найден"
+                )
+            self._ensure_pending(entity)
+            entity.status = status.value
+            entity.selected_option = selected_option
+            entity.comment = comment
+            entity.answered_at = utc_now()
+            session.commit()
+            session.refresh(entity)
+            return self._to_record(entity)
+
+    def cancel_request(
+        self,
+        approval_id: str,
+        comment: str | None = None,
+    ) -> HumanApprovalRecord:
+        """Отменить pending-запрос подтверждения."""
+        with self._session_factory() as session:
+            entity = session.get(HumanApprovalRequestEntity, approval_id)
+            if entity is None:
+                raise ValueError(
+                    f"Запрос подтверждения с approval_id={approval_id!r} не найден"
+                )
+            self._ensure_pending(entity)
+            entity.status = HumanApprovalStatus.CANCELLED.value
+            entity.comment = comment
+            entity.answered_at = utc_now()
+            session.commit()
+            session.refresh(entity)
+            return self._to_record(entity)
+
+    def _to_record(self, entity: HumanApprovalRequestEntity) -> HumanApprovalRecord:
+        """Восстановить HumanApprovalRecord из ORM entity."""
+        return HumanApprovalRecord.model_validate(
+            {
+                "approval_id": entity.approval_id,
+                "run_id": entity.run_id,
+                "agent_id": entity.agent_id,
+                "node_id": entity.node_id,
+                "tool_name": entity.tool_name,
+                "question": entity.question,
+                "options": self._options_from_json(
+                    entity.options_json,
+                    entity.approval_id,
+                ),
+                "status": entity.status,
+                "selected_option": entity.selected_option,
+                "comment": entity.comment,
+                "created_at": entity.created_at,
+                "answered_at": entity.answered_at,
+            }
+        )
+
+    def _ensure_pending(self, entity: HumanApprovalRequestEntity) -> None:
+        """Проверить, что запрос ещё ожидает решения."""
+        if entity.status != HumanApprovalStatus.PENDING.value:
+            raise ValueError(
+                f"Запрос подтверждения {entity.approval_id!r} уже обработан: "
+                f"{entity.status}"
+            )
+
+    def _options_to_json(self, options: list[str]) -> str:
+        """Сериализовать options без потери кириллицы."""
+        return json.dumps(options, ensure_ascii=False)
+
+    def _options_from_json(self, text: str, approval_id: str) -> list[str]:
+        """Прочитать options_json с понятной ошибкой."""
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Некорректный options_json запроса {approval_id!r}: {exc.msg}"
+            ) from exc
+        if not isinstance(payload, list) or not all(
+            isinstance(item, str) for item in payload
+        ):
+            raise ValueError(
+                f"options_json запроса {approval_id!r} должен содержать список строк"
+            )
+        return payload
 
 
 class AuditLogRepository:

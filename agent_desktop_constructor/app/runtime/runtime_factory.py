@@ -10,6 +10,8 @@ def build_runtime(
     tool_gateway: ToolGateway,
     run_repository: object | None = None,
     audit_repository: object | None = None,
+    run_event_repository: object | None = None,
+    human_approval_repository: object | None = None,
 ) -> SimpleAgentRuntime:
     """Собрать SimpleAgentRuntime с переданным ToolGateway."""
     _ = config
@@ -17,5 +19,7 @@ def build_runtime(
         tool_gateway,
         run_repository=run_repository,
         audit_repository=audit_repository,
+        run_event_repository=run_event_repository,
+        human_approval_repository=human_approval_repository,
     )
 

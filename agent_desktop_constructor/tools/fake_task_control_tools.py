@@ -180,6 +180,165 @@ class FakeReportBuildTaskReportTool(BaseTool):
         )
 
 
+class FakeOneCSearchTasksTool(BaseTool):
+    """Fake-поиск задач и поручений в 1С."""
+
+    def __init__(self) -> None:
+        """Создать fake-инструмент поиска задач 1С."""
+        super().__init__(
+            ToolDefinition(
+                name="onec.search_tasks",
+                title="Поиск задач 1С",
+                description="Имитирует read-only поиск задач и поручений в 1С.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "tasks": {"type": "array"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вернуть стабильный список fake-задач 1С."""
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "tasks": [
+                    {
+                        "id": "onec-task-1",
+                        "title": "Проверить поручение в 1С",
+                        "status": "in_progress",
+                        "responsible": "Иванов И.И.",
+                    }
+                ],
+            },
+        )
+
+
+class FakeOneCGetTaskCardTool(BaseTool):
+    """Fake-чтение карточки задачи 1С."""
+
+    def __init__(self) -> None:
+        """Создать fake-инструмент чтения карточки задачи 1С."""
+        super().__init__(
+            ToolDefinition(
+                name="onec.get_task_card",
+                title="Чтение карточки задачи 1С",
+                description="Имитирует read-only чтение карточки задачи 1С.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "object"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вернуть стабильную fake-карточку задачи."""
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "task": {
+                    "id": "onec-task-1",
+                    "title": "Проверить поручение в 1С",
+                    "status": "in_progress",
+                    "history": ["Создано", "В работе"],
+                },
+            },
+        )
+
+
+class FakeLLMExtractStructuredFactsTool(BaseTool):
+    """Fake LLM tool для извлечения структурированных фактов."""
+
+    def __init__(self) -> None:
+        """Создать fake-инструмент извлечения фактов."""
+        super().__init__(
+            ToolDefinition(
+                name="llm.extract_structured_facts",
+                title="Извлечение структурированных фактов",
+                description="Имитирует извлечение фактов из текста.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "facts": {"type": "array"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вернуть стабильные fake-факты."""
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "facts": [
+                    {
+                        "type": "task",
+                        "title": "Подготовить отчёт",
+                        "due_date": "2026-06-27",
+                    }
+                ],
+            },
+        )
+
+
+class FakeLLMAnalyzeCollectedDataTool(BaseTool):
+    """Fake LLM analytics tool для собранных данных."""
+
+    def __init__(self) -> None:
+        """Создать fake-инструмент аналитики."""
+        super().__init__(
+            ToolDefinition(
+                name="llm.analyze_collected_data",
+                title="Анализ собранных данных",
+                description="Имитирует аналитическую обработку собранных данных.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "findings": {"type": "array"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вернуть стабильный аналитический результат."""
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "summary": "Собранные поручения проанализированы.",
+                "findings": ["Есть поручения из Outlook и 1С"],
+                "risks": ["Есть риск просрочки"],
+                "recommendations": ["Проверить спорные поручения"],
+                "confidence": 0.8,
+            },
+        )
+
+
 class FakeEmailCreateDraftTool(BaseTool):
     """Fake-создание черновика письма с отчётом."""
 
@@ -257,6 +416,10 @@ def register_fake_task_control_tools(registry: ToolRegistry) -> None:
     registry.register(FakeOutlookSearchMailTool())
     registry.register(FakeOutlookReadCalendarTool())
     registry.register(FakeOutlookReadTasksTool())
+    registry.register(FakeOneCSearchTasksTool())
+    registry.register(FakeOneCGetTaskCardTool())
+    registry.register(FakeLLMExtractStructuredFactsTool())
+    registry.register(FakeLLMAnalyzeCollectedDataTool())
     registry.register(FakeReportBuildTaskReportTool())
     registry.register(FakeEmailCreateDraftTool())
     registry.register(FakeEmailSendTool())

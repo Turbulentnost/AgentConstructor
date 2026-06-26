@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_desktop_constructor.app.core.models.human_approval import HumanApprovalRecord
+from agent_desktop_constructor.app.core.models.run_events import AgentRunEvent
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
 from agent_desktop_constructor.workers.models import WorkerResult
@@ -138,6 +140,159 @@ def print_worker_result(result: WorkerResult) -> None:
             print(f"- {recommendation}")
 
 
+def print_agent_list(agents: list[AgentSpec]) -> None:
+    """Напечатать список сохранённых агентов."""
+    print_section("Сохранённые агенты")
+    if not agents:
+        print("Сохранённых агентов пока нет.")
+        return
+
+    for index, agent in enumerate(agents, start=1):
+        print(f"{index}. agent_id: {agent.agent_id}")
+        print(f"   name: {agent.name}")
+        print(f"   description: {_truncate_text(agent.description)}")
+        print(f"   graph_nodes: {len(agent.graph_nodes)}")
+        print(f"   tools: {len(agent.tools)}")
+        print(f"   goal: {_truncate_text(agent.goal.main_goal)}")
+
+
+def print_run_list(states: list[AgentRuntimeState]) -> None:
+    """Напечатать список запусков агента."""
+    print_section("Запуски агента")
+    if not states:
+        print("У этого агента пока нет запусков.")
+        return
+
+    for index, state in enumerate(states, start=1):
+        has_approval = "да" if state.pending_human_approval is not None else "нет"
+        print(f"{index}. run_id: {state.run_id}")
+        print(f"   status: {state.status.value}")
+        print(f"   current_node_id: {state.current_node_id}")
+        print(f"   steps: {state.step_counter}")
+        print(f"   tool_calls: {state.tool_call_counter}")
+        print(f"   human approval: {has_approval}")
+        print(f"   errors: {len(state.errors)}")
+
+
+def print_run_details(state: AgentRuntimeState) -> None:
+    """Напечатать подробное состояние запуска."""
+    print_section("Состояние запуска")
+    print(f"run_id: {state.run_id}")
+    print(f"agent_id: {state.agent_id}")
+    print(f"Статус: {state.status.value}")
+    print(f"Текущий узел: {state.current_node_id}")
+    print(f"Шагов: {state.step_counter}")
+    print(f"Вызовов инструментов: {state.tool_call_counter}")
+
+    print_section("Variables")
+    if state.variables:
+        for key, value in state.variables.items():
+            print(f"- {key}: {_format_value(value)}")
+    else:
+        print("- нет")
+
+    print_section("Ошибки")
+    if state.errors:
+        for error in state.errors:
+            print(f"- {_friendly_error(error)}")
+    else:
+        print("Ошибок нет.")
+
+    print_tool_results(state)
+    print_human_approval(state)
+
+
+def print_run_events(events: list[AgentRunEvent], verbose: bool = False) -> None:
+    """Напечатать события запуска в хронологическом порядке."""
+    print_section("События запуска")
+    if not events:
+        print("Для этого запуска событий пока нет.")
+        return
+
+    for event in events:
+        timestamp = event.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        parts = [timestamp, event.event_type.value]
+        if event.node_id:
+            parts.append(event.node_id)
+        if event.tool_name:
+            parts.append(event.tool_name)
+        parts.append(event.message)
+        print(" | ".join(parts))
+        if verbose and event.details:
+            print(f"   details: {_format_value(event.details)}")
+
+
+def print_human_approval(state: AgentRuntimeState) -> None:
+    """Напечатать pending_human_approval, если он есть."""
+    approval = state.pending_human_approval
+    if approval is None:
+        return
+
+    print_section("Требуется подтверждение человека")
+    print(f"approval_id: {approval.approval_id}")
+    print(f"node_id: {approval.node_id}")
+    print(f"tool_name: {approval.tool_name}")
+    print(f"question: {approval.question}")
+    print("options:")
+    for option in approval.options:
+        print(f"- {option}")
+
+
+def print_approval_list(records: list[HumanApprovalRecord]) -> None:
+    """Напечатать очередь ожидающих подтверждений."""
+    print_section("Ожидающие подтверждения")
+    if not records:
+        print("Ожидающих подтверждений нет.")
+        return
+
+    for index, record in enumerate(records, start=1):
+        print(f"{index}. approval_id: {record.approval_id}")
+        print(f"   run_id: {record.run_id}")
+        print(f"   agent_id: {record.agent_id}")
+        print(f"   node_id: {record.node_id}")
+        print(f"   tool_name: {record.tool_name}")
+        print(f"   question: {_truncate_text(record.question)}")
+        print(f"   created_at: {record.created_at.isoformat()}")
+
+
+def print_approval_details(record: HumanApprovalRecord) -> None:
+    """Напечатать подробности запроса подтверждения."""
+    print_section("Подтверждение человека")
+    print(f"approval_id: {record.approval_id}")
+    print(f"run_id: {record.run_id}")
+    print(f"agent_id: {record.agent_id}")
+    print(f"status: {record.status.value}")
+    print(f"node_id: {record.node_id}")
+    print(f"tool_name: {record.tool_name}")
+    print(f"question: {record.question}")
+    print("options:")
+    for option in record.options:
+        print(f"- {option}")
+    print(f"selected_option: {record.selected_option}")
+    print(f"comment: {record.comment}")
+    print(f"created_at: {record.created_at.isoformat()}")
+    print(f"answered_at: {record.answered_at.isoformat() if record.answered_at else None}")
+
+
+def print_approval_result(state: AgentRuntimeState) -> None:
+    """Напечатать итог approve/reject команды."""
+    print_section("Результат подтверждения")
+    print(f"run_id: {state.run_id}")
+    print(f"agent_id: {state.agent_id}")
+    print(f"Статус запуска: {state.status.value}")
+    print(f"Текущий узел: {state.current_node_id}")
+    if state.errors:
+        print_section("Ошибки")
+        for error in state.errors:
+            print(f"- {_friendly_error(error)}")
+
+
+def print_storage_error(error: Exception) -> None:
+    """Напечатать понятную ошибку SQLite/storage."""
+    print_section("Ошибка хранилища")
+    print(f"{type(error).__name__}: {_truncate_text(str(error), 300)}")
+
+
 def _extract_report_text(state: AgentRuntimeState) -> str | None:
     """Достать report_text из стандартного output report tool."""
     tool_outputs = state.variables.get("tool_outputs", {})
@@ -162,6 +317,30 @@ def _summarize_output(output_data: dict[str, Any]) -> str:
                 text = text[:117] + "..."
             parts.append(f"{key}: {text}")
     return "; ".join(parts)
+
+
+def _format_value(value: Any) -> str:
+    """Безопасно и кратко отформатировать значение для CLI."""
+    if isinstance(value, dict):
+        parts = []
+        for key, nested_value in list(value.items())[:10]:
+            parts.append(f"{key}={_format_value(nested_value)}")
+        suffix = "; ..." if len(value) > 10 else ""
+        return "{" + "; ".join(parts) + suffix + "}"
+    if isinstance(value, list):
+        preview = ", ".join(_format_value(item) for item in value[:5])
+        suffix = ", ..." if len(value) > 5 else ""
+        return "[" + preview + suffix + "]"
+    return _truncate_text(str(value))
+
+
+def _truncate_text(value: str, limit: int = 160) -> str:
+    """Ограничить потенциально большой или чувствительный вывод."""
+    redacted = value.replace("token=", "token=<hidden>")
+    redacted = redacted.replace("password=", "password=<hidden>")
+    if len(redacted) <= limit:
+        return redacted
+    return redacted[: limit - 3] + "..."
 
 
 def _friendly_error(message: str | None) -> str | None:

@@ -11,6 +11,19 @@ from agent_desktop_constructor.app.runtime.runtime_factory import build_runtime
 from agent_desktop_constructor.app.tools.tool_registry_factory import build_tool_registry
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
+from agent_desktop_constructor.storage.database import (
+    create_engine_for_sqlite,
+    create_session_factory,
+    init_database,
+)
+from agent_desktop_constructor.storage.repositories import (
+    AgentRepository,
+    AgentRunRepository,
+    AuditLogRepository,
+    HumanApprovalRepository,
+    RunEventRepository,
+    ToolCallLogRepository,
+)
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
 from agent_desktop_constructor.tools.gateway import ToolGateway
 from agent_desktop_constructor.tools.registry import ToolRegistry
@@ -27,6 +40,13 @@ class ApplicationContainer:
     tool_gateway: ToolGateway
     runtime: SimpleAgentRuntime
     agent_service: AgentApplicationService
+    session_factory: object
+    agent_repository: AgentRepository
+    run_repository: AgentRunRepository
+    audit_repository: AuditLogRepository
+    tool_call_log_repository: ToolCallLogRepository | None
+    run_event_repository: RunEventRepository | None = None
+    human_approval_repository: HumanApprovalRepository | None = None
 
 
 def build_application_container(
@@ -34,17 +54,36 @@ def build_application_container(
 ) -> ApplicationContainer:
     """Собрать ApplicationContainer без запуска инструментов, агента и COM."""
     app_config = config or load_app_config_from_env()
+    engine = create_engine_for_sqlite(app_config.database_path)
+    init_database(engine)
+    session_factory = create_session_factory(engine)
+    agent_repository = AgentRepository(session_factory)
+    run_repository = AgentRunRepository(session_factory)
+    audit_repository = AuditLogRepository(session_factory)
+    run_event_repository = RunEventRepository(session_factory)
+    human_approval_repository = HumanApprovalRepository(session_factory)
+    tool_call_log_repository = ToolCallLogRepository(session_factory)
+
     agent_builder = build_agent_builder(app_config)
     tools_catalog = agent_builder.tools_catalog
     tool_registry = build_tool_registry(app_config)
     tool_gateway = ToolGateway(tool_registry)
-    runtime = build_runtime(app_config, tool_gateway)
+    runtime = build_runtime(
+        app_config,
+        tool_gateway,
+        run_repository=run_repository,
+        audit_repository=audit_repository,
+        run_event_repository=run_event_repository,
+        human_approval_repository=human_approval_repository,
+    )
     agent_service = AgentApplicationService(
         agent_builder=agent_builder,
         runtime=runtime,
-        agent_repository=None,  # TODO: подключить SQLite repositories на composition root.
-        run_repository=None,
-        audit_repository=None,
+        agent_repository=agent_repository,
+        run_repository=run_repository,
+        audit_repository=audit_repository,
+        run_event_repository=run_event_repository,
+        human_approval_repository=human_approval_repository,
     )
 
     return ApplicationContainer(
@@ -55,5 +94,12 @@ def build_application_container(
         tool_gateway=tool_gateway,
         runtime=runtime,
         agent_service=agent_service,
+        session_factory=session_factory,
+        agent_repository=agent_repository,
+        run_repository=run_repository,
+        audit_repository=audit_repository,
+        run_event_repository=run_event_repository,
+        human_approval_repository=human_approval_repository,
+        tool_call_log_repository=tool_call_log_repository,
     )
 

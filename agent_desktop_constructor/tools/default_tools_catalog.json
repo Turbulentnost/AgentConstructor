@@ -267,6 +267,352 @@
       "planner_hint": "Используй после извлечения и анализа текста документа для подготовки итогового отчёта."
     },
     {
+      "name": "browser.search_web",
+      "title": "Поиск web-информации",
+      "description": "Ищет информацию в интернете или разрешённых web-источниках.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "external_api",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "max_results": {"type": "integer"},
+          "allowed_domains": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["query"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "results": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Найти актуальную информацию по теме",
+        "Найти внешние источники по документу"
+      ],
+      "planner_hint": "Используй, когда пользователю нужна актуальная или внешняя информация, либо когда данные отсутствуют в локальных системах. Инструмент только читает данные и не выполняет действий на сайтах."
+    },
+    {
+      "name": "browser.open_page",
+      "title": "Чтение web-страницы",
+      "description": "Открывает web-страницу в read-only режиме и извлекает видимый текст.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "max_chars": {"type": "integer"}
+        },
+        "required": ["url"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "text": {"type": "string"},
+          "links": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Прочитать указанную web-страницу"
+      ],
+      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
+    },
+    {
+      "name": "browser.extract_table",
+      "title": "Извлечение таблиц web-страницы",
+      "description": "Извлекает таблицы с открытой web-страницы.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "table_hint": {"type": "string"}
+        },
+        "required": ["url"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "tables": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Извлечь таблицу статусов со страницы"
+      ],
+      "planner_hint": "Используй, когда на странице есть таблица с документами, статусами, ценами, перечнями или результатами поиска."
+    },
+    {
+      "name": "onec.search_documents",
+      "title": "Поиск документов 1С",
+      "description": "Ищет документы в 1С по номеру, дате, типу, контрагенту, теме или статусу.",
+      "category": "onec",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "document_type": {"type": "string"},
+          "number": {"type": "string"},
+          "date_from": {"type": "string"},
+          "date_to": {"type": "string"},
+          "query": {"type": "string"},
+          "status": {"type": "string"},
+          "max_results": {"type": "integer"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "documents": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent"
+      ],
+      "examples": [
+        "Найти документ в 1С по номеру",
+        "Найти документы 1С по контрагенту"
+      ],
+      "planner_hint": "Используй, когда нужно найти документ в 1С. Инструмент работает только на чтение и не изменяет данные."
+    },
+    {
+      "name": "onec.get_document_card",
+      "title": "Чтение карточки документа 1С",
+      "description": "Читает карточку документа 1С по ссылке или идентификатору.",
+      "category": "onec",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "document_ref": {"type": "string"}
+        },
+        "required": ["document_ref"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "document": {"type": "object"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent"
+      ],
+      "examples": [
+        "Прочитать карточку найденного документа 1С"
+      ],
+      "planner_hint": "Используй после onec.search_documents, чтобы прочитать подробности найденного документа."
+    },
+    {
+      "name": "onec.search_tasks",
+      "title": "Поиск задач 1С",
+      "description": "Ищет задачи и поручения в 1С в read-only режиме.",
+      "category": "onec",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "status": {"type": "string"},
+          "responsible": {"type": "string"},
+          "date_from": {"type": "string"},
+          "date_to": {"type": "string"},
+          "max_results": {"type": "integer"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "tasks": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent"
+      ],
+      "examples": [
+        "Найти просроченные поручения в 1С",
+        "Найти задачи по ответственному"
+      ],
+      "planner_hint": "Используй для контроля поручений, статусов исполнения, просрочек и ответственных."
+    },
+    {
+      "name": "onec.get_task_card",
+      "title": "Чтение карточки задачи 1С",
+      "description": "Читает карточку задачи или поручения из 1С.",
+      "category": "onec",
+      "side_effect_level": "read",
+      "execution_mode": "com_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_ref": {"type": "string"}
+        },
+        "required": ["task_ref"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "task": {"type": "object"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent"
+      ],
+      "examples": [
+        "Прочитать карточку поручения 1С"
+      ],
+      "planner_hint": "Используй после onec.search_tasks, чтобы получить срок, ответственного, статус, описание и историю."
+    },
+    {
+      "name": "llm.analyze_collected_data",
+      "title": "Анализ собранных данных",
+      "description": "Выполняет аналитическую обработку собранных данных и формирует структурированные выводы.",
+      "category": "llm_analysis",
+      "side_effect_level": "create_draft",
+      "execution_mode": "llm",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "goal": {"type": "string"},
+          "collected_data": {"type": "object"},
+          "analysis_type": {"type": "string"},
+          "output_format": {"type": "string"}
+        },
+        "required": ["goal", "collected_data"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "summary": {"type": "string"},
+          "findings": {"type": "array"},
+          "risks": {"type": "array"},
+          "recommendations": {"type": "array"},
+          "confidence": {"type": "number"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Проанализировать собранные поручения",
+        "Сформировать выводы по документу и внешним источникам"
+      ],
+      "planner_hint": "Используй после того, как данные собраны из Outlook, браузера, 1С, файлов или базы знаний."
+    },
+    {
+      "name": "llm.compare_sources",
+      "title": "Сравнение источников",
+      "description": "Сравнивает информацию из Outlook, 1С, браузера, документов и базы знаний.",
+      "category": "llm_analysis",
+      "side_effect_level": "create_draft",
+      "execution_mode": "llm",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "sources": {"type": "object"},
+          "comparison_goal": {"type": "string"}
+        },
+        "required": ["sources"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "matches": {"type": "array"},
+          "conflicts": {"type": "array"},
+          "summary": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "document_analysis_agent",
+        "generic_agent",
+        "task_control_agent"
+      ],
+      "examples": [
+        "Сравнить данные письма, 1С и документа"
+      ],
+      "planner_hint": "Используй, когда нужно проверить расхождения между источниками: например, письмо говорит одно, 1С показывает другое, а документ содержит третье."
+    },
+    {
+      "name": "llm.extract_structured_facts",
+      "title": "Извлечение структурированных фактов",
+      "description": "Извлекает из текста сущности, даты, документы, ответственных, статусы, сроки и поручения.",
+      "category": "llm_analysis",
+      "side_effect_level": "create_draft",
+      "execution_mode": "llm",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string"},
+          "fact_types": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["text"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "facts": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Извлечь поручения и сроки из текста"
+      ],
+      "planner_hint": "Используй после чтения текста письма, web-страницы, документа или карточки 1С."
+    },
+    {
       "name": "document.approve",
       "title": "Утверждение документа",
       "description": "Утверждает документ в целевой системе после отдельного подтверждения.",

@@ -25,6 +25,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             return commands.diagnose_outlook()
         if args.command == "test-send-block":
             return commands.test_send_block()
+        if args.command == "create-agent":
+            return commands.create_agent(args.user_request)
+        if args.command == "list-agents":
+            return commands.list_agents()
+        if args.command == "run-agent":
+            return commands.run_agent(args.agent_id)
+        if args.command == "list-runs":
+            return commands.list_runs(args.agent_id)
+        if args.command == "show-run":
+            return commands.show_run(args.run_id)
+        if args.command == "show-events":
+            return commands.show_events(args.run_id, verbose=args.verbose)
+        if args.command == "list-approvals":
+            return commands.list_approvals()
+        if args.command == "show-approval":
+            return commands.show_approval(args.approval_id)
+        if args.command == "approve":
+            return commands.approve(args.approval_id)
+        if args.command == "reject":
+            return commands.reject(args.approval_id, args.comment)
+        if args.command == "resume-run":
+            return commands.resume_run(
+                args.agent_id,
+                args.run_id,
+                approved=args.approve,
+                comment=args.reject,
+            )
     except Exception as exc:
         print(f"Ошибка выполнения CLI: {exc}", file=sys.stderr)
         return 1
@@ -67,6 +94,80 @@ def _build_parser() -> argparse.ArgumentParser:
         "test-send-block",
         help="Проверить, что email.send блокируется gateway и Outlook worker.",
     )
+
+    create_agent_parser = subparsers.add_parser(
+        "create-agent",
+        help="Создать и сохранить AgentSpec в SQLite.",
+    )
+    create_agent_parser.add_argument("user_request")
+
+    subparsers.add_parser(
+        "list-agents",
+        help="Показать сохранённых агентов из SQLite.",
+    )
+
+    run_agent_parser = subparsers.add_parser(
+        "run-agent",
+        help="Запустить сохранённого агента по agent_id.",
+    )
+    run_agent_parser.add_argument("agent_id")
+
+    list_runs_parser = subparsers.add_parser(
+        "list-runs",
+        help="Показать сохранённые запуски агента.",
+    )
+    list_runs_parser.add_argument("agent_id")
+
+    show_run_parser = subparsers.add_parser(
+        "show-run",
+        help="Показать подробное состояние запуска.",
+    )
+    show_run_parser.add_argument("run_id")
+
+    show_events_parser = subparsers.add_parser(
+        "show-events",
+        help="Показать журнал событий запуска.",
+    )
+    show_events_parser.add_argument("run_id")
+    show_events_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Показать краткое содержимое details.",
+    )
+
+    subparsers.add_parser(
+        "list-approvals",
+        help="Показать очередь ожидающих подтверждений.",
+    )
+
+    show_approval_parser = subparsers.add_parser(
+        "show-approval",
+        help="Показать подробности запроса подтверждения.",
+    )
+    show_approval_parser.add_argument("approval_id")
+
+    approve_parser = subparsers.add_parser(
+        "approve",
+        help="Подтвердить запрос и продолжить запуск.",
+    )
+    approve_parser.add_argument("approval_id")
+
+    reject_parser = subparsers.add_parser(
+        "reject",
+        help="Отклонить запрос и продолжить запуск.",
+    )
+    reject_parser.add_argument("approval_id")
+    reject_parser.add_argument("comment")
+
+    resume_run_parser = subparsers.add_parser(
+        "resume-run",
+        help="Продолжить запуск после HumanApproval.",
+    )
+    resume_run_parser.add_argument("agent_id")
+    resume_run_parser.add_argument("run_id")
+    approval_group = resume_run_parser.add_mutually_exclusive_group(required=True)
+    approval_group.add_argument("--approve", action="store_true")
+    approval_group.add_argument("--reject")
 
     return parser
 

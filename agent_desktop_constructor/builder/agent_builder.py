@@ -203,6 +203,12 @@ class AgentBuilder:
                 self._build_tool_permission_from_catalog("outlook.search_mail"),
                 self._build_tool_permission_from_catalog("outlook.read_calendar"),
                 self._build_tool_permission_from_catalog("outlook.read_tasks"),
+                self._build_tool_permission_from_catalog("onec.search_tasks"),
+                self._build_tool_permission_from_catalog("onec.get_task_card"),
+                self._build_tool_permission_from_catalog(
+                    "llm.extract_structured_facts"
+                ),
+                self._build_tool_permission_from_catalog("llm.analyze_collected_data"),
                 self._build_tool_permission_from_catalog("report.build_task_report"),
                 self._build_tool_permission_from_catalog("email.create_draft"),
                 self._build_tool_permission_from_catalog(
@@ -226,6 +232,15 @@ class AgentBuilder:
                 self._build_tool_permission_from_catalog("filesystem.search_files"),
                 self._build_tool_permission_from_catalog("word.extract_text"),
                 self._build_tool_permission_from_catalog("smk.search_documents"),
+                self._build_tool_permission_from_catalog("onec.search_documents"),
+                self._build_tool_permission_from_catalog("onec.get_document_card"),
+                self._build_tool_permission_from_catalog("browser.search_web"),
+                self._build_tool_permission_from_catalog("browser.open_page"),
+                self._build_tool_permission_from_catalog(
+                    "llm.extract_structured_facts"
+                ),
+                self._build_tool_permission_from_catalog("llm.compare_sources"),
+                self._build_tool_permission_from_catalog("llm.analyze_collected_data"),
                 self._build_tool_permission_from_catalog(
                     "report.build_document_analysis_report"
                 ),
@@ -235,7 +250,10 @@ class AgentBuilder:
             ]
 
         return [
+            self._build_tool_permission_from_catalog("browser.search_web"),
+            self._build_tool_permission_from_catalog("browser.open_page"),
             self._build_tool_permission_from_catalog("llm.generate_text"),
+            self._build_tool_permission_from_catalog("llm.analyze_collected_data"),
         ]
 
     def _build_runtime_limits(self, template_name: str) -> AgentRuntimeLimits:

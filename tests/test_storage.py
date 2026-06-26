@@ -105,6 +105,8 @@ def test_init_database_creates_tables(tmp_path: Path) -> None:
     assert {
         "agents",
         "agent_runs",
+        "agent_run_events",
+        "human_approval_requests",
         "tool_call_logs",
         "audit_logs",
     }.issubset(table_names)

@@ -21,6 +21,7 @@ class ToolExecutionMode(StrEnum):
 
     LOCAL = "local"
     COM_WORKER = "com_worker"
+    BROWSER_WORKER = "browser_worker"
     EXTERNAL_API = "external_api"
     LLM = "llm"
 

@@ -60,6 +60,52 @@ class AgentRunEntity(Base):
     )
 
 
+class AgentRunEventEntity(Base):
+    """ORM-запись события выполнения агента."""
+
+    __tablename__ = "agent_run_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    node_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+
+class HumanApprovalRequestEntity(Base):
+    """ORM-запись запроса подтверждения человека."""
+
+    __tablename__ = "human_approval_requests"
+
+    approval_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String, nullable=False)
+    tool_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    options_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    selected_option: Mapped[str | None] = mapped_column(String, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
 class ToolCallLogEntity(Base):
     """ORM-запись отдельного вызова инструмента."""
 

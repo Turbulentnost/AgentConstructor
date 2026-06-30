@@ -157,6 +157,7 @@ class SimpleAgentRuntime:
         self._save_checkpoint(state)
         if state.status in {
             AgentRunStatus.PAUSED_FOR_HUMAN,
+            AgentRunStatus.PAUSED_FOR_CREDENTIALS,
             AgentRunStatus.COMPLETED,
             AgentRunStatus.FAILED,
             AgentRunStatus.CANCELLED,
@@ -227,6 +228,7 @@ class SimpleAgentRuntime:
 
             if state.status in {
                 AgentRunStatus.PAUSED_FOR_HUMAN,
+                AgentRunStatus.PAUSED_FOR_CREDENTIALS,
                 AgentRunStatus.COMPLETED,
                 AgentRunStatus.FAILED,
                 AgentRunStatus.CANCELLED,
@@ -330,10 +332,7 @@ class SimpleAgentRuntime:
             node_id=node.node_id,
             tool_name=node.tool_name,
         )
-        input_data = {
-            "node_id": node.node_id,
-            "variables": state.variables,
-        }
+        input_data = self._build_tool_input_data(agent_spec, state, node)
         result = self._tool_gateway.execute_tool(
             agent_spec=agent_spec,
             run_id=state.run_id,
@@ -414,6 +413,30 @@ class SimpleAgentRuntime:
             error_type=result.error_type,
             error_message=result.error_message,
         )
+
+    def _build_tool_input_data(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        node: AgentGraphNode,
+    ) -> dict:
+        """Собрать полный runtime-контекст для tool_call."""
+        return {
+            "node_id": node.node_id,
+            "tool_name": node.tool_name,
+            "agent_goal": agent_spec.goal.model_dump(mode="json"),
+            "user_request": state.variables.get("user_request"),
+            "variables": state.variables,
+            "tool_outputs": state.variables.get("tool_outputs", {}),
+            "data_requirements": [
+                item.model_dump(mode="json") for item in agent_spec.data_requirements
+            ],
+            "runtime_context": {
+                "run_id": state.run_id,
+                "agent_id": state.agent_id,
+                "step_counter": state.step_counter,
+            },
+        }
 
     def _move_to_next_node(
         self,

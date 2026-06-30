@@ -246,6 +246,32 @@
       "planner_hint": "Используй после сбора контекста встречи для подготовки повестки, сводки или протокола."
     },
     {
+      "name": "report.build_schedule_recommendations",
+      "title": "Рекомендации по планированию графика",
+      "description": "Формирует рекомендации по планированию графика на основе календаря и аналитики.",
+      "category": "report",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object"},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "recommendation_text": {"type": "string"},
+          "busy_slots": {"type": "array"},
+          "free_slots": {"type": "array"},
+          "risks": {"type": "array"},
+          "recommendations": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["meeting_agent"],
+      "examples": [
+        "Оценить плотность встреч и предложить свободные окна",
+        "Сформировать рекомендации по фокус-времени"
+      ],
+      "planner_hint": "Используй после чтения календаря и LLM-аналитики, когда запрос про планирование дня или недели, плотность графика, свободные окна и перегрузки."
+    },
+    {
       "name": "report.build_document_analysis_report",
       "title": "Формирование отчёта анализа документа",
       "description": "Формирует отчёт по результатам анализа документа.",

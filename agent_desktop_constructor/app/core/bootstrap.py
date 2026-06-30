@@ -7,6 +7,11 @@ from agent_desktop_constructor.app.core.config import AppConfig, load_app_config
 from agent_desktop_constructor.app.core.services.agent_application_service import (
     AgentApplicationService,
 )
+from agent_desktop_constructor.app.core.services.agent_validation_service import (
+    AgentValidationService,
+)
+from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
+from agent_desktop_constructor.app.llm.supervisor import LLMSupervisor
 from agent_desktop_constructor.app.runtime.runtime_factory import build_runtime
 from agent_desktop_constructor.app.tools.tool_registry_factory import build_tool_registry
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
@@ -47,6 +52,7 @@ class ApplicationContainer:
     tool_call_log_repository: ToolCallLogRepository | None
     run_event_repository: RunEventRepository | None = None
     human_approval_repository: HumanApprovalRepository | None = None
+    agent_validation_service: AgentValidationService | None = None
 
 
 def build_application_container(
@@ -68,13 +74,28 @@ def build_application_container(
     tools_catalog = agent_builder.tools_catalog
     tool_registry = build_tool_registry(app_config)
     tool_gateway = ToolGateway(tool_registry)
+    llm_supervisor = None
+    if app_config.use_llm_planner:
+        llm_supervisor = LLMSupervisor(
+            OpenAICompatibleLLMClient(app_config.to_llm_config()),
+            tools_catalog,
+        )
     runtime = build_runtime(
         app_config,
         tool_gateway,
+        tools_catalog=tools_catalog,
+        tool_registry=tool_registry,
         run_repository=run_repository,
         audit_repository=audit_repository,
         run_event_repository=run_event_repository,
         human_approval_repository=human_approval_repository,
+        llm_supervisor=llm_supervisor,
+    )
+    agent_validation_service = AgentValidationService(
+        agent_service=None,
+        runtime=runtime,
+        tool_registry=tool_registry,
+        tools_catalog=tools_catalog,
     )
     agent_service = AgentApplicationService(
         agent_builder=agent_builder,
@@ -84,6 +105,7 @@ def build_application_container(
         audit_repository=audit_repository,
         run_event_repository=run_event_repository,
         human_approval_repository=human_approval_repository,
+        agent_validation_service=agent_validation_service,
     )
 
     return ApplicationContainer(
@@ -101,5 +123,6 @@ def build_application_container(
         run_event_repository=run_event_repository,
         human_approval_repository=human_approval_repository,
         tool_call_log_repository=tool_call_log_repository,
+        agent_validation_service=agent_validation_service,
     )
 

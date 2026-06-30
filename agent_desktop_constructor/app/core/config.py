@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from agent_desktop_constructor.app.core.app_mode import AppRunMode
+from agent_desktop_constructor.app.core.models.agent_build_mode import AgentBuildMode
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
 
 TRUE_ENV_VALUES = {"1", "true", "yes", "да"}
@@ -18,6 +19,7 @@ class AppConfig(BaseModel):
 
     app_name: str = "Конструктор ИИ-агентов"
     run_mode: AppRunMode = AppRunMode.FAKE
+    agent_build_mode: AgentBuildMode = AgentBuildMode.LLM_SUPERVISED
     database_path: str = "./data/agents.db"
     tools_catalog_path: str | None = None
     use_llm_planner: bool = False
@@ -66,6 +68,16 @@ def load_app_config_from_env() -> AppConfig:
             raise ValueError(
                 "Некорректный AGENT_APP_RUN_MODE: "
                 f"{run_mode!r}. Допустимые значения: {allowed}"
+            ) from exc
+
+    if build_mode := os.environ.get("AGENT_APP_AGENT_BUILD_MODE"):
+        try:
+            values["agent_build_mode"] = AgentBuildMode(build_mode.strip())
+        except ValueError as exc:
+            allowed = ", ".join(mode.value for mode in AgentBuildMode)
+            raise ValueError(
+                "Некорректный AGENT_APP_AGENT_BUILD_MODE: "
+                f"{build_mode!r}. Допустимые значения: {allowed}"
             ) from exc
 
     _set_if_present(values, "database_path", "AGENT_APP_DATABASE_PATH")

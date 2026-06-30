@@ -38,7 +38,9 @@ class AgentCreateWidget(QWidget):
         self.request_edit = QTextEdit()
         self.request_edit.setPlaceholderText("Опишите, какого агента нужно создать...")
         self.preview_button = QPushButton("Предпросмотр")
+        self.validate_button = QPushButton("Проверить агента")
         self.save_button = QPushButton("Сохранить")
+        self.validate_run_button = QPushButton("Собрать, проверить и запустить")
         self.clear_button = QPushButton("Очистить")
         self.tabs = QTabWidget()
         self.general_output = QTextEdit()
@@ -59,7 +61,9 @@ class AgentCreateWidget(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.preview_button)
+        buttons.addWidget(self.validate_button)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.validate_run_button)
         buttons.addWidget(self.clear_button)
 
         layout = QVBoxLayout(self)
@@ -68,7 +72,9 @@ class AgentCreateWidget(QWidget):
         layout.addWidget(self.tabs)
 
         self.preview_button.clicked.connect(self.build_preview)
+        self.validate_button.clicked.connect(self.validate_agent)
         self.save_button.clicked.connect(self.save_agent)
+        self.validate_run_button.clicked.connect(self.create_validate_and_run)
         self.clear_button.clicked.connect(self.clear)
 
     def build_preview(self) -> None:
@@ -111,6 +117,63 @@ class AgentCreateWidget(QWidget):
             return
 
         show_info(self, "Агент сохранён", f"Агент сохранён: {agent_spec.agent_id}")
+
+    def validate_agent(self) -> None:
+        """Построить preview и выполнить пробную проверку агента."""
+        user_request = self.request_edit.toPlainText().strip()
+        if not user_request and self._preview_agent is None:
+            show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
+            return
+
+        try:
+            if self._preview_agent is None:
+                self._preview_agent = self._container.agent_service.build_preview(
+                    user_request
+                )
+                self._render_preview(self._preview_agent)
+            validation = self._container.agent_service.validate_agent(
+                self._preview_agent,
+                user_request,
+            )
+        except Exception as exc:
+            show_error(self, "Ошибка проверки агента", exc)
+            return
+
+        self.general_output.setPlainText(
+            self._format_general(self._preview_agent)
+            + "\n\n"
+            + self._format_validation(validation)
+        )
+        show_info(self, "Проверка агента", validation.summary)
+
+    def create_validate_and_run(self) -> None:
+        """Собрать, проверить и запустить агента при успешной проверке."""
+        user_request = self.request_edit.toPlainText().strip()
+        if not user_request:
+            show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
+            return
+
+        try:
+            agent_spec, validation, state = (
+                self._container.agent_service.create_validate_and_run_once(user_request)
+            )
+            self._preview_agent = agent_spec
+            self._render_preview(agent_spec)
+        except Exception as exc:
+            show_error(self, "Ошибка проверки и запуска", exc)
+            return
+
+        self.general_output.setPlainText(
+            self._format_general(agent_spec) + "\n\n" + self._format_validation(validation)
+        )
+        if state is None:
+            show_info(self, "Агент не запущен", validation.summary)
+            return
+        show_info(
+            self,
+            "Агент запущен",
+            f"Проверка пройдена, run_id={state.run_id}, status={state.status.value}",
+        )
 
     def clear(self) -> None:
         """Очистить запрос и preview."""
@@ -185,6 +248,34 @@ class AgentCreateWidget(QWidget):
             "Запрещённые действия:",
             *[f"- {item}" for item in agent_spec.goal.forbidden_actions],
         ]
+        return "\n".join(lines)
+
+    def _format_validation(self, validation) -> str:
+        """Сформировать текст результата пробной проверки."""
+        lines = [
+            "Проверка агента:",
+            f"status: {validation.status.value}",
+            f"run_id: {validation.run_id}",
+            f"summary: {validation.summary}",
+            "",
+            "Итоговый вывод:",
+            validation.final_message or "Итоговый вывод пока не сформирован.",
+            "",
+            "errors:",
+            *[f"- {item}" for item in validation.errors],
+            "warnings:",
+            *[f"- {item}" for item in validation.warnings],
+            "suggested_fixes:",
+            *[f"- {item}" for item in validation.suggested_fixes],
+        ]
+        if validation.output_data:
+            lines.extend(
+                [
+                    "",
+                    "Структурированный результат:",
+                    format_json_preview(validation.output_data, max_chars=4000),
+                ]
+            )
         return "\n".join(lines)
 
     def _data_headers(self) -> list[str]:

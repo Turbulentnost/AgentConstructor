@@ -7,6 +7,10 @@ from agent_desktop_constructor.app.core.models.human_approval import (
     HumanApprovalStatus,
 )
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEvent
+from agent_desktop_constructor.app.core.models.agent_validation import (
+    AgentValidationResult,
+    AgentValidationStatus,
+)
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
@@ -35,6 +39,7 @@ class AgentApplicationService:
         audit_repository: AuditLogRepository | None = None,
         run_event_repository: RunEventRepository | None = None,
         human_approval_repository: HumanApprovalRepository | None = None,
+        agent_validation_service: object | None = None,
     ) -> None:
         """Создать сервис с repository или memory-only режимом."""
         self._agent_builder = agent_builder
@@ -44,6 +49,7 @@ class AgentApplicationService:
         self._audit_repository = audit_repository
         self._run_event_repository = run_event_repository
         self._human_approval_repository = human_approval_repository
+        self._agent_validation_service = agent_validation_service
         self._memory_agents: dict[str, AgentSpec] = {}
         self._memory_audit_logs: list[dict] = []
         self._audit_warnings: list[str] = []
@@ -87,6 +93,79 @@ class AgentApplicationService:
         if save:
             self.save_agent(agent_spec)
         return agent_spec
+
+    def validate_agent(
+        self,
+        agent_spec: AgentSpec,
+        user_request: str | None = None,
+    ) -> AgentValidationResult:
+        """Проверить агента через AgentValidationService."""
+        if self._agent_validation_service is None:
+            raise ValueError("AgentValidationService не подключён")
+        return self._agent_validation_service.validate_agent(
+            agent_spec,
+            user_request or agent_spec.goal.main_goal,
+        )
+
+    def create_validate_and_save_agent(
+        self,
+        user_request: str,
+    ) -> tuple[AgentSpec, AgentValidationResult]:
+        """Собрать, проверить и сохранить агента только при успешной проверке."""
+        agent_spec = self.build_preview(user_request)
+        validation_result = self.validate_agent(agent_spec, user_request)
+        if validation_result.status == AgentValidationStatus.PASSED:
+            self.save_agent(agent_spec)
+        return agent_spec, validation_result
+
+    def create_validate_and_run_once(
+        self,
+        user_request: str,
+    ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
+        """Собрать агента, выполнить проверочный запуск и сохранить при успехе."""
+        try:
+            agent_spec = self.build_preview(user_request)
+        except Exception as exc:
+            agent_spec = self._build_template_fallback_agent(user_request)
+            return (
+                agent_spec,
+                AgentValidationResult(
+                    agent_id=agent_spec.agent_id,
+                    status=AgentValidationStatus.FAILED,
+                    run_id=None,
+                    errors=[str(exc)],
+                    warnings=[
+                        "LLM Planner не смог построить план. "
+                        "Показан fallback AgentSpec по шаблону."
+                    ],
+                    summary="Не удалось построить LLM-план агента.",
+                    final_message=None,
+                    output_data=None,
+                    suggested_fixes=[
+                        "Проверьте, что LLM endpoint запущен и модель загружена.",
+                        "Увеличьте timeout LLM в настройках или повторите попытку.",
+                    ],
+                ),
+                None,
+            )
+        validation_result = self.validate_agent(agent_spec, user_request)
+        validation_state = None
+        if (
+            self._agent_validation_service is not None
+            and hasattr(self._agent_validation_service, "get_validation_state")
+        ):
+            validation_state = self._agent_validation_service.get_validation_state(
+                validation_result.run_id
+            )
+
+        if validation_result.status == AgentValidationStatus.PASSED:
+            self.save_agent(agent_spec)
+        return agent_spec, validation_result, validation_state
+
+    def _build_template_fallback_agent(self, user_request: str) -> AgentSpec:
+        """Построить fallback AgentSpec без LLM, чтобы UI мог показать результат."""
+        fallback_builder = AgentBuilder(tools_catalog=self._agent_builder.tools_catalog)
+        return fallback_builder.build_from_request(user_request)
 
     def get_agent(self, agent_id: str) -> AgentSpec:
         """Вернуть AgentSpec по agent_id."""

@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from agent_desktop_constructor.app.builder.llm_planner import LLMPlanner
 from agent_desktop_constructor.app.core.config import AppConfig
 from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
+from agent_desktop_constructor.app.llm.tool_planner import LLMToolPlanner
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.builder.data_requirements import DataRequirementAnalyzer
 from agent_desktop_constructor.builder.template_selector import TemplateSelector
@@ -20,7 +20,7 @@ def build_agent_builder(config: AppConfig) -> AgentBuilder:
 
     if config.use_llm_planner:
         llm_client = OpenAICompatibleLLMClient(config.to_llm_config())
-        llm_planner = LLMPlanner(llm_client, tools_catalog)
+        llm_planner = LLMToolPlanner(llm_client)
         return AgentBuilder(
             template_selector=template_selector,
             data_requirement_analyzer=data_requirement_analyzer,

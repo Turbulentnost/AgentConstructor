@@ -13,6 +13,7 @@ class AgentRunStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"
     PAUSED_FOR_HUMAN = "paused_for_human"
+    PAUSED_FOR_CREDENTIALS = "paused_for_credentials"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -136,6 +137,11 @@ class AgentRuntimeState(BaseModel):
         """Приостановить запуск до решения человека."""
         self.status = AgentRunStatus.PAUSED_FOR_HUMAN
         self.pending_human_approval = request
+
+    def pause_for_credentials(self, reason: str) -> None:
+        """Приостановить запуск до предоставления credentials вне LLM-контекста."""
+        self.status = AgentRunStatus.PAUSED_FOR_CREDENTIALS
+        self.variables["credential_request_reason"] = reason
 
     def resume_after_human(
         self,

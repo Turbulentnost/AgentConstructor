@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -177,10 +178,15 @@ def apply_llm_api_key_from_env(config: AppConfig) -> AppConfig:
 
 def load_dotenv_into_environ(path: Path | str | None = None) -> None:
     """Загрузить .env в os.environ, не переопределяя уже заданные переменные."""
+    frozen_candidates = (
+        [Path(sys.executable).resolve().parent / ".env"]
+        if getattr(sys, "frozen", False)
+        else []
+    )
     candidates = (
         [Path(path)]
         if path is not None
-        else [Path.cwd() / ".env", PROJECT_ROOT / ".env"]
+        else [*frozen_candidates, Path.cwd() / ".env", PROJECT_ROOT / ".env"]
     )
     for candidate in candidates:
         if not candidate.exists():

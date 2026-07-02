@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from agent_desktop_constructor.app.core.config import AppConfig
 
-DEFAULT_SETTINGS_PATH = "./data/settings.json"
+DEFAULT_SETTINGS_PATH = str(
+    (Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent)) if getattr(sys, "frozen", False) else Path("."))
+    / "data"
+    / "settings.json"
+)
 
 
 def load_settings(path: str | None = None) -> AppConfig:

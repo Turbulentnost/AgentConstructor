@@ -9,4 +9,5 @@ class AgentBuildMode(StrEnum):
     TEMPLATE_ONLY = "template_only"
     LLM_PLANNED = "llm_planned"
     LLM_SUPERVISED = "llm_supervised"
+    LLM_AGENT_LOOP = "llm_agent_loop"
 

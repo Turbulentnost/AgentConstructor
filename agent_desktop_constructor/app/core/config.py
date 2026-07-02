@@ -149,6 +149,32 @@ def _apply_llm_provider_defaults(values: dict[str, Any]) -> None:
         values.setdefault("use_llm_planner", True)
 
 
+def apply_llm_api_key_from_env(config: AppConfig) -> AppConfig:
+    """Подставить LLM API-ключ из окружения, если он не задан в конфиге.
+
+    Секрет не хранится в settings.json, поэтому при запуске десктопа ключ
+    берётся из окружения (.env) по выбранному провайдеру.
+    """
+    if config.llm_api_key:
+        return config
+
+    key: str | None = None
+    if config.llm_provider == "anthropic":
+        key = os.environ.get("OPENAI_API_KEY_CLAUDE") or os.environ.get(
+            "AGENT_APP_LLM_API_KEY"
+        )
+    elif config.llm_provider == "openai_compatible" and "api.openai.com" in (
+        config.llm_base_url or ""
+    ):
+        key = os.environ.get("OPENAI_API_KEY") or os.environ.get(
+            "AGENT_APP_LLM_API_KEY"
+        )
+
+    if key:
+        return config.model_copy(update={"llm_api_key": key})
+    return config
+
+
 def load_dotenv_into_environ(path: Path | str | None = None) -> None:
     """Загрузить .env в os.environ, не переопределяя уже заданные переменные."""
     candidates = (

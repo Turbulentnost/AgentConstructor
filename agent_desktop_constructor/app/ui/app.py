@@ -11,6 +11,7 @@ from pathlib import Path
 from agent_desktop_constructor.app.core.bootstrap import build_application_container
 from agent_desktop_constructor.app.core.config import (
     AppConfig,
+    apply_llm_api_key_from_env,
     load_app_config_from_env,
     load_dotenv_into_environ,
 )
@@ -48,6 +49,7 @@ def run_desktop_app(config: AppConfig | None = None) -> int:
                 f"{exc}\nБудут использованы настройки по умолчанию.",
             )
             app_config = AppConfig()
+    app_config = apply_llm_api_key_from_env(app_config)
     container = build_application_container(app_config)
     window = MainWindow(container)
     window.show()

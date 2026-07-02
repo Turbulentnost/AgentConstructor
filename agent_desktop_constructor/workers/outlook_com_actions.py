@@ -32,10 +32,37 @@ MAX_SCAN_ITEMS = 500
 BODY_PREVIEW_LIMIT = 500
 CALENDAR_BODY_PREVIEW_LIMIT = 300
 
+# MAPI proptag-схемы для чтения адресных свойств через PropertyAccessor.
+# Прямое обращение к SenderName/Organizer/attendees триггерит Outlook Object
+# Model Guard (окно "Программа пытается получить доступ к адресам..."), которое
+# блокирует COM-поток и роняет чтение по таймауту. PropertyAccessor читает те же
+# строковые свойства без срабатывания guard, поэтому окно не появляется.
+PROPTAG_BASE = "http://schemas.microsoft.com/mapi/proptag/"
+PR_SENDER_NAME_W = PROPTAG_BASE + "0x0C1A001F"
+PR_SENT_REPRESENTING_NAME_W = PROPTAG_BASE + "0x0042001F"
+PR_DISPLAY_TO_W = PROPTAG_BASE + "0x0E04001F"
+PR_DISPLAY_CC_W = PROPTAG_BASE + "0x0E03001F"
+
 
 def _log_progress(message: str) -> None:
     """Записать COM progress-сообщение в stderr, не загрязняя stdout JSON."""
     print(f"[COM_DIAG] {message}", file=sys.stderr, flush=True)
+
+
+def _read_guarded_property(item: Any, schema: str) -> str:
+    """Прочитать адресное свойство через PropertyAccessor без Outlook guard.
+
+    Возвращает пустую строку при любой ошибке, чтобы не откатываться на прямой
+    getattr (который снова вызвал бы окно защиты Outlook) и не ронять чтение.
+    """
+    try:
+        accessor = item.PropertyAccessor
+    except Exception:
+        return ""
+    try:
+        return _safe_str(accessor.GetProperty(schema))
+    except Exception:
+        return ""
 
 
 def _load_pywin32_modules():
@@ -138,7 +165,7 @@ def search_mail(input_data: dict) -> dict:
                 break
 
             subject = _safe_str(getattr(message, "Subject", ""))
-            sender = _safe_str(getattr(message, "SenderName", ""))
+            sender = _read_guarded_property(message, PR_SENDER_NAME_W)
             received_time = getattr(message, "ReceivedTime", None)
             received_at = _safe_str(received_time)
             body = _safe_str(getattr(message, "Body", ""))
@@ -256,12 +283,14 @@ def read_calendar(input_data: dict) -> dict:
                     "start": _safe_str(event_start),
                     "end": _safe_str(event_end),
                     "location": _safe_str(getattr(event, "Location", "")),
-                    "organizer": _safe_str(getattr(event, "Organizer", "")),
-                    "required_attendees": _safe_str(
-                        getattr(event, "RequiredAttendees", "")
+                    "organizer": _read_guarded_property(
+                        event, PR_SENT_REPRESENTING_NAME_W
                     ),
-                    "optional_attendees": _safe_str(
-                        getattr(event, "OptionalAttendees", "")
+                    "required_attendees": _read_guarded_property(
+                        event, PR_DISPLAY_TO_W
+                    ),
+                    "optional_attendees": _read_guarded_property(
+                        event, PR_DISPLAY_CC_W
                     ),
                     "body_preview": body[:CALENDAR_BODY_PREVIEW_LIMIT],
                 }

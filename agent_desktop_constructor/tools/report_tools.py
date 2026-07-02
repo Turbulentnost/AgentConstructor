@@ -155,16 +155,102 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
         )
 
 
+class LocalBuildTaskReportTool(BaseTool):
+    """Формирует отчёт по поручениям и рискам просрочки на основе собранных данных."""
+
+    def __init__(self) -> None:
+        """Создать tool."""
+        super().__init__(
+            ToolDefinition(
+                name="report.build_task_report",
+                title="Отчёт по поручениям",
+                description=(
+                    "Формирует отчёт по поручениям с рисками просрочки на основе "
+                    "собранных данных и аналитики LLM, без записи во внешние системы."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Собрать отчёт из аналитики LLM и найденных поручений (без хардкода)."""
+        tool_outputs = input_data.get("tool_outputs", {})
+        if not isinstance(tool_outputs, dict):
+            tool_outputs = {}
+        analytics = tool_outputs.get("llm.analyze_collected_data", {})
+        if not isinstance(analytics, dict):
+            analytics = {}
+
+        tasks = _collect_tasks(tool_outputs)
+        risks = _clean_str_list(analytics.get("risks"))
+        recommendations = _clean_str_list(analytics.get("recommendations"))
+        findings = _clean_str_list(analytics.get("findings"))
+
+        if not analytics and not tasks:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="TASK_DATA_MISSING",
+                error_message=(
+                    "Нет собранных поручений и аналитики для формирования отчёта"
+                ),
+            )
+
+        report_text = _first_non_empty_text(
+            analytics.get("summary"),
+            "\n".join(findings) if findings else None,
+            f"Найдено поручений: {len(tasks)}. Рисков просрочки: {len(risks)}.",
+        )
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "report_text": report_text,
+                "task_count": len(tasks),
+                "risk_count": len(risks),
+                "tasks": tasks,
+                "risks": risks,
+                "recommendations": recommendations,
+                "analysis_source": "llm.analyze_collected_data"
+                if analytics
+                else "none",
+            },
+        )
+
+
 def register_report_tools(
     registry: ToolRegistry,
     *,
     skip_existing: bool = False,
 ) -> None:
     """Зарегистрировать локальные report tools."""
-    for tool in [LocalBuildMeetingSummaryTool(), LocalBuildScheduleRecommendationsTool()]:
+    for tool in [
+        LocalBuildMeetingSummaryTool(),
+        LocalBuildScheduleRecommendationsTool(),
+        LocalBuildTaskReportTool(),
+    ]:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue
         registry.register(tool)
+
+
+def _collect_tasks(tool_outputs: dict) -> list[dict]:
+    """Собрать поручения из результатов 1С и Outlook без выдумывания данных."""
+    tasks: list[dict] = []
+    for key in ("onec.search_tasks", "outlook.read_tasks"):
+        output = tool_outputs.get(key)
+        if isinstance(output, dict):
+            items = output.get("tasks")
+            if isinstance(items, list):
+                tasks.extend(item for item in items if isinstance(item, dict))
+    card = tool_outputs.get("onec.get_task_card")
+    if isinstance(card, dict) and isinstance(card.get("task"), dict):
+        tasks.append(card["task"])
+    return tasks
 
 
 def _calendar_events(input_data: dict) -> list[dict]:

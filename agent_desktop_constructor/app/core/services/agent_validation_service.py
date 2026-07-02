@@ -37,12 +37,19 @@ class AgentValidationService:
         runtime: SimpleAgentRuntime,
         tool_registry: ToolRegistry,
         tools_catalog: ToolsCatalog,
+        enforce_required_graph_tools: bool = True,
     ) -> None:
-        """Сохранить зависимости без прямого доступа к инструментам."""
+        """Сохранить зависимости без прямого доступа к инструментам.
+
+        enforce_required_graph_tools=False отключает строгую пер-узловую проверку
+        графа: она бессмысленна для динамического LLM-цикла, который сам выбирает
+        инструменты и обходит недоступные.
+        """
         self._agent_service = agent_service
         self._runtime = runtime
         self._tool_registry = tool_registry
         self._tools_catalog = tools_catalog
+        self._enforce_required_graph_tools = enforce_required_graph_tools
         self._validation_states: dict[str, AgentRuntimeState] = {}
 
     def validate_agent(
@@ -111,17 +118,18 @@ class AgentValidationService:
         except ValueError as exc:
             errors.append(str(exc))
 
-        for tool_name in sorted(agent_spec.allowed_tool_names()):
-            if not self._tool_registry.has_tool(tool_name):
-                errors.append(f"Инструмент {tool_name!r} не зарегистрирован")
-        for node in agent_spec.graph_nodes:
-            if node.tool_name is not None and not self._tool_registry.has_tool(
-                node.tool_name
-            ):
-                errors.append(
-                    f"Инструмент узла {node.node_id!r} не зарегистрирован: "
-                    f"{node.tool_name!r}"
-                )
+        if self._enforce_required_graph_tools:
+            for tool_name in sorted(agent_spec.allowed_tool_names()):
+                if not self._tool_registry.has_tool(tool_name):
+                    errors.append(f"Инструмент {tool_name!r} не зарегистрирован")
+            for node in agent_spec.graph_nodes:
+                if node.tool_name is not None and not self._tool_registry.has_tool(
+                    node.tool_name
+                ):
+                    errors.append(
+                        f"Инструмент узла {node.node_id!r} не зарегистрирован: "
+                        f"{node.tool_name!r}"
+                    )
         for permission in agent_spec.tools:
             if not self._tool_registry.has_tool(permission.tool_name):
                 continue
@@ -300,6 +308,8 @@ class AgentValidationService:
         warnings: list[str],
     ) -> list[dict]:
         """Проверить обязательные tool_call узлы основного графа."""
+        if not self._enforce_required_graph_tools:
+            return []
         checks: list[dict] = []
         for node in agent_spec.graph_nodes:
             if node.tool_name is None or node.next_on_error != "final_failed":

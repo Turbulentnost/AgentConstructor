@@ -8,7 +8,6 @@ from agent_desktop_constructor.app.tools.llm_analysis_tools import (
 )
 from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
 from agent_desktop_constructor.tools.fake_task_control_tools import (
-    FakeReportBuildTaskReportTool,
     register_fake_task_control_tools,
 )
 from agent_desktop_constructor.tools.onec_tools import register_onec_readonly_tools
@@ -44,7 +43,6 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
                 skip_existing=True,
             )
         _apply_com_timeout(registry, config)
-        registry.register(FakeReportBuildTaskReportTool())
         return registry
 
     if config.run_mode == AppRunMode.OFFLINE:

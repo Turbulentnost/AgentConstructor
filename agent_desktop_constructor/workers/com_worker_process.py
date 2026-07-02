@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from agent_desktop_constructor.workers.models import WorkerResult, WorkerTask
 from agent_desktop_constructor.workers.outlook_com_worker import OutlookComWorker
 
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):

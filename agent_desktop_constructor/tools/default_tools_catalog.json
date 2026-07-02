@@ -11,7 +11,22 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "folder": {"type": "string"},
+          "folder": {
+            "type": "string",
+            "description": "Inbox, Sent или All"
+          },
+          "date": {
+            "type": "string",
+            "description": "Конкретный день в формате YYYY-MM-DD"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Начало периода в формате YYYY-MM-DD или ISO datetime"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "Конец периода в формате YYYY-MM-DD или ISO datetime"
+          },
           "days": {"type": "integer"},
           "query": {"type": "string"},
           "max_results": {"type": "integer"}
@@ -25,10 +40,12 @@
       },
       "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
       "examples": [
+        "Найти входящие и отправленные письма за сегодня",
+        "Найти отправленные письма за конкретный день",
         "Найти письма за последние 7 дней",
         "Найти письма со словами поручение, выполнить, подготовить"
       ],
-      "planner_hint": "Безопасное read-действие. Можно использовать для поиска писем за период. Используй, когда нужно найти письма, которые могут содержать поручения, договорённости, согласования или входящие данные."
+      "planner_hint": "Безопасное read-действие. Можно использовать для поиска входящих и отправленных писем за конкретный день или период. Для входящих используй folder=Inbox, для отправленных folder=Sent, для обоих направлений folder=All. Если пользователь спрашивает про дни рождения, birthday, поздравления или именинников в сообщениях Outlook, используй folder=All, query='день рождения OR день рождение OR birthday OR именинник OR поздравляем OR поздравление OR юбилей', date/date_from/date_to по запрошенному периоду. Поддерживаются date=YYYY-MM-DD и date_from/date_to."
     },
     {
       "name": "outlook.read_calendar",
@@ -38,7 +55,25 @@
       "side_effect_level": "read",
       "execution_mode": "com_worker",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Конкретный день в формате YYYY-MM-DD"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Начало периода в формате YYYY-MM-DD или ISO datetime"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "Конец периода в формате YYYY-MM-DD или ISO datetime"
+          },
+          "days_forward": {"type": "integer"},
+          "max_results": {"type": "integer"}
+        }
+      },
       "output_schema": {
         "type": "object",
         "properties": {
@@ -48,9 +83,11 @@
       "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
       "examples": [
         "Найти встречи на сегодня",
+        "Найти встречи за конкретный день",
+        "Найти встречи за выбранный период",
         "Найти совещания за последние 7 дней"
       ],
-      "planner_hint": "Безопасное read-действие. Используй, когда нужно прочитать ближайшие события календаря Outlook. Не создаёт и не изменяет события."
+      "planner_hint": "Безопасное read-действие. Используй, когда нужно прочитать события календаря Outlook за конкретный день или период. Обязательно используй для запросов про совещания, встречи, расписание, занятость, календарь, дела на день/неделю или общий недельный план. Поддерживаются date=YYYY-MM-DD, date_from/date_to и days_forward. Не создаёт и не изменяет события."
     },
     {
       "name": "outlook.read_tasks",
@@ -395,6 +432,83 @@
         "Извлечь таблицу статусов со страницы"
       ],
       "planner_hint": "Используй, когда на странице есть таблица с документами, статусами, ценами, перечнями или результатами поиска."
+    },
+    {
+      "name": "browser.scroll_page",
+      "title": "Прокрутка web-страницы",
+      "description": "Прокручивает открытую web-страницу и возвращает видимый текст после прокрутки.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "direction": {"type": "string"},
+          "pixels": {"type": "integer"},
+          "max_chars": {"type": "integer"}
+        },
+        "required": ["url"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "text": {"type": "string"},
+          "scroll_y": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Прокрутить страницу ниже и прочитать продолжение"
+      ],
+      "planner_hint": "Используй после browser.open_page, если нужная информация может быть ниже на странице. Инструмент только читает страницу."
+    },
+    {
+      "name": "browser.click_link",
+      "title": "Переход по ссылке web-страницы",
+      "description": "Переходит по найденной ссылке на web-странице в read-only режиме.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "link_text": {"type": "string"},
+          "href": {"type": "string"},
+          "max_chars": {"type": "integer"}
+        },
+        "required": ["url"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "text": {"type": "string"},
+          "links": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Открыть первый найденный результат",
+        "Перейти по ссылке Подробнее"
+      ],
+      "planner_hint": "Используй, когда нужно открыть одну из ссылок, найденных на странице. Разрешены только обычные http/https ссылки; формы и кнопки отправки не используются."
     },
     {
       "name": "onec.search_documents",

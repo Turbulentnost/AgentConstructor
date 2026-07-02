@@ -68,6 +68,9 @@ def test_llm_planner_uses_tools_catalog_context() -> None:
     assert "Доступные инструменты" in prompt_text
     assert "outlook.search_mail" in prompt_text
     assert "Не придумывай новые tool_name" in prompt_text
+    assert "Входные параметры:" in prompt_text
+    assert "folder" in prompt_text
+    assert "date_from" in prompt_text
 
 
 def test_llm_planner_parses_valid_json() -> None:

@@ -35,6 +35,24 @@ def test_prompt_contains_user_request() -> None:
     assert "Проверь Outlook и найди поручения" in _prompt_text()
 
 
+def test_prompt_contains_current_date_context() -> None:
+    """Prompt содержит текущую дату для grounding относительных дат."""
+    text = _prompt_text()
+
+    assert "Текущая дата выполнения:" in text
+    assert "Текущая неделя:" in text
+    assert "эта неделя" in text
+
+
+def test_prompt_guides_calendar_and_birthday_search() -> None:
+    """Prompt направляет LLM на календарь и поиск дней рождения в письмах."""
+    text = _prompt_text()
+
+    assert "outlook.read_calendar" in text
+    assert "дни рождения" in text
+    assert "folder=All" in text
+
+
 def test_prompt_says_dangerous_requires_approval() -> None:
     """Prompt содержит правило о подтверждении dangerous/write."""
     assert "Все dangerous/write действия требуют подтверждения человека" in _prompt_text()

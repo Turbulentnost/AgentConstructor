@@ -10,6 +10,9 @@ def test_catalog_contains_browser_tools() -> None:
 
     assert catalog.has_tool("browser.search_web")
     assert catalog.has_tool("browser.open_page")
+    assert catalog.has_tool("browser.extract_table")
+    assert catalog.has_tool("browser.scroll_page")
+    assert catalog.has_tool("browser.click_link")
 
 
 def test_catalog_contains_onec_tools() -> None:

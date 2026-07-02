@@ -6,6 +6,7 @@ import json
 
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEvent
 from agent_desktop_constructor.app.llm.models import LLMMessage
+from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRuntimeState,
@@ -63,6 +64,7 @@ email.send заблокирован safe_mode.
 """.strip()
 
     user_payload = {
+        "temporal_context": build_temporal_context(),
         "agent_spec": agent_spec.model_dump(mode="json"),
         "runtime_state": runtime_state.model_dump(mode="json"),
         "latest_event": latest_event.model_dump(mode="json") if latest_event else None,
@@ -85,7 +87,8 @@ email.send заблокирован safe_mode.
     }
     user_prompt = (
         "Проанализируй состояние выполнения агента и верни следующее безопасное "
-        "решение SupervisorDecision.\n"
+        "решение SupervisorDecision. Для относительных дат используй temporal_context; "
+        "если tool input_data содержит дату, передавай её как YYYY-MM-DD.\n"
         + json.dumps(user_payload, ensure_ascii=False, indent=2)
     )
     return [

@@ -10,6 +10,9 @@ from agent_desktop_constructor.app.llm.agent_plan_models import LLMAgentPlan
 from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
 from agent_desktop_constructor.app.llm.errors import LLMInvalidJSONError
 from agent_desktop_constructor.app.llm.models import LLMMessage, LLMRequest
+from agent_desktop_constructor.app.llm.temporal_context import (
+    build_temporal_context_text,
+)
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
 
 
@@ -73,6 +76,7 @@ def _build_agent_plan_prompt(
     tools_catalog: ToolsCatalog,
 ) -> list[LLMMessage]:
     """Собрать prompt выбора tools и шагов AgentSpec."""
+    temporal_context = build_temporal_context_text()
     system_prompt = """
 Ты — LLM Planner конструктора ИИ-агентов.
 Ты не вызываешь инструменты напрямую.
@@ -90,6 +94,9 @@ Runtime позже исполнит план через ToolGateway и HumanAppr
 Исходный запрос пользователя:
 {user_request}
 
+Временной контекст:
+{temporal_context}
+
 Контекст доступных инструментов:
 {tools_catalog.to_planner_context()}
 
@@ -100,6 +107,10 @@ JSON-схема:
 - Используй только tool_name из ToolsCatalog.
 - Не вызывай инструменты и не описывай выполнение как уже сделанное.
 - Не отправляй письма, не меняй Outlook, не пиши в 1С, не выполняй код.
+- Для относительных дат ("сегодня", "эта неделя", "на этой неделе") используй временной контекст выше.
+- Если инструмент поддерживает date/date_from/date_to, передавай даты в формате YYYY-MM-DD.
+- Если пользователь спрашивает про совещания, встречи, расписание, занятость или дела на день/неделю — включи outlook.read_calendar.
+- Если пользователь спрашивает про дни рождения в Outlook-сообщениях — включи outlook.search_mail.
 - Если нужен tool вне каталога, укажи warning/missing_data.
 """.strip()
     return [

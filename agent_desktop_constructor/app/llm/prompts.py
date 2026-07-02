@@ -1,6 +1,9 @@
 """Промпты безопасного LLM planner-а."""
 
 from agent_desktop_constructor.app.llm.models import LLMMessage
+from agent_desktop_constructor.app.llm.temporal_context import (
+    build_temporal_context_text,
+)
 
 PLANNING_JSON_SCHEMA_DESCRIPTION = """
 Верни только JSON-объект без Markdown и без поясняющего текста:
@@ -27,6 +30,7 @@ def build_tool_planner_prompt(
     tools_context: str,
 ) -> list[LLMMessage]:
     """Собрать сообщения для LLM planner-а выбора инструментов."""
+    temporal_context = build_temporal_context_text()
     system_prompt = """
 Ты — планировщик конструктора ИИ-агентов.
 Ты не выполняешь инструменты.
@@ -57,6 +61,9 @@ def build_tool_planner_prompt(
 Исходный запрос пользователя:
 {user_request}
 
+Временной контекст:
+{temporal_context}
+
 Контекст доступных инструментов ToolsCatalog:
 {tools_context}
 
@@ -67,6 +74,9 @@ def build_tool_planner_prompt(
 - Используй только tool_name из ToolsCatalog выше.
 - Нельзя придумывать новые tool_name.
 - Ты не вызываешь инструменты, а только составляешь план.
+- Для относительных дат ("сегодня", "эта неделя", "на этой неделе") используй временной контекст выше.
+- Если пользователь спрашивает про совещания, встречи, расписание, занятость или дела на день/неделю — выбери outlook.read_calendar.
+- Если пользователь спрашивает про дни рождения в Outlook-сообщениях — выбери outlook.search_mail с folder=All и query по словам "день рождения OR birthday OR именинник OR поздравляем OR поздравление OR юбилей".
 - Если нужны данные из браузера, выбери browser.search_web или browser.open_page.
 - Если нужны данные из 1С, выбери onec.search_documents, onec.get_document_card, onec.search_tasks или onec.get_task_card.
 - Если данные уже собраны и нужен аналитический вывод, выбери llm.analyze_collected_data.

@@ -22,7 +22,7 @@ class SubprocessComWorker(BaseWorker):
 
     def execute(self, task: WorkerTask) -> WorkerResult:
         """Выполнить WorkerTask в дочернем процессе и вернуть WorkerResult."""
-        command = [sys.executable, "-m", self._module_name]
+        command = _build_worker_command(self._module_name)
         try:
             completed = subprocess.run(
                 command,
@@ -79,6 +79,13 @@ def _parse_worker_result(task_id: str, stdout: str) -> WorkerResult | None:
         return WorkerResult.model_validate_json(stdout)
     except (ValueError, ValidationError):
         return None
+
+
+def _build_worker_command(module_name: str) -> list[str]:
+    """Собрать команду запуска COM-worker для обычного Python и frozen exe."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--com-worker"]
+    return [sys.executable, "-m", module_name]
 
 
 def _build_process_error_message(stderr: str) -> str:

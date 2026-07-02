@@ -6,6 +6,10 @@ import json
 
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.tools.web_tools import (
+    BrowserClickLinkTool,
+    BrowserExtractTableTool,
+    BrowserOpenPageTool,
+    BrowserScrollPageTool,
     BrowserSearchWebTool,
     register_web_tools,
 )
@@ -28,12 +32,16 @@ class FakeHTTPResponse:
 
 
 def test_register_web_tools_registers_browser_search_web() -> None:
-    """register_web_tools регистрирует browser.search_web."""
+    """register_web_tools регистрирует все browser tools."""
     registry = ToolRegistry()
 
     register_web_tools(registry)
 
     assert registry.has_tool("browser.search_web")
+    assert registry.has_tool("browser.open_page")
+    assert registry.has_tool("browser.extract_table")
+    assert registry.has_tool("browser.scroll_page")
+    assert registry.has_tool("browser.click_link")
 
 
 def test_browser_search_web_weather_uses_wttr(monkeypatch) -> None:
@@ -97,3 +105,82 @@ def test_browser_search_web_requires_query() -> None:
 
     assert result.ok is False
     assert result.error_type == "INVALID_INPUT"
+
+
+class FakeBrowserWorker:
+    """Fake CDP worker для tool unit-тестов."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def open_page(self, input_data: dict) -> dict:
+        self.calls.append(("open_page", input_data))
+        return {"url": input_data["url"], "title": "T", "text": "Hello", "links": []}
+
+    def extract_table(self, input_data: dict) -> dict:
+        self.calls.append(("extract_table", input_data))
+        return {"url": input_data["url"], "title": "T", "tables": [{"rows": [["A"]]}]}
+
+    def scroll_page(self, input_data: dict) -> dict:
+        self.calls.append(("scroll_page", input_data))
+        return {"url": input_data["url"], "title": "T", "text": "After scroll", "scroll_y": 900}
+
+    def click_link(self, input_data: dict) -> dict:
+        self.calls.append(("click_link", input_data))
+        return {"url": "https://example.com/next", "title": "Next", "text": "Next page"}
+
+
+def test_browser_open_page_tool_uses_worker() -> None:
+    """browser.open_page проксирует вызов в BrowserCdpWorker."""
+    worker = FakeBrowserWorker()
+
+    result = BrowserOpenPageTool(worker).execute({"url": "https://example.com"})
+
+    assert result.ok is True
+    assert result.output_data["text"] == "Hello"
+    assert worker.calls == [("open_page", {"url": "https://example.com"})]
+
+
+def test_browser_extract_table_tool_uses_worker() -> None:
+    """browser.extract_table проксирует вызов в BrowserCdpWorker."""
+    worker = FakeBrowserWorker()
+
+    result = BrowserExtractTableTool(worker).execute(
+        {"url": "https://example.com", "table_hint": "A"}
+    )
+
+    assert result.ok is True
+    assert result.output_data["tables"][0]["rows"] == [["A"]]
+    assert worker.calls == [
+        ("extract_table", {"url": "https://example.com", "table_hint": "A"})
+    ]
+
+
+def test_browser_scroll_page_tool_uses_worker() -> None:
+    """browser.scroll_page проксирует вызов в BrowserCdpWorker."""
+    worker = FakeBrowserWorker()
+
+    result = BrowserScrollPageTool(worker).execute(
+        {"url": "https://example.com", "direction": "down"}
+    )
+
+    assert result.ok is True
+    assert result.output_data["scroll_y"] == 900
+    assert worker.calls == [
+        ("scroll_page", {"url": "https://example.com", "direction": "down"})
+    ]
+
+
+def test_browser_click_link_tool_uses_worker() -> None:
+    """browser.click_link проксирует вызов в BrowserCdpWorker."""
+    worker = FakeBrowserWorker()
+
+    result = BrowserClickLinkTool(worker).execute(
+        {"url": "https://example.com", "link_text": "Next"}
+    )
+
+    assert result.ok is True
+    assert result.output_data["url"] == "https://example.com/next"
+    assert worker.calls == [
+        ("click_link", {"url": "https://example.com", "link_text": "Next"})
+    ]

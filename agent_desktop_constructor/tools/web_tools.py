@@ -14,6 +14,10 @@ from agent_desktop_constructor.core.models.tooling import (
 )
 from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.registry import ToolRegistry
+from agent_desktop_constructor.workers.browser_cdp_worker import (
+    BrowserCdpError,
+    BrowserCdpWorker,
+)
 
 DEFAULT_MAX_RESULTS = 5
 MAX_RESULTS = 10
@@ -94,16 +98,222 @@ class BrowserSearchWebTool(BaseTool):
         )
 
 
+class BrowserOpenPageTool(BaseTool):
+    """Открывает страницу через CDP и извлекает видимый текст/ссылки."""
+
+    def __init__(self, worker: BrowserCdpWorker | None = None) -> None:
+        """Создать инструмент browser.open_page."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.open_page",
+                title="Чтение web-страницы",
+                description="Открывает web-страницу read-only и извлекает текст.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=30,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "max_chars": {"type": "integer"},
+                    },
+                    "required": ["url"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"},
+                        "links": {"type": "array"},
+                    },
+                },
+            )
+        )
+        self._worker = worker or BrowserCdpWorker()
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Открыть страницу через browser worker."""
+        return _execute_browser_worker(self.definition.name, self._worker.open_page, input_data)
+
+
+class BrowserExtractTableTool(BaseTool):
+    """Извлекает таблицы со страницы через CDP."""
+
+    def __init__(self, worker: BrowserCdpWorker | None = None) -> None:
+        """Создать инструмент browser.extract_table."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.extract_table",
+                title="Извлечение таблиц web-страницы",
+                description="Извлекает таблицы с web-страницы read-only.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=30,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "table_hint": {"type": "string"},
+                    },
+                    "required": ["url"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "title": {"type": "string"},
+                        "tables": {"type": "array"},
+                    },
+                },
+            )
+        )
+        self._worker = worker or BrowserCdpWorker()
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Извлечь таблицы через browser worker."""
+        return _execute_browser_worker(
+            self.definition.name,
+            self._worker.extract_table,
+            input_data,
+        )
+
+
+class BrowserScrollPageTool(BaseTool):
+    """Прокручивает страницу через CDP и возвращает видимый текст."""
+
+    def __init__(self, worker: BrowserCdpWorker | None = None) -> None:
+        """Создать инструмент browser.scroll_page."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.scroll_page",
+                title="Прокрутка web-страницы",
+                description="Прокручивает web-страницу read-only.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=30,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "direction": {"type": "string"},
+                        "pixels": {"type": "integer"},
+                        "max_chars": {"type": "integer"},
+                    },
+                    "required": ["url"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"},
+                        "scroll_y": {"type": "integer"},
+                    },
+                },
+            )
+        )
+        self._worker = worker or BrowserCdpWorker()
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Прокрутить страницу через browser worker."""
+        return _execute_browser_worker(
+            self.definition.name,
+            self._worker.scroll_page,
+            input_data,
+        )
+
+
+class BrowserClickLinkTool(BaseTool):
+    """Переходит по безопасной http/https ссылке через CDP."""
+
+    def __init__(self, worker: BrowserCdpWorker | None = None) -> None:
+        """Создать инструмент browser.click_link."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.click_link",
+                title="Переход по ссылке web-страницы",
+                description="Открывает найденную ссылку read-only.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=30,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "link_text": {"type": "string"},
+                        "href": {"type": "string"},
+                        "max_chars": {"type": "integer"},
+                    },
+                    "required": ["url"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"},
+                        "links": {"type": "array"},
+                    },
+                },
+            )
+        )
+        self._worker = worker or BrowserCdpWorker()
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Перейти по ссылке через browser worker."""
+        return _execute_browser_worker(
+            self.definition.name,
+            self._worker.click_link,
+            input_data,
+        )
+
+
 def register_web_tools(
     registry: ToolRegistry,
     *,
     skip_existing: bool = False,
+    worker: BrowserCdpWorker | None = None,
 ) -> None:
     """Зарегистрировать read-only web tools."""
-    tool = BrowserSearchWebTool()
-    if skip_existing and registry.has_tool(tool.definition.name):
-        return
-    registry.register(tool)
+    browser_worker = worker or BrowserCdpWorker()
+    tools = [
+        BrowserSearchWebTool(),
+        BrowserOpenPageTool(browser_worker),
+        BrowserExtractTableTool(browser_worker),
+        BrowserScrollPageTool(browser_worker),
+        BrowserClickLinkTool(browser_worker),
+    ]
+    for tool in tools:
+        if skip_existing and registry.has_tool(tool.definition.name):
+            continue
+        registry.register(tool)
+
+
+def _execute_browser_worker(tool_name: str, action, input_data: dict) -> ToolCallResult:
+    """Выполнить browser worker action и нормализовать ошибку в ToolCallResult."""
+    try:
+        output_data = action(input_data)
+    except BrowserCdpError as exc:
+        return ToolCallResult(
+            ok=False,
+            tool_name=tool_name,
+            error_type="BROWSER_CDP_ERROR",
+            error_message=str(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 - worker изолирует внешние browser ошибки
+        return ToolCallResult(
+            ok=False,
+            tool_name=tool_name,
+            error_type="BROWSER_TOOL_ERROR",
+            error_message=str(exc),
+        )
+    return ToolCallResult(ok=True, tool_name=tool_name, output_data=output_data)
+
 
 
 def _search_weather(query: str, max_results: int) -> dict:

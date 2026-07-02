@@ -95,3 +95,17 @@ def test_llm_tool_planner_prompt_forbids_direct_execution() -> None:
     assert "Нельзя придумывать tool_name" in prompt_text
     assert "ToolGateway" in prompt_text
 
+
+def test_llm_tool_planner_prompt_contains_temporal_context() -> None:
+    """AgentPlan prompt содержит текущую дату для относительных дат."""
+    client = FakeLLMClient(valid_agent_plan_json())
+    planner = LLMToolPlanner(client)
+
+    planner.plan("Проверь календарь на этой неделе", load_tools_catalog())
+
+    assert client.last_request is not None
+    prompt_text = "\n".join(message.content for message in client.last_request.messages)
+    assert "Текущая дата выполнения:" in prompt_text
+    assert "Текущая неделя:" in prompt_text
+    assert "YYYY-MM-DD" in prompt_text
+

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from agent_desktop_constructor.app.llm.models import LLMMessage
+from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
@@ -74,6 +75,7 @@ Runtime сам безопасно исполнит инструмент чере
     ]
 
     user_payload = {
+        "temporal_context": build_temporal_context(),
         "user_request": runtime_state.variables.get("user_request"),
         "goal": agent_spec.goal.model_dump(mode="json"),
         "available_tools": tools_context,
@@ -84,7 +86,11 @@ Runtime сам безопасно исполнит инструмент чере
         "decision_schema": AGENT_LOOP_SCHEMA_DESCRIPTION,
     }
     user_prompt = (
-        "Определи следующий безопасный шаг агента и верни JSON-решение.\n"
+        "Определи следующий безопасный шаг агента и верни JSON-решение. "
+        "Для относительных дат используй temporal_context; если tool input_data "
+        "содержит дату, передавай её как YYYY-MM-DD. Для дней рождения в Outlook "
+        "сообщениях используй outlook.search_mail с folder=All и широкими ключевыми "
+        "словами. Для совещаний/встреч/расписания используй outlook.read_calendar.\n"
         + json.dumps(user_payload, ensure_ascii=False, indent=2, default=str)
     )
     return [
@@ -108,6 +114,7 @@ def _available_tools_context(
                 "tool_name": item.name,
                 "description": item.description,
                 "when_to_use": item.planner_hint,
+                "input_schema": item.input_schema,
                 "side_effect_level": item.side_effect_level.value,
                 "requires_human_approval": item.requires_human_approval,
                 "output_keys": sorted(

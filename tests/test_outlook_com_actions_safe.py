@@ -52,6 +52,97 @@ def test_safe_str_returns_empty_string_for_none_and_broken_value() -> None:
     assert actions._safe_str(BrokenStr()) == ""
 
 
+def test_resolve_date_range_for_specific_day() -> None:
+    """date=YYYY-MM-DD превращается в диапазон одного дня."""
+    start, end = actions._resolve_date_range(
+        {"date": "2026-07-02"},
+        default_days=7,
+        forward=True,
+    )
+
+    assert start.isoformat() == "2026-07-02T00:00:00"
+    assert end.isoformat() == "2026-07-03T00:00:00"
+
+
+def test_resolve_date_range_supports_today(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM может передать date=today, и это читается как сегодняшний день."""
+    class FixedDateTime(actions.datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 7, 2, 14, 30)
+
+    monkeypatch.setattr(actions, "datetime", FixedDateTime)
+
+    start, end = actions._resolve_date_range(
+        {"date": "today"},
+        default_days=7,
+        forward=True,
+    )
+
+    assert start.isoformat() == "2026-07-02T00:00:00"
+    assert end.isoformat() == "2026-07-03T00:00:00"
+
+
+def test_resolve_date_range_supports_russian_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM может передать date=сегодня."""
+    class FixedDateTime(actions.datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 7, 2, 14, 30)
+
+    monkeypatch.setattr(actions, "datetime", FixedDateTime)
+
+    start, end = actions._resolve_date_range(
+        {"date": "сегодня"},
+        default_days=7,
+        forward=True,
+    )
+
+    assert start.isoformat() == "2026-07-02T00:00:00"
+    assert end.isoformat() == "2026-07-03T00:00:00"
+
+
+def test_resolve_date_range_rejects_unknown_date_text() -> None:
+    """Плохой формат даты превращается в доменную OutlookComError."""
+    with pytest.raises(OutlookComError, match="INVALID_DATE_RANGE"):
+        actions._resolve_date_range(
+            {"date": "next friday maybe"},
+            default_days=7,
+            forward=True,
+        )
+
+
+def test_resolve_date_range_for_period_is_inclusive_by_date() -> None:
+    """date_from/date_to по датам включает date_to целиком."""
+    start, end = actions._resolve_date_range(
+        {"date_from": "2026-07-01", "date_to": "2026-07-03"},
+        default_days=7,
+        forward=True,
+    )
+
+    assert start.isoformat() == "2026-07-01T00:00:00"
+    assert end.isoformat() == "2026-07-04T00:00:00"
+
+
+def test_resolve_mail_folder_specs_supports_inbox_sent_all() -> None:
+    """Почтовый инструмент поддерживает входящие, отправленные и оба направления."""
+    inbox = actions._resolve_mail_folder_specs("Inbox")
+    sent = actions._resolve_mail_folder_specs("Sent")
+    all_folders = actions._resolve_mail_folder_specs("All")
+
+    assert [item[0] for item in inbox] == ["Inbox"]
+    assert [item[0] for item in sent] == ["Sent"]
+    assert [item[0] for item in all_folders] == ["Inbox", "Sent"]
+
+
+def test_resolve_mail_folder_specs_rejects_unknown_folder() -> None:
+    """Неизвестная папка почты запрещена."""
+    with pytest.raises(OutlookComError, match="UNSUPPORTED_FOLDER"):
+        actions._resolve_mail_folder_specs("Archive")
+
+
 def test_send_mail_disabled_always_blocks() -> None:
     """send_mail_disabled всегда блокирует отправку без COM-вызовов."""
     with pytest.raises(DangerousOutlookActionBlockedError):

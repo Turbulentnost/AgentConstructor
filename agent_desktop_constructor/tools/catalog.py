@@ -108,6 +108,7 @@ class ToolsCatalog(BaseModel):
                     f"Категория: {tool.category}",
                     f"Уровень действия: {tool.side_effect_level.value}",
                     f"Требует подтверждения: {approval_text}",
+                    f"Входные параметры: {_format_input_schema(tool.input_schema)}",
                     f"Когда использовать: {tool.planner_hint}",
                     f"Пример: {example_text}",
                 ]
@@ -139,3 +140,22 @@ def validate_agent_spec_tools_against_catalog(
         node.tool_name for node in agent_spec.graph_nodes if node.tool_name is not None
     ]
     catalog.validate_tool_names(tool_names + node_tool_names)
+
+
+def _format_input_schema(input_schema: dict) -> str:
+    """Сформировать компактное описание входных параметров tool для LLM."""
+    properties = input_schema.get("properties", {})
+    if not isinstance(properties, dict) or not properties:
+        return "нет параметров или произвольный object"
+    parts = []
+    for name, schema in properties.items():
+        if isinstance(schema, dict):
+            type_text = schema.get("type", "any")
+            description = schema.get("description")
+            if description:
+                parts.append(f"{name} ({type_text}) — {description}")
+            else:
+                parts.append(f"{name} ({type_text})")
+        else:
+            parts.append(str(name))
+    return "; ".join(parts)

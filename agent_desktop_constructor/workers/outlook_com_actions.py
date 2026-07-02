@@ -95,6 +95,58 @@ def _load_pywin32_modules():
     return pythoncom, win32com_client
 
 
+def _is_transient_com_error(exc: Exception) -> bool:
+    """Определить, что COM-ошибка транзиентная (Outlook занят / сервер поднимается)."""
+    args = getattr(exc, "args", None)
+    if args and isinstance(args[0], int):
+        return args[0] in TRANSIENT_COM_HRESULTS
+    return False
+
+
+def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
+    """Выполнить read-only COM-операцию с CoInitialize и повтором транзиентных ошибок.
+
+    ``operation`` получает модуль ``win32com.client`` и возвращает готовый payload.
+    ComUnavailableError из загрузки pywin32 пробрасывается как есть (нужно тестам).
+    """
+    pythoncom, win32com_client = _load_pywin32_modules()
+    _log_progress("step=load_pywin32 ok")
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_COM_ATTEMPTS + 1):
+        com_initialized = False
+        try:
+            _log_progress(f"step=co_initialize start attempt={attempt}")
+            pythoncom.CoInitialize()
+            com_initialized = True
+            _log_progress("step=co_initialize ok")
+            return operation(win32com_client)
+        except OutlookComError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — COM бросает разнотипные ошибки
+            last_exc = exc
+            transient = _is_transient_com_error(exc)
+            _log_progress(
+                f"step=com_error attempt={attempt} transient={transient}: {exc}"
+            )
+            if transient and attempt < MAX_COM_ATTEMPTS:
+                if com_initialized:
+                    try:
+                        pythoncom.CoUninitialize()
+                    except Exception:
+                        pass
+                    com_initialized = False
+                time.sleep(COM_RETRY_DELAY_SECONDS * attempt)
+                continue
+            raise OutlookAccessError(f"{access_error_prefix}: {exc}") from exc
+        finally:
+            if com_initialized:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+    raise OutlookAccessError(f"{access_error_prefix}: {last_exc}")
+
+
 def _safe_str(value: Any) -> str:
     """Безопасно привести COM-значение к строке."""
     if value is None:
@@ -144,15 +196,7 @@ def search_mail(input_data: dict) -> dict:
     )
     query = input_data.get("query")
 
-    pythoncom, win32com_client = _load_pywin32_modules()
-    _log_progress("step=load_pywin32 ok")
-    com_initialized = False
-    try:
-        _log_progress("step=co_initialize start")
-        pythoncom.CoInitialize()
-        com_initialized = True
-        _log_progress("step=co_initialize ok")
-
+    def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
         outlook = win32com_client.Dispatch("Outlook.Application")
         _log_progress("step=dispatch_outlook ok")
@@ -210,16 +254,8 @@ def search_mail(input_data: dict) -> dict:
             "source": "outlook_com",
             "folder": DEFAULT_FOLDER,
         }
-    except OutlookComError:
-        raise
-    except Exception as exc:
-        raise OutlookAccessError(f"Ошибка доступа к Outlook или MAPI: {exc}") from exc
-    finally:
-        if com_initialized:
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+
+    return _run_com_read(_read, "Ошибка доступа к Outlook или MAPI")
 
 
 def read_calendar(input_data: dict) -> dict:
@@ -244,15 +280,7 @@ def read_calendar(input_data: dict) -> dict:
         MAX_SCAN_ITEMS,
     )
 
-    pythoncom, win32com_client = _load_pywin32_modules()
-    _log_progress("step=load_pywin32 ok")
-    com_initialized = False
-    try:
-        _log_progress("step=co_initialize start")
-        pythoncom.CoInitialize()
-        com_initialized = True
-        _log_progress("step=co_initialize ok")
-
+    def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
         outlook = win32com_client.Dispatch("Outlook.Application")
         _log_progress("step=dispatch_outlook ok")
@@ -320,16 +348,8 @@ def read_calendar(input_data: dict) -> dict:
             "source": "outlook_com",
             "folder": CALENDAR_FOLDER,
         }
-    except OutlookComError:
-        raise
-    except Exception as exc:
-        raise OutlookAccessError(f"Ошибка доступа к Outlook Calendar: {exc}") from exc
-    finally:
-        if com_initialized:
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+
+    return _run_com_read(_read, "Ошибка доступа к Outlook Calendar")
 
 
 def send_mail_disabled(input_data: dict) -> dict:

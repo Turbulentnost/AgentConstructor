@@ -13,6 +13,7 @@ from agent_desktop_constructor.tools.fake_task_control_tools import (
 from agent_desktop_constructor.tools.onec_tools import register_onec_readonly_tools
 from agent_desktop_constructor.tools.report_tools import register_report_tools
 from agent_desktop_constructor.tools.registry import ToolRegistry
+from agent_desktop_constructor.tools.web_tools import register_web_tools
 from agent_desktop_constructor.workers.onec_worker import OneCReadOnlyWorker
 from agent_desktop_constructor.workers.subprocess_com_worker import SubprocessComWorker
 
@@ -29,6 +30,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             OneCReadOnlyWorker(),
             skip_existing=True,
         )
+        register_web_tools(registry, skip_existing=True)
         return registry
 
     if config.run_mode == AppRunMode.OUTLOOK_READONLY:
@@ -36,6 +38,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
         register_outlook_com_tools(registry, worker)
         register_onec_readonly_tools(registry, OneCReadOnlyWorker())
         register_report_tools(registry, skip_existing=True)
+        register_web_tools(registry, skip_existing=True)
         if config.use_llm_planner:
             register_llm_analysis_tools(
                 registry,
@@ -53,6 +56,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             OneCReadOnlyWorker(),
             skip_existing=True,
         )
+        register_web_tools(registry, skip_existing=True)
         return registry
 
     raise ValueError(f"Неизвестный run_mode: {config.run_mode}")

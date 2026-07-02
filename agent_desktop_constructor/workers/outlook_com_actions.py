@@ -5,8 +5,9 @@ from __future__ import annotations
 import importlib
 import re
 import sys
+import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from agent_desktop_constructor.workers import com_availability
 from agent_desktop_constructor.workers.outlook_com_errors import (
@@ -24,8 +25,21 @@ DEFAULT_DAYS = 7
 DEFAULT_DAYS_FORWARD = 7
 DEFAULT_MAX_RESULTS = 50
 DEFAULT_CALENDAR_MAX_RESULTS = 20
-MAX_DAYS = 30
+MAX_DAYS = 365
 MAX_RESULTS = 50
+
+# Транзиентные COM/RPC HRESULT-ы: Outlook занят или сервер ещё поднимается.
+# При них имеет смысл короткий повтор вместо провала всего запуска.
+TRANSIENT_COM_HRESULTS = {
+    -2147467259,  # E_FAIL — "Неопознанная ошибка"
+    -2147467260,  # E_ABORT — "Операция прервана"
+    -2147418111,  # RPC_E_CALL_REJECTED — вызов отклонён callee
+    -2147417846,  # RPC_E_SERVERCALL_RETRYLATER — сервер занят
+    -2147417851,  # RPC_E_SERVERFAULT
+    -2146959355,  # CO_E_SERVER_EXEC_FAILURE — сбой запуска COM-сервера
+}
+MAX_COM_ATTEMPTS = 3
+COM_RETRY_DELAY_SECONDS = 1.0
 DEFAULT_MAIL_MAX_SCAN_ITEMS = 200
 DEFAULT_CALENDAR_MAX_SCAN_ITEMS = 300
 MAX_SCAN_ITEMS = 500

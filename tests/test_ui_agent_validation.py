@@ -94,7 +94,7 @@ def test_agent_create_widget_has_validation_buttons(qt_app) -> None:
 
     widget = AgentCreateWidget(SimpleNamespace(agent_service=FakeValidationUiService()))
 
-    assert widget.validate_button.text() == "Проверить агента"
+    assert widget.validate_button.text() == "Пробный запуск"
     assert widget.validate_run_button.text() == "Собрать, проверить и запустить"
 
 

@@ -10,6 +10,7 @@ from agent_desktop_constructor.app.llm.errors import (
     LLMConnectionError,
     LLMResponseError,
 )
+from agent_desktop_constructor.app.llm.http_retry import read_with_retry
 from agent_desktop_constructor.app.llm.models import LLMRequest, LLMResponse
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
 
@@ -61,11 +62,11 @@ class AnthropicLLMClient:
             headers=self._build_headers(),
             method="POST",
         )
-        with request.urlopen(
+        return read_with_retry(
+            request.urlopen,
             http_request,
-            timeout=self._config.timeout_seconds,
-        ) as response:
-            return response.read()
+            self._config.timeout_seconds,
+        )
 
     def _build_headers(self) -> dict[str, str]:
         """Собрать заголовки Anthropic Messages API."""

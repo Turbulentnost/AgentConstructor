@@ -57,10 +57,7 @@ class OpenAICompatibleLLMClient:
         http_request = request.Request(
             endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=self._build_headers(),
             method="POST",
         )
 
@@ -69,6 +66,16 @@ class OpenAICompatibleLLMClient:
             timeout=self._config.timeout_seconds,
         ) as response:
             return response.read()
+
+    def _build_headers(self) -> dict[str, str]:
+        """Собрать HTTP-заголовки, добавляя Bearer-авторизацию при наличии ключа."""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self._config.api_key:
+            headers["Authorization"] = f"Bearer {self._config.api_key}"
+        return headers
 
     def _raise_http_response_error(self, exc: error.HTTPError) -> None:
         """Выбросить LLMResponseError с телом HTTP-ответа, если оно доступно."""

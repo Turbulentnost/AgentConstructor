@@ -10,7 +10,7 @@ from agent_desktop_constructor.app.core.services.agent_application_service impor
 from agent_desktop_constructor.app.core.services.agent_validation_service import (
     AgentValidationService,
 )
-from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
+from agent_desktop_constructor.app.llm.client_factory import build_llm_client
 from agent_desktop_constructor.app.llm.supervisor import LLMSupervisor
 from agent_desktop_constructor.app.runtime.runtime_factory import build_runtime
 from agent_desktop_constructor.app.tools.tool_registry_factory import build_tool_registry
@@ -77,7 +77,7 @@ def build_application_container(
     llm_supervisor = None
     if app_config.use_llm_planner:
         llm_supervisor = LLMSupervisor(
-            OpenAICompatibleLLMClient(app_config.to_llm_config()),
+            build_llm_client(app_config.to_llm_config()),
             tools_catalog,
         )
     runtime = build_runtime(

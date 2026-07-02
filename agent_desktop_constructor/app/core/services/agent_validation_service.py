@@ -10,6 +10,7 @@ from agent_desktop_constructor.core.models.agent_spec import AgentActionLevel, A
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
+    ToolCallRecord,
 )
 from agent_desktop_constructor.core.models.tooling import ToolSideEffectLevel
 from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
@@ -18,6 +19,13 @@ from agent_desktop_constructor.tools.catalog import (
     validate_agent_spec_tools_against_catalog,
 )
 from agent_desktop_constructor.tools.registry import ToolRegistry
+
+CRITICAL_REQUIRED_TOOL_ERROR_TYPES = {
+    "WORKER_TIMEOUT",
+    "COM_NOT_AVAILABLE",
+    "OUTLOOK_ACCESS_ERROR",
+    "TOOL_EXECUTION_ERROR",
+}
 
 
 class AgentValidationService:
@@ -64,9 +72,15 @@ class AgentValidationService:
             },
         )
         self._validation_states[state.run_id] = state
-        status = self._status_from_runtime_state(state)
-        errors = self._errors_from_state(state, status)
         warnings = list(state.variables.get("supervisor_warnings", []))
+        tool_result_checks = self._check_required_tool_results(agent_spec, state, warnings)
+        critical_errors = [
+            check["message"]
+            for check in tool_result_checks
+            if check.get("critical") is True
+        ]
+        status = self._status_from_runtime_state(state, critical_errors)
+        errors = self._errors_from_state(state, status, critical_errors)
         output_data = self._extract_output_data(state)
         final_message = self._extract_final_message(state, output_data)
         return AgentValidationResult(
@@ -74,11 +88,13 @@ class AgentValidationService:
             status=status,
             run_id=state.run_id,
             errors=errors,
+            critical_errors=critical_errors,
             warnings=warnings,
+            tool_result_checks=tool_result_checks,
             summary=self._summary_from_status(status, state),
             final_message=final_message,
             output_data=output_data,
-            suggested_fixes=self._suggest_fixes(status, errors, warnings),
+            suggested_fixes=self._suggest_fixes(status, errors, warnings, critical_errors),
         )
 
     def get_validation_state(self, run_id: str | None) -> AgentRuntimeState | None:
@@ -131,6 +147,7 @@ class AgentValidationService:
     def _status_from_runtime_state(
         self,
         state: AgentRuntimeState,
+        critical_errors: list[str] | None = None,
     ) -> AgentValidationStatus:
         """Преобразовать Runtime status в validation status."""
         if state.status == AgentRunStatus.PAUSED_FOR_HUMAN:
@@ -139,6 +156,8 @@ class AgentValidationService:
             return AgentValidationStatus.NEEDS_CREDENTIALS
         if self._has_credential_error(state):
             return AgentValidationStatus.NEEDS_CREDENTIALS
+        if critical_errors:
+            return AgentValidationStatus.FAILED
         if state.status == AgentRunStatus.COMPLETED and self._has_useful_result(state):
             return AgentValidationStatus.PASSED
         return AgentValidationStatus.FAILED
@@ -162,12 +181,17 @@ class AgentValidationService:
         status: AgentValidationStatus,
         errors: list[str],
         warnings: list[str] | None = None,
+        critical_errors: list[str] | None = None,
     ) -> list[str]:
         """Предложить безопасные исправления по результату проверки."""
         if status == AgentValidationStatus.PASSED:
             if warnings:
                 return ["Проверка прошла, но проверьте предупреждения LLM Supervisor."]
             return []
+        if critical_errors:
+            return [
+                "Проверьте обязательные инструменты, доступ к Outlook/COM и timeout worker-а."
+            ]
         if errors:
             return ["Проверьте граф, разрешения tools и регистрацию ToolRegistry."]
         if status == AgentValidationStatus.NEEDS_CREDENTIALS:
@@ -248,8 +272,11 @@ class AgentValidationService:
         self,
         state: AgentRuntimeState,
         status: AgentValidationStatus,
+        critical_errors: list[str] | None = None,
     ) -> list[str]:
         """Собрать ошибки проверки из RuntimeState и tool_results."""
+        if critical_errors:
+            return [*state.errors, *critical_errors]
         if status in {
             AgentValidationStatus.PASSED,
             AgentValidationStatus.NEEDS_HUMAN,
@@ -265,4 +292,146 @@ class AgentValidationService:
         if state.status == AgentRunStatus.COMPLETED and not self._has_useful_result(state):
             errors.append("Пробный запуск завершился без полезного результата")
         return errors
+
+    def _check_required_tool_results(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        warnings: list[str],
+    ) -> list[dict]:
+        """Проверить обязательные tool_call узлы основного графа."""
+        checks: list[dict] = []
+        for node in agent_spec.graph_nodes:
+            if node.tool_name is None or node.next_on_error != "final_failed":
+                continue
+            result = self._find_tool_result(state, node.tool_name)
+            check = self._build_required_tool_check(
+                tool_name=node.tool_name,
+                node_id=node.node_id,
+                result=result,
+                warnings=warnings,
+            )
+            checks.append(check)
+        return checks
+
+    def _find_tool_result(
+        self,
+        state: AgentRuntimeState,
+        tool_name: str,
+    ) -> ToolCallRecord | None:
+        """Найти последний результат tool_name в RuntimeState."""
+        for result in reversed(state.tool_results):
+            if result.tool_name == tool_name:
+                return result
+        return None
+
+    def _build_required_tool_check(
+        self,
+        tool_name: str,
+        node_id: str,
+        result: ToolCallRecord | None,
+        warnings: list[str],
+    ) -> dict:
+        """Сформировать проверку одного обязательного инструмента."""
+        if result is None:
+            message = f"Обязательный инструмент {tool_name} не был выполнен"
+            if any("timed out" in warning.casefold() for warning in warnings):
+                message = (
+                    f"Обязательный инструмент {tool_name} не получил данные: "
+                    "WORKER_TIMEOUT"
+                )
+            return {
+                "node_id": node_id,
+                "tool_name": tool_name,
+                "required": True,
+                "ok": False,
+                "critical": True,
+                "error_type": "WORKER_TIMEOUT"
+                if any("timed out" in warning.casefold() for warning in warnings)
+                else "TOOL_NOT_EXECUTED",
+                "error_message": message,
+                "message": message,
+                "recommendation": self._recommendation_for_tool(tool_name),
+            }
+
+        if not result.ok:
+            error_type = result.error_type or "TOOL_EXECUTION_ERROR"
+            message = f"Обязательный инструмент {tool_name} не получил данные: {error_type}"
+            return {
+                "node_id": node_id,
+                "tool_name": tool_name,
+                "required": True,
+                "ok": False,
+                "critical": True,
+                "error_type": error_type,
+                "error_message": result.error_message,
+                "message": message,
+                "recommendation": self._recommendation_for_tool(tool_name),
+            }
+
+        useful_output = self._has_useful_tool_output(tool_name, result.output_data)
+        if not useful_output:
+            message = f"Обязательный инструмент {tool_name} не вернул полезные данные"
+            return {
+                "node_id": node_id,
+                "tool_name": tool_name,
+                "required": True,
+                "ok": True,
+                "critical": True,
+                "error_type": None,
+                "error_message": None,
+                "message": message,
+                "recommendation": self._recommendation_for_tool(tool_name),
+            }
+
+        return {
+            "node_id": node_id,
+            "tool_name": tool_name,
+            "required": True,
+            "ok": True,
+            "critical": False,
+            "error_type": None,
+            "error_message": None,
+            "message": "Обязательный инструмент вернул полезные данные",
+            "recommendation": "",
+        }
+
+    def _has_useful_tool_output(
+        self,
+        tool_name: str,
+        output_data: dict | None,
+    ) -> bool:
+        """Проверить output_data по output_schema инструмента."""
+        if not output_data:
+            return False
+        if not self._tools_catalog.has_tool(tool_name):
+            return bool(output_data)
+        output_schema = self._tools_catalog.get_tool(tool_name).output_schema
+        properties = output_schema.get("properties", {})
+        if not isinstance(properties, dict) or not properties:
+            return bool(output_data)
+        for property_name in properties:
+            value = output_data.get(property_name)
+            if self._is_non_empty_value(value):
+                return True
+        return False
+
+    def _is_non_empty_value(self, value: object) -> bool:
+        """Проверить, что значение содержит полезные данные."""
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, dict, tuple, set)):
+            return bool(value)
+        return True
+
+    def _recommendation_for_tool(self, tool_name: str) -> str:
+        """Вернуть рекомендацию по сбою обязательного инструмента."""
+        if tool_name.startswith("outlook."):
+            return (
+                "Проверьте доступность Outlook/COM, права доступа и увеличьте "
+                "timeout worker-а в настройках."
+            )
+        return "Проверьте доступность интеграции и входные параметры инструмента."
 

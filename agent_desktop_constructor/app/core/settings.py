@@ -37,6 +37,7 @@ def save_settings(config: AppConfig, path: str | None = None) -> None:
     settings_path = Path(path or DEFAULT_SETTINGS_PATH)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     payload = config.model_dump(mode="json")
+    payload.pop("llm_api_key", None)
     settings_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

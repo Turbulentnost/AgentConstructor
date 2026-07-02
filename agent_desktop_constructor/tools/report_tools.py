@@ -63,7 +63,58 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Сформировать рекомендации по плотности, окнам и фокус-времени."""
-        events = _calendar_events(input_data)
+        calendar_output = _calendar_output(input_data)
+        if calendar_output is None:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="CALENDAR_DATA_MISSING",
+                error_message="Нет данных календаря для формирования рекомендаций",
+            )
+        if calendar_output.get("ok") is False or calendar_output.get("error_type"):
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="CALENDAR_DATA_NOT_AVAILABLE",
+                error_message=(
+                    calendar_output.get("error_message")
+                    or calendar_output.get("error_type")
+                    or "Данные календаря недоступны"
+                ),
+            )
+        if "events" not in calendar_output:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="CALENDAR_EVENTS_MISSING",
+                error_message="Данные календаря не содержат events",
+            )
+
+        raw_events = calendar_output.get("events")
+        if not isinstance(raw_events, list):
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="CALENDAR_EVENTS_MISSING",
+                error_message="Поле events должно быть списком",
+            )
+        events = [event for event in raw_events if isinstance(event, dict)]
+        if not events:
+            return ToolCallResult(
+                ok=True,
+                tool_name=self.definition.name,
+                output_data={
+                    "recommendation_text": "В выбранном периоде совещания не найдены.",
+                    "meeting_count": 0,
+                    "busy_slots": [],
+                    "free_slots": [],
+                    "risks": [],
+                    "recommendations": [
+                        "Используйте свободное время для фокус-работы или планирования."
+                    ],
+                },
+            )
+
         analytics = (
             input_data.get("tool_outputs", {})
             .get("llm.analyze_collected_data", {})
@@ -76,10 +127,7 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
             }
             for event in events
         ]
-        free_slots = [
-            {"start_at": "2026-06-26T09:00:00", "end_at": "2026-06-26T10:30:00"},
-            {"start_at": "2026-06-26T15:30:00", "end_at": "2026-06-26T17:00:00"},
-        ]
+        free_slots: list[dict] = []
         risks = list(analytics.get("risks", [])) or [
             "Возможна высокая плотность встреч без фокус-времени."
         ]
@@ -93,6 +141,7 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
             tool_name=self.definition.name,
             output_data={
                 "recommendation_text": "\n".join(recommendations),
+                "meeting_count": len(events),
                 "busy_slots": busy_slots,
                 "free_slots": free_slots,
                 "risks": risks,
@@ -115,9 +164,20 @@ def register_report_tools(
 
 def _calendar_events(input_data: dict) -> list[dict]:
     """Достать events из tool_outputs outlook.read_calendar."""
-    output = input_data.get("tool_outputs", {}).get("outlook.read_calendar", {})
+    output = _calendar_output(input_data) or {}
     events = output.get("events", [])
     if isinstance(events, list):
         return [event for event in events if isinstance(event, dict)]
     return []
+
+
+def _calendar_output(input_data: dict) -> dict | None:
+    """Достать output outlook.read_calendar без подстановки fake данных."""
+    tool_outputs = input_data.get("tool_outputs", {})
+    if not isinstance(tool_outputs, dict):
+        return None
+    output = tool_outputs.get("outlook.read_calendar")
+    if isinstance(output, dict):
+        return output
+    return None
 

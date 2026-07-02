@@ -22,7 +22,9 @@ class AgentValidationResult(BaseModel):
     status: AgentValidationStatus
     run_id: str | None = None
     errors: list[str] = Field(default_factory=list)
+    critical_errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    tool_result_checks: list[dict] = Field(default_factory=list)
     summary: str
     final_message: str | None = None
     output_data: dict | None = None

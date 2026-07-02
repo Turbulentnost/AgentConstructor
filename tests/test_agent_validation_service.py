@@ -25,8 +25,20 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRuntimeState,
     HumanApprovalRequest,
 )
-from agent_desktop_constructor.tools.gateway import ToolGateway
+from agent_desktop_constructor.core.models.tooling import (
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionMode,
+    ToolSideEffectLevel,
+)
+from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
+from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
+from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
+from agent_desktop_constructor.tools.gateway import ToolGateway
+from agent_desktop_constructor.tools.registry import ToolRegistry
+from agent_desktop_constructor.tools.report_tools import register_report_tools
+from agent_desktop_constructor.workers.models import WorkerResult
 
 
 def make_validation_service(config: AppConfig) -> AgentValidationService:
@@ -97,7 +109,7 @@ def test_validation_service_returns_needs_human() -> None:
     )
 
     result = service.validate_agent(
-        AgentBuilder().build_from_request("Найди совещания"),
+        make_agent_spec_without_tools(),
         "Найди совещания",
     )
 
@@ -116,7 +128,7 @@ def test_validation_service_returns_needs_credentials() -> None:
     )
 
     result = service.validate_agent(
-        AgentBuilder().build_from_request("Найди совещания"),
+        make_agent_spec_without_tools(),
         "Найди совещания",
     )
 
@@ -137,14 +149,40 @@ def test_validation_service_returns_final_output_from_runtime_state() -> None:
         )
     )
 
-    result = service.validate_agent(
-        AgentBuilder().build_from_request("Найди совещания"),
-        "Найди совещания",
-    )
+    result = service.validate_agent(make_agent_spec_without_tools(), "Найди совещания")
 
     assert result.status == AgentValidationStatus.PASSED
     assert result.final_message == "Итоговые рекомендации готовы"
     assert result.output_data == {"summary": "summary"}
+
+
+def test_validation_service_uses_com_read_tool_and_analysis_output() -> None:
+    """Validation проходит через COM-backed read tool и аналитический вывод."""
+    registry = ToolRegistry()
+    com_worker = FakeComWorker()
+    analysis_tool = FakeLlmAnalyzeCollectedDataTool()
+    register_outlook_com_tools(registry, com_worker)
+    registry.register(analysis_tool)
+    register_report_tools(registry)
+    runtime = SimpleAgentRuntime(ToolGateway(registry))
+    service = AgentValidationService(
+        agent_service=None,
+        runtime=runtime,
+        tool_registry=registry,
+        tools_catalog=load_tools_catalog(),
+    )
+    agent_spec = AgentBuilder().build_from_request(
+        "Нужен агент, который смотрит все совещания в Outlook и выводит как лучше распланировать график"
+    )
+
+    result = service.validate_agent(agent_spec, "распланировать график по Outlook")
+
+    assert result.status == AgentValidationStatus.PASSED
+    assert com_worker.called_tool_names == ["outlook.read_calendar"]
+    assert analysis_tool.received_calendar_events
+    assert result.output_data is not None
+    assert result.output_data["meeting_count"] == 1
+    assert "Сгруппировать короткие встречи" in result.final_message
 
 
 class FakeValidationRuntime:
@@ -161,6 +199,69 @@ class FakeValidationRuntime:
         self.last_initial_variables = initial_variables
         self.state.agent_id = agent_spec.agent_id
         return self.state
+
+
+class FakeComWorker:
+    """Mock COM worker, который имитирует read-only чтение календаря Outlook."""
+
+    def __init__(self) -> None:
+        self.called_tool_names: list[str] = []
+
+    def execute(self, task):
+        """Вернуть данные календаря в формате COM worker result."""
+        self.called_tool_names.append(task.tool_name)
+        return WorkerResult(
+            task_id=task.task_id,
+            ok=True,
+            output_data={
+                "events": [
+                    {
+                        "id": "event-com-1",
+                        "title": "Планёрка проекта",
+                        "start_at": "2026-07-02T10:00:00",
+                        "participants": ["Иванов И.И.", "Петров П.П."],
+                    }
+                ],
+                "count": 1,
+                "source": "outlook_com",
+            },
+        )
+
+
+class FakeLlmAnalyzeCollectedDataTool(BaseTool):
+    """LLM-analysis stub, проверяющий доступность COM output для выводов."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="llm.analyze_collected_data",
+                title="Анализ собранных данных",
+                description="Тестовый LLM-анализ собранных данных.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LLM,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            )
+        )
+        self.received_calendar_events = False
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Сделать вывод только если получил результат outlook.read_calendar."""
+        calendar_output = input_data.get("tool_outputs", {}).get("outlook.read_calendar")
+        events = calendar_output.get("events", []) if isinstance(calendar_output, dict) else []
+        self.received_calendar_events = bool(events)
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "summary": "Календарь прочитан через COM worker, найдено 1 совещание.",
+                "findings": ["Есть утренняя планёрка"],
+                "risks": ["После планёрки нужен слот на фокус-работу"],
+                "recommendations": ["Оставить 90 минут после планёрки"],
+                "confidence": 0.9,
+            },
+        )
 
 
 def make_service_with_fake_runtime(state: AgentRuntimeState) -> AgentValidationService:
@@ -226,6 +327,35 @@ def make_agent_spec_with_tool(tool_name: str) -> AgentSpec:
                 next_on_error=None,
                 requires_human_approval=False,
             ),
+        ],
+        runtime_limits=AgentRuntimeLimits(),
+    )
+
+
+def make_agent_spec_without_tools() -> AgentSpec:
+    """Создать AgentSpec без обязательных tool_call узлов."""
+    return AgentSpec(
+        agent_id="agent-no-tools",
+        name="No tools agent",
+        description="No tools agent",
+        goal=AgentGoal(
+            main_goal="Сформировать ответ",
+            success_criteria=["Ответ сформирован"],
+            forbidden_actions=["Не выполнять tools"],
+        ),
+        data_requirements=[],
+        tools=[],
+        graph_nodes=[
+            AgentGraphNode(
+                node_id="final",
+                node_type=AgentGraphNodeType.FINAL,
+                title="Final",
+                description="Final",
+                tool_name=None,
+                next_on_success=None,
+                next_on_error=None,
+                requires_human_approval=False,
+            )
         ],
         runtime_limits=AgentRuntimeLimits(),
     )

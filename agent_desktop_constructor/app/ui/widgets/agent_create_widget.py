@@ -263,11 +263,26 @@ class AgentCreateWidget(QWidget):
             "",
             "errors:",
             *[f"- {item}" for item in validation.errors],
+            "critical_errors:",
+            *[f"- {item}" for item in validation.critical_errors],
             "warnings:",
             *[f"- {item}" for item in validation.warnings],
             "suggested_fixes:",
             *[f"- {item}" for item in validation.suggested_fixes],
         ]
+        if validation.tool_result_checks:
+            lines.extend(["", "Проверка обязательных инструментов:"])
+            for check in validation.tool_result_checks:
+                lines.extend(
+                    [
+                        f"- tool_name: {check.get('tool_name')}",
+                        f"  node_id: {check.get('node_id')}",
+                        f"  critical: {check.get('critical')}",
+                        f"  error_type: {check.get('error_type')}",
+                        f"  error_message: {check.get('error_message')}",
+                        f"  recommendation: {check.get('recommendation')}",
+                    ]
+                )
         if validation.output_data:
             lines.extend(
                 [

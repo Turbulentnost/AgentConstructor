@@ -7,10 +7,12 @@ import sys
 from collections.abc import Sequence
 
 from agent_desktop_constructor.app.cli import commands
+from agent_desktop_constructor.app.core.config import load_dotenv_into_environ
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Разобрать argv и выполнить выбранную CLI-команду."""
+    load_dotenv_into_environ()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

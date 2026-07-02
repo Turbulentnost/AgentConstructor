@@ -2,7 +2,7 @@
 
 from agent_desktop_constructor.app.core.app_mode import AppRunMode
 from agent_desktop_constructor.app.core.config import AppConfig
-from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
+from agent_desktop_constructor.app.llm.client_factory import build_llm_client
 from agent_desktop_constructor.app.tools.llm_analysis_tools import (
     register_llm_analysis_tools,
 )
@@ -40,7 +40,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
         if config.use_llm_planner:
             register_llm_analysis_tools(
                 registry,
-                OpenAICompatibleLLMClient(config.to_llm_config()),
+                build_llm_client(config.to_llm_config()),
                 skip_existing=True,
             )
         _apply_com_timeout(registry, config)

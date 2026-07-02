@@ -32,7 +32,7 @@ def test_schedule_recommendations_tool_uses_calendar_and_analysis() -> None:
     assert result.ok is True
     assert result.output_data is not None
     assert result.output_data["busy_slots"]
-    assert result.output_data["free_slots"]
+    assert result.output_data["meeting_count"] == 1
     assert "Перегрузка утром" in result.output_data["risks"]
     assert result.output_data["recommendations"]
 

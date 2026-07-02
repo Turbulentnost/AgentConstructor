@@ -39,7 +39,23 @@ class FakeValidationUiService:
             status=AgentValidationStatus.PASSED,
             run_id="run-1",
             errors=[],
+            critical_errors=[
+                "Обязательный инструмент outlook.read_calendar не получил данные: WORKER_TIMEOUT"
+            ],
             warnings=[],
+            tool_result_checks=[
+                {
+                    "node_id": "read_calendar",
+                    "tool_name": "outlook.read_calendar",
+                    "required": True,
+                    "ok": False,
+                    "critical": True,
+                    "error_type": "WORKER_TIMEOUT",
+                    "error_message": "timed out",
+                    "message": "Обязательный инструмент outlook.read_calendar не получил данные: WORKER_TIMEOUT",
+                    "recommendation": "Проверьте доступность Outlook/COM.",
+                }
+            ],
             summary="ok",
             final_message="Итоговые рекомендации готовы",
             output_data={"recommendations": ["Оставить окно для фокус-работы"]},
@@ -102,6 +118,8 @@ def test_agent_create_widget_calls_validation_service(qt_app, monkeypatch) -> No
     ]
     assert "Итоговый вывод" in widget.general_output.toPlainText()
     assert "Итоговые рекомендации готовы" in widget.general_output.toPlainText()
+    assert "outlook.read_calendar" in widget.general_output.toPlainText()
+    assert "WORKER_TIMEOUT" in widget.general_output.toPlainText()
 
 
 def test_agent_create_widget_calls_create_validate_and_run(qt_app, monkeypatch) -> None:

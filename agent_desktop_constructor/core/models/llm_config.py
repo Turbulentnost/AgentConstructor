@@ -9,8 +9,10 @@ class LLMConfig(BaseModel):
     provider: str = "openai_compatible"
     base_url: str = "http://192.168.1.157:1234"
     model_name: str = "openai/gpt-oss-120b"
+    api_key: str | None = None
     temperature: float = Field(default=0.2, ge=0, le=2)
     timeout_seconds: int = Field(default=120, gt=0)
+    max_tokens: int = Field(default=4096, gt=0)
 
     @field_validator("base_url", "model_name")
     @classmethod

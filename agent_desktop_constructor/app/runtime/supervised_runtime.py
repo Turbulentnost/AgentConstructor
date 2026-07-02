@@ -10,6 +10,9 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
 )
+from agent_desktop_constructor.app.llm.tool_result_quality import (
+    ToolResultQualityEvaluator,
+)
 from agent_desktop_constructor.core.models.agent_spec import AgentGraphNode, AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
@@ -29,6 +32,7 @@ class SupervisedAgentRuntime(SimpleAgentRuntime):
         self,
         tool_gateway: ToolGateway,
         llm_supervisor: LLMSupervisor | None = None,
+        quality_evaluator: ToolResultQualityEvaluator | None = None,
         tools_catalog: ToolsCatalog | None = None,
         tool_registry: ToolRegistry | None = None,
         run_repository: object | None = None,
@@ -46,6 +50,7 @@ class SupervisedAgentRuntime(SimpleAgentRuntime):
             human_approval_repository=human_approval_repository,
         )
         self._llm_supervisor = llm_supervisor
+        self._quality_evaluator = quality_evaluator or ToolResultQualityEvaluator()
         self._tools_catalog = tools_catalog
         self._tool_registry = tool_registry
         self._credential_request_repository = credential_request_repository
@@ -60,11 +65,13 @@ class SupervisedAgentRuntime(SimpleAgentRuntime):
         """Выполнить tool и после результата применить решение Supervisor."""
         result_count_before = len(state.tool_results)
         super()._execute_tool_node(agent_spec, state, node, human_approved)
-        if self._llm_supervisor is None:
-            return
         if len(state.tool_results) <= result_count_before:
             return
 
+        if not self._evaluate_latest_tool_result(agent_spec, state):
+            return
+        if self._llm_supervisor is None:
+            return
         self._run_supervisor_loop(agent_spec, state, node)
 
     def _run_supervisor_loop(
@@ -79,6 +86,8 @@ class SupervisedAgentRuntime(SimpleAgentRuntime):
             agent_spec.runtime_limits.max_tool_calls,
         ):
             latest_tool_result = state.tool_results[-1]
+            if not self._evaluate_latest_tool_result(agent_spec, state):
+                return
             try:
                 decision = self._llm_supervisor.decide(
                     agent_spec=agent_spec,
@@ -189,6 +198,69 @@ class SupervisedAgentRuntime(SimpleAgentRuntime):
             return state.status == AgentRunStatus.RUNNING
 
         return False
+
+    def _evaluate_latest_tool_result(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+    ) -> bool:
+        """Оценить последний tool_result и применить quality decision."""
+        latest = state.tool_results[-1]
+        evaluated_count = int(state.variables.get("quality_evaluated_count", 0))
+        if evaluated_count >= len(state.tool_results):
+            return True
+
+        quality = self._quality_evaluator.evaluate(agent_spec, state, latest)
+        state.variables["quality_evaluated_count"] = len(state.tool_results)
+        state.variables.setdefault("quality_checks", []).append(
+            {
+                "tool_name": latest.tool_name,
+                **quality.model_dump(mode="json"),
+            }
+        )
+
+        if quality.is_critical_failure:
+            if quality.should_ask_human:
+                state.pause_for_human(
+                    HumanApprovalRequest(
+                        approval_id=str(uuid4()),
+                        node_id=state.current_node_id or "quality_evaluator",
+                        tool_name=latest.tool_name,
+                        question=(
+                            "Критически важный инструмент не вернул полезные данные. "
+                            "Повторить, изменить параметры или остановить?"
+                        ),
+                        options=["Повторить", "Изменить параметры", "Остановить"],
+                        status="pending",
+                    )
+                )
+                self._persist_human_approval_request(
+                    state,
+                    details={"source": "tool_result_quality", "reason": quality.reason},
+                )
+                return False
+            state.mark_failed(quality.reason)
+            return False
+
+        if quality.suggested_tool_name:
+            self._execute_supervisor_tool_call(
+                agent_spec=agent_spec,
+                state=state,
+                tool_name=quality.suggested_tool_name,
+                input_data={
+                    "quality_reason": quality.reason,
+                    "missing_information": quality.missing_information,
+                },
+                reason=quality.suggested_next_action,
+            )
+            return state.status == AgentRunStatus.RUNNING
+
+        if quality.should_finish:
+            state.variables["final_message"] = quality.reason
+            state.mark_completed()
+            return False
+
+        return quality.should_continue
 
     def _retry_latest_tool(
         self,

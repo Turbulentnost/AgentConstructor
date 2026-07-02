@@ -119,6 +119,8 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
             input_data.get("tool_outputs", {})
             .get("llm.analyze_collected_data", {})
         )
+        if not isinstance(analytics, dict):
+            analytics = {}
         busy_slots = [
             {
                 "title": event.get("title", "Совещание"),
@@ -127,25 +129,28 @@ class LocalBuildScheduleRecommendationsTool(BaseTool):
             }
             for event in events
         ]
-        free_slots: list[dict] = []
-        risks = list(analytics.get("risks", [])) or [
-            "Возможна высокая плотность встреч без фокус-времени."
-        ]
-        recommendations = [
-            "Сгруппировать короткие встречи в один блок.",
-            "Оставить минимум один 90-минутный слот для фокус-работы.",
-            "Перенести необязательные встречи из перегруженных интервалов.",
-        ]
+        free_slots = _clean_str_list(analytics.get("free_slots"))
+        risks = _clean_str_list(analytics.get("risks"))
+        recommendations = _clean_str_list(analytics.get("recommendations"))
+        recommendation_text = _first_non_empty_text(
+            analytics.get("summary"),
+            "\n".join(recommendations) if recommendations else None,
+            f"Найдено совещаний: {len(events)}. "
+            "Аналитика LLM не предоставила рекомендаций.",
+        )
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
             output_data={
-                "recommendation_text": "\n".join(recommendations),
+                "recommendation_text": recommendation_text,
                 "meeting_count": len(events),
                 "busy_slots": busy_slots,
                 "free_slots": free_slots,
                 "risks": risks,
                 "recommendations": recommendations,
+                "analysis_source": "llm.analyze_collected_data"
+                if analytics
+                else "none",
             },
         )
 
@@ -180,4 +185,27 @@ def _calendar_output(input_data: dict) -> dict | None:
     if isinstance(output, dict):
         return output
     return None
+
+
+def _clean_str_list(value: object) -> list[str]:
+    """Вернуть список непустых строк из значения аналитики LLM."""
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("title") or item.get("summary")
+            if isinstance(text, str) and text.strip():
+                result.append(text.strip())
+    return result
+
+
+def _first_non_empty_text(*candidates: object) -> str:
+    """Вернуть первую непустую строку из кандидатов."""
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return "Рекомендации не сформированы."
 

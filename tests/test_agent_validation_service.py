@@ -182,7 +182,9 @@ def test_validation_service_uses_com_read_tool_and_analysis_output() -> None:
     assert analysis_tool.received_calendar_events
     assert result.output_data is not None
     assert result.output_data["meeting_count"] == 1
-    assert "Сгруппировать короткие встречи" in result.final_message
+    assert result.output_data["recommendations"] == ["Оставить 90 минут после планёрки"]
+    assert result.output_data["analysis_source"] == "llm.analyze_collected_data"
+    assert "COM worker" in result.final_message
 
 
 class FakeValidationRuntime:

@@ -29,44 +29,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_desktop_constructor.app.core.models.agent_validation import (
-    AgentValidationStatus,
-)
-from agent_desktop_constructor.app.core.services.agent_validation_service import (
-    AgentValidationService,
-)
+from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
 from agent_desktop_constructor.app.llm.client_factory import build_llm_client
 from agent_desktop_constructor.app.llm.errors import LLMError
 from agent_desktop_constructor.app.llm.models import LLMMessage, LLMRequest
 from agent_desktop_constructor.app.llm.tool_planner import LLMToolPlanner
+from agent_desktop_constructor.app.runtime.agent_loop_runtime import LLMAgentLoopRuntime
 from agent_desktop_constructor.app.tools.llm_analysis_tools import (
     register_llm_analysis_tools,
 )
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
-from agent_desktop_constructor.core.models.tooling import (
-    ToolCallResult,
-    ToolDefinition,
-    ToolExecutionMode,
-)
-from agent_desktop_constructor.tools.base import BaseTool
+from agent_desktop_constructor.core.models.runtime_state import AgentRunStatus
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
-from agent_desktop_constructor.tools.fake_task_control_tools import (
-    FakeEmailCreateDraftTool,
-    FakeEmailSendTool,
-    FakeLLMExtractStructuredFactsTool,
-    FakeOneCGetTaskCardTool,
-    FakeOneCSearchTasksTool,
-    FakeOutlookReadCalendarTool,
-    FakeOutlookReadTasksTool,
-    FakeOutlookSearchMailTool,
-    FakeReportBuildTaskReportTool,
-)
+from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
 from agent_desktop_constructor.tools.gateway import ToolGateway
+from agent_desktop_constructor.tools.onec_tools import register_onec_readonly_tools
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.tools.report_tools import register_report_tools
-from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
+from agent_desktop_constructor.workers.onec_worker import OneCReadOnlyWorker
+from agent_desktop_constructor.workers.subprocess_com_worker import SubprocessComWorker
 
 
 USER_REQUESTS = [
@@ -154,58 +137,21 @@ def ping_provider(config: LLMConfig) -> tuple[bool, str]:
     return True, response.content.strip()[:80]
 
 
-class StubTool(BaseTool):
-    """Заглушка каталожного инструмента для безопасного пробного запуска."""
+def build_run_registry(client, com_timeout_seconds: int = 60) -> ToolRegistry:
+    """Собрать РЕАЛЬНЫЙ реестр инструментов (без фейков и заглушек).
 
-    def __init__(self, definition: ToolDefinition, output_schema_keys: list[str]) -> None:
-        super().__init__(definition)
-        self._keys = output_schema_keys
-
-    def execute(self, input_data: dict) -> ToolCallResult:
-        """Вернуть непустой структурированный результат по ключам схемы."""
-        output: dict = {key: [{"note": "stub"}] for key in self._keys}
-        if not output:
-            output = {"result": "stub"}
-        return ToolCallResult(
-            ok=True,
-            tool_name=self.definition.name,
-            output_data=output,
-        )
-
-
-def build_run_registry(catalog: ToolsCatalog, client) -> ToolRegistry:
-    """Собрать реестр: реальные fake-данные + LLM-анализ + заглушки на остальное."""
+    Outlook — реальный COM через SubprocessComWorker (нужен установленный Outlook
+    и pywin32). 1С — read-only worker. Анализ и отчёт — реальные LLM/локальные tool.
+    Инструменты без реальной реализации не регистрируются: если LLM их выберет,
+    цикл получит ошибку TOOL_NOT_AVAILABLE и должен сам выбрать другой путь.
+    """
     registry = ToolRegistry()
-    for tool in [
-        FakeOutlookSearchMailTool(),
-        FakeOutlookReadCalendarTool(),
-        FakeOutlookReadTasksTool(),
-        FakeOneCSearchTasksTool(),
-        FakeOneCGetTaskCardTool(),
-        FakeLLMExtractStructuredFactsTool(),
-        FakeReportBuildTaskReportTool(),
-        FakeEmailCreateDraftTool(),
-        FakeEmailSendTool(),
-    ]:
-        registry.register(tool)
+    register_outlook_com_tools(registry, SubprocessComWorker())
+    register_onec_readonly_tools(registry, OneCReadOnlyWorker(), skip_existing=True)
     register_report_tools(registry, skip_existing=True)
     register_llm_analysis_tools(registry, client, skip_existing=True)
-
-    for item in catalog.tools:
-        if registry.has_tool(item.name):
-            continue
-        definition = ToolDefinition(
-            name=item.name,
-            title=item.title,
-            description=item.description,
-            side_effect_level=item.side_effect_level,
-            execution_mode=ToolExecutionMode.LOCAL,
-            requires_human_approval=item.requires_human_approval,
-            input_schema={"type": "object"},
-            output_schema=item.output_schema,
-        )
-        keys = list(item.output_schema.get("properties", {}).keys())
-        registry.register(StubTool(definition, keys))
+    for tool_name in registry.list_tool_names():
+        registry.get(tool_name).definition.timeout_seconds = com_timeout_seconds
     return registry
 
 
@@ -230,48 +176,58 @@ def print_plan(plan) -> None:
 def run_request(
     request: str,
     planner: LLMToolPlanner,
+    loop_planner: LLMAgentLoopPlanner,
     catalog: ToolsCatalog,
     client,
 ) -> None:
-    """Спланировать, собрать и выполнить агента для одного запроса."""
+    """Спланировать разрешения и выполнить запрос LLM-управляемым циклом."""
     print("\n" + "=" * 78)
     print(f"ЗАПРОС: {request}")
     print("=" * 78)
 
-    print("\n[1] LLM строит план из ToolsCatalog...")
+    print("\n[1] LLM строит первичный план (набор разрешённых инструментов)...")
     plan = planner.plan(request, catalog)
     print_plan(plan)
 
-    print("\n[2] AgentBuilder собирает AgentSpec из LLM-плана...")
+    print("\n[2] AgentBuilder фиксирует разрешения (safe scope) из LLM-плана...")
     builder = AgentBuilder(
         tools_catalog=catalog,
         llm_planner=planner,
         use_llm_planner=True,
     )
     agent_spec = builder.build_from_request(request)
-    tool_nodes = [n.tool_name for n in agent_spec.graph_nodes if n.tool_name]
-    print(f"  Граф tool-узлов: {tool_nodes}")
+    print(f"  Разрешённые инструменты: {sorted(agent_spec.allowed_tool_names())}")
 
-    print("\n[3] Runtime выполняет план через ToolGateway...")
-    registry = build_run_registry(catalog, client)
-    runtime = SimpleAgentRuntime(ToolGateway(registry))
-    service = AgentValidationService(
-        agent_service=None,
-        runtime=runtime,
-        tool_registry=registry,
+    print("\n[3] LLM-цикл сам вызывает РЕАЛЬНЫЕ инструменты и планирует дальше...")
+    registry = build_run_registry(client)
+    print(f"  Реально зарегистрированные инструменты: {sorted(registry.list_tool_names())}")
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=ToolGateway(registry),
+        agent_loop_planner=loop_planner,
         tools_catalog=catalog,
+        tool_registry=registry,
+        max_repeat_attempts=3,
     )
-    result = service.validate_agent(agent_spec, request)
+    state = runtime.run(agent_spec, {"user_request": request})
 
-    print(f"  Статус: {result.status.value}")
-    if result.critical_errors:
-        print(f"  Критические ошибки: {result.critical_errors}")
-    if result.errors and result.status != AgentValidationStatus.PASSED:
-        print(f"  Ошибки: {result.errors}")
-    if result.final_message:
-        print("\n  ИТОГОВЫЙ ВЫВОД АГЕНТА:")
-        for line in str(result.final_message).splitlines():
+    print(f"  Статус: {state.status.value}")
+    print("  Динамическая цепочка вызовов LLM:")
+    for index, record in enumerate(state.tool_results, start=1):
+        mark = "ok" if record.ok else f"ошибка:{record.error_type}"
+        print(f"    {index}. {record.tool_name} [{mark}]")
+    repeat_notes = state.variables.get("loop_repeat_notes") or []
+    if repeat_notes:
+        print(f"  Пропущенные повторы: {repeat_notes}")
+    if state.errors and state.status != AgentRunStatus.COMPLETED:
+        print(f"  Ошибки: {state.errors}")
+
+    final_message = state.variables.get("final_message")
+    print("\n  ИТОГОВЫЙ ВЫВОД АГЕНТА (сформулирован LLM):")
+    if final_message:
+        for line in str(final_message).splitlines():
             print(f"    {line}")
+    else:
+        print("    LLM не сформулировала вывод (см. статус и ошибки выше).")
 
 
 def main() -> int:
@@ -298,10 +254,11 @@ def main() -> int:
     print(f"\nИспользую провайдера: {provider_label(working_config)}")
     client = build_llm_client(working_config)
     planner = LLMToolPlanner(client)
+    loop_planner = LLMAgentLoopPlanner(client, catalog)
 
     for request in USER_REQUESTS:
         try:
-            run_request(request, planner, catalog, client)
+            run_request(request, planner, loop_planner, catalog, client)
         except Exception as exc:  # noqa: BLE001 — диагностический скрипт
             print(f"\n  Ошибка при обработке запроса: {type(exc).__name__}: {exc}")
 

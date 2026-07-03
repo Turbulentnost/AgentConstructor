@@ -6,8 +6,10 @@ from threading import Event
 from typing import Callable
 
 from PySide6.QtCore import Qt, QThread
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -43,6 +45,116 @@ _PAUSED_STATUSES = {
     AgentRunStatus.PAUSED_FOR_CREDENTIALS,
 }
 
+GRID_COLUMNS = 3
+MOCK_DESCRIPTION = "описание"
+
+
+class DotCanvasWidget(QWidget):
+    """Тёмный фон с точечной сеткой в стиле холста."""
+
+    _DOT_TILE: QPixmap | None = None
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Создать холст с точками."""
+        super().__init__(parent)
+        self.setObjectName("dotCanvas")
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        if DotCanvasWidget._DOT_TILE is None:
+            DotCanvasWidget._DOT_TILE = self._build_dot_tile()
+
+    @staticmethod
+    def _build_dot_tile() -> QPixmap:
+        """Создать повторяющуюся плитку с точкой."""
+        spacing = 20
+        tile = QPixmap(spacing, spacing)
+        tile.fill(QColor("#0f1116"))
+        with QPainter(tile) as painter:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#3a3f4b"))
+            center = spacing // 2
+            painter.drawEllipse(center - 1, center - 1, 2, 2)
+        return tile
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        """Нарисовать тёмный фон и светлые точки."""
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        tile = DotCanvasWidget._DOT_TILE
+        if tile is None:
+            return
+        with QPainter(self) as painter:
+            painter.drawTiledPixmap(self.rect(), tile)
+        super().paintEvent(event)
+
+
+class AgentCard(QFrame):
+    """Карточка агента в сетке."""
+
+    def __init__(
+        self,
+        agent: AgentSpec,
+        on_select: Callable[[str], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        """Создать карточку агента."""
+        super().__init__(parent)
+        self.agent_id = agent.agent_id
+        self._on_select = on_select
+        self._selected = False
+        self.setObjectName("agentCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(220, 268)
+
+        self._image = QLabel("AI")
+        self._image.setObjectName("agentCardImage")
+        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image.setFixedHeight(120)
+
+        self._name = QLabel(agent.name)
+        self._name.setObjectName("agentCardName")
+        self._name.setWordWrap(True)
+
+        self._description = QLabel(MOCK_DESCRIPTION)
+        self._description.setObjectName("agentCardDescription")
+        self._description.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(self._image)
+        layout.addWidget(self._name)
+        layout.addWidget(self._description)
+        layout.addStretch(1)
+
+        self._apply_style()
+
+    def set_selected(self, selected: bool) -> None:
+        """Подсветить выбранную карточку."""
+        self._selected = selected
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        border = "#4c8bf5" if self._selected else "#2b2f3a"
+        bg = "#232733" if self._selected else "#1c1f27"
+        self.setStyleSheet(
+            f"#agentCard {{"
+            f"background:{bg}; border:1px solid {border}; border-radius:14px;"
+            f"}}"
+            "#agentCardImage {"
+            "background:qlineargradient("
+            "x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 #2f6bff, stop:1 #1c1f27);"
+            "color:#ffffff; border-radius:10px; font-size:28px; font-weight:700;"
+            "}"
+            "#agentCardName { color:#f0f2f6; font-size:14px; font-weight:600; }"
+            "#agentCardDescription { color:#8b909c; font-size:12px; }"
+        )
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        """Выбрать агента по клику."""
+        self._on_select(self.agent_id)
+        super().mousePressEvent(event)
+
 
 class AgentListWidget(QWidget):
     """Показывает сохранённых агентов карточками и позволяет запускать их."""
@@ -56,6 +168,7 @@ class AgentListWidget(QWidget):
         super().__init__(parent)
         self._container = container
         self._agents: list[AgentSpec] = []
+        self._agent_cards: list[AgentCard] = []
         self._selected_agent: AgentSpec | None = None
         self._paused_state: AgentRuntimeState | None = None
         self._cancel_event = Event()
@@ -70,27 +183,38 @@ class AgentListWidget(QWidget):
     def _build_ui(self) -> None:
         """Построить каркас: слева карточки, справа панель запуска/истории."""
         self.title_label = QLabel("Каталог агентов")
-        self.title_label.setStyleSheet("font-size:16px; font-weight:700;")
+        self.title_label.setStyleSheet(
+            "font-size:16px; font-weight:700; color:#e6e9ef;"
+        )
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color:#9aa0aa;")
+        self.status_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
 
         self.cards_host = QWidget()
-        self.cards_layout = QVBoxLayout(self.cards_host)
-        self.cards_layout.setContentsMargins(2, 2, 8, 2)
-        self.cards_layout.setSpacing(10)
-        self.cards_layout.addStretch(1)
+        self.cards_layout = QGridLayout(self.cards_host)
+        self.cards_layout.setContentsMargins(16, 16, 16, 16)
+        self.cards_layout.setHorizontalSpacing(16)
+        self.cards_layout.setVerticalSpacing(16)
+        self.cards_layout.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+
+        self._canvas = DotCanvasWidget()
+        canvas_layout = QVBoxLayout(self._canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
 
         cards_scroll = QScrollArea()
         cards_scroll.setWidgetResizable(True)
         cards_scroll.setWidget(self.cards_host)
         cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        canvas_layout.addWidget(cards_scroll)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.title_label)
         left_layout.addWidget(self.status_label)
-        left_layout.addWidget(cards_scroll)
+        left_layout.addWidget(self._canvas, 1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
@@ -99,7 +223,9 @@ class AgentListWidget(QWidget):
         splitter.setStretchFactor(1, 4)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
+        self.setStyleSheet("background:#14161c; color:#e6e9ef;")
 
     def _build_run_panel(self) -> QWidget:
         """Правая панель: запуск выбранного агента и история его запусков."""
@@ -113,20 +239,30 @@ class AgentListWidget(QWidget):
         self.run_button.setEnabled(False)
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setEnabled(False)
+        self.delete_button = QPushButton("Удалить")
+        self.delete_button.setEnabled(False)
         actions = QHBoxLayout()
         actions.addWidget(self.run_button)
         actions.addWidget(self.stop_button)
+        actions.addWidget(self.delete_button)
         actions.addStretch(1)
 
         self.human_panel = HumanInteractionPanel()
 
         log_label = QLabel("Ход выполнения")
-        log_label.setStyleSheet("font-weight:600; margin-top:6px;")
+        log_label.setStyleSheet(
+            "font-weight:700; margin-top:6px; color:#c7d2e5; font-size:12px;"
+        )
         self.live_log = QTextEdit()
         self.live_log.setReadOnly(True)
         self.live_log.setStyleSheet(
-            "QTextEdit { background:#0f1116; color:#d6d9df; border:1px solid #2a2e37;"
-            "border-radius:6px; font-family:Consolas,monospace; font-size:12px; }"
+            "QTextEdit {"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "stop:0 #0b101a, stop:0.52 #0d1320, stop:1 #111827);"
+            "color:#d8e0ee; border:1px solid #263247; border-radius:14px;"
+            "padding:10px; font-family:Consolas,'Courier New',monospace;"
+            "font-size:12px; selection-background-color:#2f6bff;"
+            "}"
         )
 
         self.files_label = QLabel()
@@ -159,6 +295,7 @@ class AgentListWidget(QWidget):
         """Подключить обработчики кнопок и панели человека."""
         self.run_button.clicked.connect(self.run_current_agent)
         self.stop_button.clicked.connect(self.request_stop)
+        self.delete_button.clicked.connect(self.delete_current_agent)
         self.human_panel.continue_requested.connect(self.continue_after_human)
         self.history_list.itemSelectionChanged.connect(self._show_selected_run_events)
 
@@ -173,89 +310,41 @@ class AgentListWidget(QWidget):
         self._render_cards()
 
     def _render_cards(self) -> None:
-        """Перестроить список карточек агентов."""
-        while self.cards_layout.count() > 1:
+        """Перестроить сетку карточек агентов."""
+        while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                widget.setParent(None)
                 widget.deleteLater()
+        self._agent_cards.clear()
 
         if not self._agents:
             self.status_label.setText("Сохранённых агентов пока нет.")
             return
         self.status_label.setText(f"Агентов в каталоге: {len(self._agents)}")
+        selected_id = (
+            self._selected_agent.agent_id if self._selected_agent is not None else None
+        )
+        for index, agent in enumerate(self._agents):
+            card = AgentCard(agent, self._on_card_selected)
+            card.set_selected(agent.agent_id == selected_id)
+            row = index // GRID_COLUMNS
+            column = index % GRID_COLUMNS
+            self.cards_layout.addWidget(card, row, column, Qt.AlignmentFlag.AlignTop)
+            self._agent_cards.append(card)
+        self.cards_host.adjustSize()
+
+    def _on_card_selected(self, agent_id: str) -> None:
+        """Открыть агента при выборе карточки."""
         for agent in self._agents:
-            self.cards_layout.insertWidget(
-                self.cards_layout.count() - 1, self._build_card(agent)
-            )
+            if agent.agent_id == agent_id:
+                self.open_agent(agent)
+                return
 
-    def _build_card(self, agent: AgentSpec) -> QFrame:
-        """Собрать карточку одного агента."""
-        card = QFrame()
-        card.setObjectName("agentCard")
-        card.setStyleSheet(
-            "#agentCard { background:#171a21; border:1px solid #2a2e37;"
-            "border-radius:10px; }"
-            "#agentCard:hover { border:1px solid #3d6fd6; }"
-            "QLabel#cardTitle { font-size:14px; font-weight:700; color:#e8ebf0; }"
-            "QLabel#cardDesc { color:#aab0ba; font-size:12px; }"
-            "QLabel#cardMeta { color:#7f8794; font-size:11px; }"
-        )
-        row = QHBoxLayout(card)
-        row.setContentsMargins(14, 12, 12, 12)
-        row.setSpacing(10)
-
-        info = QVBoxLayout()
-        info.setSpacing(3)
-        title = QLabel(agent.name)
-        title.setObjectName("cardTitle")
-        title.setWordWrap(True)
-        desc = QLabel(agent.short_description or agent.description or agent.goal.main_goal)
-        desc.setObjectName("cardDesc")
-        desc.setWordWrap(True)
-        meta = QLabel(self._format_created(agent.created_at))
-        meta.setObjectName("cardMeta")
-        info.addWidget(title)
-        info.addWidget(desc)
-        info.addWidget(meta)
-        row.addLayout(info, 1)
-
-        run_icon = QPushButton("▶")
-        run_icon.setToolTip("Открыть и запустить агента")
-        run_icon.setFixedSize(40, 40)
-        run_icon.setCursor(Qt.CursorShape.PointingHandCursor)
-        run_icon.setStyleSheet(
-            "QPushButton { background:#1f7a3d; color:#fff; border:none;"
-            "border-radius:20px; font-size:16px; font-weight:700; }"
-            "QPushButton:hover { background:#248c47; }"
-        )
-        run_icon.clicked.connect(lambda _=False, a=agent: self.open_agent(a))
-
-        delete_icon = QPushButton("🗑")
-        delete_icon.setToolTip("Удалить агента")
-        delete_icon.setFixedSize(32, 32)
-        delete_icon.setCursor(Qt.CursorShape.PointingHandCursor)
-        delete_icon.setStyleSheet(
-            "QPushButton { background:transparent; color:#c76b6b; border:none;"
-            "font-size:15px; }"
-            "QPushButton:hover { color:#e05656; }"
-        )
-        delete_icon.clicked.connect(lambda _=False, a=agent: self.delete_agent(a))
-
-        right = QVBoxLayout()
-        right.addWidget(run_icon, alignment=Qt.AlignmentFlag.AlignTop)
-        right.addWidget(delete_icon, alignment=Qt.AlignmentFlag.AlignTop)
-        right.addStretch(1)
-        row.addLayout(right)
-        return card
-
-    @staticmethod
-    def _format_created(created_at: str | None) -> str:
-        """Отформатировать дату создания для карточки."""
-        if not created_at:
-            return "Дата создания: —"
-        return f"Создан: {created_at[:16].replace('T', ' ')}"
+    def _highlight_card(self, agent_id: str | None) -> None:
+        """Подсветить выбранную карточку в сетке."""
+        for card in self._agent_cards:
+            card.set_selected(card.agent_id == agent_id)
 
     # ------------------------------------------------------- agent selection
     def open_agent(self, agent: AgentSpec) -> None:
@@ -264,6 +353,7 @@ class AgentListWidget(QWidget):
             show_info(self, "Идёт выполнение", "Дождитесь завершения текущего запуска.")
             return
         self._selected_agent = agent
+        self._highlight_card(agent.agent_id)
         self._paused_state = None
         self.human_panel.hide_panel()
         self.panel_title.setText(agent.name)
@@ -271,12 +361,20 @@ class AgentListWidget(QWidget):
             agent.short_description or agent.description or agent.goal.main_goal
         )
         self.run_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
         self.live_log.clear()
         self.live_log.append(
             "Готов к запуску. Работа пойдёт по сохранённой схеме агента "
             "с актуальными данными."
         )
         self._load_history(agent.agent_id)
+
+    def delete_current_agent(self) -> None:
+        """Удалить выбранного агента."""
+        if self._selected_agent is None:
+            show_error(self, "Агент не выбран", "Откройте карточку агента.")
+            return
+        self.delete_agent(self._selected_agent)
 
     def delete_agent(self, agent: AgentSpec) -> None:
         """Удалить агента из каталога."""
@@ -295,8 +393,10 @@ class AgentListWidget(QWidget):
             self.panel_title.setText("Выберите агента слева")
             self.panel_subtitle.clear()
             self.run_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
             self.live_log.clear()
             self.history_list.clear()
+            self._highlight_card(None)
         self.refresh()
 
     # ------------------------------------------------------------- history

@@ -20,6 +20,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["agent_desktop_constructor*"]
 
+[tool.setuptools.package-data]
+agent_desktop_constructor = ["app/ui/resources/icons/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

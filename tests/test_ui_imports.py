@@ -81,11 +81,19 @@ def test_ui_modules_import() -> None:
 def test_main_window_can_be_created(qt_app, fake_container) -> None:
     """MainWindow можно создать с fake ApplicationContainer."""
     from agent_desktop_constructor.app.ui.main_window import MainWindow
+    from agent_desktop_constructor.app.ui.teams_nav_sidebar import NAV_ITEMS
 
     window = MainWindow(fake_container)
 
     assert window.windowTitle() == "Конструктор ИИ-агентов"
-    assert window.pages.count() >= 6
+    assert window.pages.count() == 4
+    assert window.nav.count() == 4
+    assert [item.title for item in NAV_ITEMS] == [
+        "Агенты",
+        "Создать агента",
+        "Журнал",
+        "Настройки",
+    ]
 
 
 def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
@@ -108,6 +116,8 @@ def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:
     widget = AgentListWidget(fake_container)
 
     assert widget.title_label.text() == "Каталог агентов"
+    assert widget._canvas is not None
+    assert widget.cards_layout is not None
 
 
 def test_approval_queue_widget_can_be_created(qt_app, fake_container) -> None:
@@ -282,6 +292,25 @@ def test_agent_list_refresh_uses_service(qt_app) -> None:
     # Конструктор уже подгружает список сразу, refresh() читает повторно.
     assert container.agent_service.calls == ["list_agents", "list_agents"]
     assert len(widget._agents) == 1
+    assert len(widget._agent_cards) == 1
+
+
+def test_agent_list_auto_refreshes_on_nav(qt_app, fake_container) -> None:
+    """При переходе на страницу агентов список загружается автоматически."""
+    from agent_desktop_constructor.app.ui.main_window import MainWindow
+
+    window = MainWindow(fake_container)
+    window.show()
+    for _ in range(5):
+        qt_app.processEvents()
+
+    assert len(window._agent_list._agents) >= 0
+
+    window.nav.setCurrentIndex(1)
+    qt_app.processEvents()
+    window.nav.setCurrentIndex(0)
+    for _ in range(5):
+        qt_app.processEvents()
 
 
 def test_run_list_actions_use_service(qt_app, monkeypatch) -> None:

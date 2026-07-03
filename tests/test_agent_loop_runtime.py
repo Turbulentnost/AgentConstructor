@@ -140,6 +140,135 @@ def test_llm_loop_rejects_unknown_tool_and_lets_llm_recover() -> None:
     assert "ToolsCatalog" in (invented[0].error_message or "")
 
 
+def test_llm_loop_stops_when_cancel_requested() -> None:
+    """Если cancel_callback возвращает True, цикл останавливается до планирования."""
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="Не должно выполниться",
+            tool_call={
+                "tool_name": "outlook.read_calendar",
+                "input_data": {},
+                "reason": "нет",
+            },
+        )
+    )
+    runtime = make_runtime(planner)
+    runtime.set_cancel_callback(lambda: True)
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "распланировать график"})
+
+    assert state.status == AgentRunStatus.CANCELLED
+    assert planner.calls == 0
+    assert state.variables.get("cancel_reason")
+
+
+def test_llm_loop_cancel_after_first_step() -> None:
+    """Отмена срабатывает между шагами: первый инструмент выполнен, затем стоп."""
+    calls = {"n": 0}
+
+    def cancel() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="Прочитать календарь",
+            tool_call={
+                "tool_name": "outlook.read_calendar",
+                "input_data": {},
+                "reason": "данные",
+            },
+        ),
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="Не должно дойти сюда",
+            final_message="не используется",
+        ),
+    )
+    runtime = make_runtime(planner)
+    runtime.set_cancel_callback(cancel)
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "распланировать график"})
+
+    assert state.status == AgentRunStatus.CANCELLED
+    assert planner.calls == 1
+
+
+def test_llm_loop_ask_human_pauses_and_resumes_without_restart() -> None:
+    """ask_human приостанавливает цикл, а resume продолжает с ответом человека."""
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.ASK_HUMAN,
+            reason="После ответа продолжу анализ",
+            human_question="Какую неделю анализировать?",
+            human_options=["Текущую", "Прошлую"],
+        ),
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="Ответ получен",
+            final_message="Готово, использовал ответ человека.",
+        ),
+    )
+    runtime = make_runtime(planner)
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "распланировать график"})
+    assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN
+    assert state.pending_human_approval is not None
+    assert state.variables.get("human_plan_ahead") == "После ответа продолжу анализ"
+
+    resumed = runtime.resume_with_human_input(agent_spec, state, "Текущую")
+
+    assert resumed.status == AgentRunStatus.COMPLETED
+    assert resumed.variables["final_message"] == "Готово, использовал ответ человека."
+    responses = resumed.variables.get("human_responses")
+    assert responses and responses[-1]["answer"] == "Текущую"
+
+
+def test_llm_loop_resume_executes_approved_tool() -> None:
+    """После подтверждения человека отложенный dangerous-инструмент исполняется."""
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="Попробовать отправку",
+            tool_call={
+                "tool_name": "email.send",
+                "input_data": {},
+                "reason": "dangerous",
+            },
+        ),
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="Отправлено",
+            final_message="Письмо обработано после подтверждения.",
+        ),
+    )
+    runtime = make_runtime(planner)
+    agent_spec = AgentBuilder().build_from_request(
+        "Найди поручения и отправь отчёт по почте"
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "поручения"})
+    assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN
+    assert state.variables.get("pending_loop_tool", {}).get("tool_name") == "email.send"
+
+    resumed = runtime.resume_with_human_input(agent_spec, state, "Подтвердить")
+
+    assert resumed.status == AgentRunStatus.COMPLETED
+    sent = [r for r in resumed.tool_results if r.tool_name == "email.send"]
+    assert sent and sent[0].ok is True
+
+
 def test_llm_loop_dangerous_tool_requires_human_approval() -> None:
     """Dangerous-инструмент уходит на HumanApproval через ToolGateway."""
     planner = ScriptedPlanner(

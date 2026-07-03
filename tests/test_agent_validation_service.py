@@ -116,6 +116,32 @@ def test_validation_service_returns_needs_human() -> None:
     assert result.status == AgentValidationStatus.NEEDS_HUMAN
 
 
+def test_validation_service_resume_after_human_continues_run() -> None:
+    """resume_after_human продолжает приостановленный запуск с ответом человека."""
+    paused = AgentRuntimeState(
+        run_id="run-human",
+        agent_id="agent-1",
+        status=AgentRunStatus.PAUSED_FOR_HUMAN,
+        pending_human_approval=HumanApprovalRequest(
+            approval_id="approval-1",
+            node_id="llm_loop",
+            question="Какую неделю анализировать?",
+            options=["Текущую", "Прошлую"],
+            status="pending",
+        ),
+    )
+    service = make_service_with_fake_runtime(paused)
+
+    result = service.resume_after_human(
+        make_agent_spec_without_tools(),
+        paused,
+        "Текущую",
+    )
+
+    assert result.status == AgentValidationStatus.PASSED
+    assert "Текущую" in (result.final_message or "")
+
+
 def test_validation_service_returns_needs_credentials() -> None:
     """CredentialRequest даёт needs_credentials."""
     service = make_service_with_fake_runtime(
@@ -201,6 +227,17 @@ class FakeValidationRuntime:
         self.last_initial_variables = initial_variables
         self.state.agent_id = agent_spec.agent_id
         return self.state
+
+    def resume_with_human_input(self, agent_spec, state, human_message, approved=True):
+        """Отметить состояние завершённым после ответа человека."""
+        self.resumed_with = (human_message, approved)
+        state.variables.setdefault("human_responses", []).append(
+            {"answer": human_message, "approved": approved}
+        )
+        state.pending_human_approval = None
+        state.status = AgentRunStatus.COMPLETED
+        state.variables["final_message"] = f"Продолжено после ответа: {human_message}"
+        return state
 
 
 class FakeComWorker:

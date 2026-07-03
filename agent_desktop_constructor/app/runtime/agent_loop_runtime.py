@@ -6,6 +6,9 @@ import json
 from typing import Callable
 from uuid import uuid4
 
+from agent_desktop_constructor.app.core.models.human_approval import (
+    HumanApprovalStatus,
+)
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEventType
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
 from agent_desktop_constructor.app.llm.supervisor_models import (
@@ -71,6 +74,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._tool_registry = tool_registry
         self._max_repeat_attempts = max_repeat_attempts
         self._progress_callback: Callable[[str], None] | None = None
+        self._cancel_callback: Callable[[], bool] | None = None
 
     def set_progress_callback(
         self,
@@ -78,6 +82,23 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
     ) -> None:
         """Задать колбэк живого прогресса (текст LLM/инструментов) для UI."""
         self._progress_callback = callback
+
+    def set_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Задать колбэк отмены: если вернёт True, цикл остановится между шагами."""
+        self._cancel_callback = callback
+
+    def _is_cancel_requested(self) -> bool:
+        """Проверить, запросил ли пользователь остановку (безопасно к ошибкам)."""
+        callback = self._cancel_callback
+        if callback is None:
+            return False
+        try:
+            return bool(callback())
+        except Exception:
+            return False
 
     def _emit_progress(self, message: str) -> None:
         """Отправить строку прогресса в UI, не роняя выполнение при ошибке колбэка."""
@@ -127,13 +148,133 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             details={"agent_id": agent_spec.agent_id},
         )
         self._emit_progress(f"▶ Запуск агента «{agent_spec.name}». Цель: {agent_spec.goal.main_goal}")
+        return self._drive_loop(agent_spec, state)
 
-        executed_signatures: list[str] = []
-        repeat_notes: list[str] = []
-        repeat_count = 0
+    def resume_with_human_input(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        human_message: str,
+        approved: bool = True,
+    ) -> AgentRuntimeState:
+        """Продолжить приостановленный LLM-цикл после действия/ответа человека.
+
+        Работа агента не начинается заново: сохранённое состояние (собранные
+        данные, скриншоты, постоянная сессия браузера) остаётся живым, ответ
+        человека добавляется в контекст, и цикл продолжает планирование.
+        """
+        if state.status not in {
+            AgentRunStatus.PAUSED_FOR_HUMAN,
+            AgentRunStatus.PAUSED_FOR_CREDENTIALS,
+        }:
+            return state
+
+        answer = (human_message or "").strip()
+        default_answer = "Подтвердить" if approved else "Отклонить"
+        approval = state.pending_human_approval
+        question = (
+            approval.question
+            if approval is not None
+            else state.variables.get("credential_request_reason")
+        )
+        state.variables.setdefault("human_responses", []).append(
+            {
+                "question": question,
+                "answer": answer or default_answer,
+                "approved": approved,
+                "step": state.step_counter,
+            }
+        )
+        self._emit_progress(
+            f"👤 Человек ответил: {answer or default_answer}. Продолжаю работу…"
+        )
+
+        pending_tool = state.variables.pop("pending_loop_tool", None)
+
+        if state.status == AgentRunStatus.PAUSED_FOR_CREDENTIALS:
+            state.variables.pop("credential_request_reason", None)
+            state.mark_running("llm_loop")
+        else:
+            if approval is not None:
+                self._answer_human_approval_record(
+                    approval.approval_id,
+                    HumanApprovalStatus.APPROVED
+                    if approved
+                    else HumanApprovalStatus.REJECTED,
+                    answer or default_answer,
+                    answer or None,
+                )
+                state.resume_after_human(answer or default_answer, answer or None)
+            else:
+                state.mark_running("llm_loop")
+
+        self._add_run_event(
+            state,
+            AgentRunEventType.HUMAN_APPROVAL_ANSWERED,
+            "Получен ответ человека — агент продолжает работу",
+            details={"approved": approved, "answer": answer or default_answer},
+        )
+
+        if pending_tool is not None and approved:
+            signature = _action_signature(
+                pending_tool["tool_name"], pending_tool.get("input_data", {})
+            )
+            state.variables.setdefault("loop_executed_signatures", []).append(signature)
+            self._execute_loop_tool(
+                agent_spec=agent_spec,
+                state=state,
+                tool_name=pending_tool["tool_name"],
+                proposed_input=pending_tool.get("input_data", {}),
+                reason=pending_tool.get("reason", "Подтверждено человеком"),
+                human_approved=True,
+            )
+            if state.status in {
+                AgentRunStatus.PAUSED_FOR_HUMAN,
+                AgentRunStatus.PAUSED_FOR_CREDENTIALS,
+                AgentRunStatus.FAILED,
+            }:
+                self._add_terminal_event(state)
+                self._save_checkpoint(state)
+                return state
+
+        return self._drive_loop(agent_spec, state)
+
+    def _persist_loop_progress(
+        self,
+        state: AgentRuntimeState,
+        executed_signatures: list[str],
+        repeat_notes: list[str],
+        repeat_count: int,
+    ) -> None:
+        """Сохранить прогресс цикла в state, чтобы resume мог его восстановить."""
+        state.variables["loop_executed_signatures"] = list(executed_signatures)
+        state.variables["loop_repeat_notes"] = list(repeat_notes)
+        state.variables["loop_repeat_count"] = repeat_count
+
+    def _drive_loop(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+    ) -> AgentRuntimeState:
+        """Крутить ReAct-цикл LLM до finish/pause/лимита (общий для run и resume)."""
+        executed_signatures: list[str] = list(
+            state.variables.get("loop_executed_signatures", [])
+        )
+        repeat_notes: list[str] = list(state.variables.get("loop_repeat_notes", []))
+        repeat_count = int(state.variables.get("loop_repeat_count", 0))
         limits = agent_spec.runtime_limits
 
         while state.can_continue(limits.max_steps, limits.max_tool_calls):
+            if self._is_cancel_requested():
+                state.mark_cancelled("Выполнение остановлено пользователем")
+                self._add_run_event(
+                    state,
+                    AgentRunEventType.NODE_FAILED,
+                    "Выполнение остановлено пользователем",
+                    details={"reason": "user_stop"},
+                )
+                self._emit_progress("⏹ Выполнение остановлено пользователем.")
+                break
             state.step_counter += 1
             self._emit_progress(
                 f"🧠 Шаг {state.step_counter}: LLM планирует следующее действие…"
@@ -178,11 +319,16 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 continue
             if stop:
                 break
+            self._persist_loop_progress(
+                state, executed_signatures, repeat_notes, repeat_count
+            )
 
         if state.status == AgentRunStatus.RUNNING:
             state.mark_failed("Достигнут лимит шагов без завершения цели")
 
-        state.variables["loop_repeat_notes"] = repeat_notes
+        self._persist_loop_progress(
+            state, executed_signatures, repeat_notes, repeat_count
+        )
         self._add_terminal_event(state)
         self._save_checkpoint(state)
         return state
@@ -208,6 +354,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             return True
 
         if decision_type == SupervisorDecisionType.ASK_HUMAN:
+            state.variables["human_plan_ahead"] = decision.reason
             state.pause_for_human(
                 HumanApprovalRequest(
                     approval_id=str(uuid4()),
@@ -225,6 +372,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             return True
 
         if decision_type == SupervisorDecisionType.REQUEST_CREDENTIALS:
+            state.variables["human_plan_ahead"] = decision.reason
             state.pause_for_credentials(decision.reason)
             self._add_run_event(
                 state,
@@ -326,6 +474,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         tool_name: str,
         proposed_input: dict,
         reason: str,
+        human_approved: bool = False,
     ) -> None:
         """Исполнить инструмент через ToolGateway и записать результат для LLM."""
         input_data = {
@@ -352,10 +501,18 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             run_id=state.run_id,
             tool_name=tool_name,
             input_data=input_data,
-            human_approved=False,
+            human_approved=human_approved,
         )
 
         if result.requires_human_approval:
+            # Запоминаем инструмент и его параметры, чтобы выполнить его после
+            # подтверждения человека, не начиная работу заново.
+            state.variables["pending_loop_tool"] = {
+                "tool_name": tool_name,
+                "input_data": proposed_input,
+                "reason": reason,
+            }
+            state.variables["human_plan_ahead"] = reason
             state.pause_for_human(
                 HumanApprovalRequest(
                     approval_id=str(uuid4()),

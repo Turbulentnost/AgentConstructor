@@ -59,11 +59,14 @@ class AgentValidationService:
         agent_spec: AgentSpec,
         user_request: str,
         progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> AgentValidationResult:
         """Проверить AgentSpec и выполнить пробный запуск.
 
         ``progress_callback`` (если задан) получает живые строки хода выполнения
         (текст LLM, вызовы инструментов, результаты) для отображения в UI.
+        ``cancel_callback`` (если задан) позволяет остановить пробный запуск между
+        шагами: если он вернёт True, цикл агента корректно завершится.
         """
         errors = self._validate_agent_can_run(agent_spec)
         if errors:
@@ -77,8 +80,58 @@ class AgentValidationService:
                 suggested_fixes=["Проверьте ToolsCatalog, ToolRegistry и graph_nodes."],
             )
 
-        state = self._run_trial(agent_spec, user_request, progress_callback)
+        state = self._run_trial(
+            agent_spec, user_request, progress_callback, cancel_callback
+        )
         self._validation_states[state.run_id] = state
+        return self._build_validation_result(agent_spec, state)
+
+    def resume_after_human(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        human_message: str,
+        approved: bool = True,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> AgentValidationResult:
+        """Продолжить приостановленный пробный запуск после ответа/действия человека.
+
+        Работа агента не начинается заново: тот же runtime продолжает цикл с
+        сохранённым состоянием (включая живую сессию браузера).
+        """
+        if not hasattr(self._runtime, "resume_with_human_input"):
+            raise ValueError("Runtime не поддерживает продолжение после человека")
+
+        supports_progress = progress_callback is not None and hasattr(
+            self._runtime, "set_progress_callback"
+        )
+        supports_cancel = cancel_callback is not None and hasattr(
+            self._runtime, "set_cancel_callback"
+        )
+        if supports_progress:
+            self._runtime.set_progress_callback(progress_callback)
+        if supports_cancel:
+            self._runtime.set_cancel_callback(cancel_callback)
+        try:
+            new_state = self._runtime.resume_with_human_input(
+                agent_spec, state, human_message, approved
+            )
+        finally:
+            if supports_progress:
+                self._runtime.set_progress_callback(None)
+            if supports_cancel:
+                self._runtime.set_cancel_callback(None)
+
+        self._validation_states[new_state.run_id] = new_state
+        return self._build_validation_result(agent_spec, new_state)
+
+    def _build_validation_result(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+    ) -> AgentValidationResult:
+        """Собрать AgentValidationResult из финального/приостановленного состояния."""
         warnings = list(state.variables.get("supervisor_warnings", []))
         tool_result_checks = self._check_required_tool_results(agent_spec, state, warnings)
         critical_errors = [
@@ -109,13 +162,19 @@ class AgentValidationService:
         agent_spec: AgentSpec,
         user_request: str,
         progress_callback: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> AgentRuntimeState:
-        """Выполнить пробный запуск, безопасно подключив/сняв progress-колбэк."""
+        """Выполнить пробный запуск, безопасно подключив/сняв progress/cancel-колбэки."""
         supports_progress = progress_callback is not None and hasattr(
             self._runtime, "set_progress_callback"
         )
+        supports_cancel = cancel_callback is not None and hasattr(
+            self._runtime, "set_cancel_callback"
+        )
         if supports_progress:
             self._runtime.set_progress_callback(progress_callback)
+        if supports_cancel:
+            self._runtime.set_cancel_callback(cancel_callback)
         try:
             return self._runtime.run(
                 agent_spec,
@@ -128,6 +187,8 @@ class AgentValidationService:
         finally:
             if supports_progress:
                 self._runtime.set_progress_callback(None)
+            if supports_cancel:
+                self._runtime.set_cancel_callback(None)
 
     def get_validation_state(self, run_id: str | None) -> AgentRuntimeState | None:
         """Вернуть состояние пробного запуска по run_id."""
@@ -201,6 +262,8 @@ class AgentValidationService:
         state: AgentRuntimeState,
     ) -> str:
         """Сформировать краткую сводку проверки."""
+        if state.status == AgentRunStatus.CANCELLED:
+            return "Пробный запуск остановлен пользователем."
         if status == AgentValidationStatus.PASSED:
             return "Пробный запуск завершён успешно."
         if status == AgentValidationStatus.NEEDS_HUMAN:

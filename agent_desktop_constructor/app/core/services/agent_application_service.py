@@ -101,6 +101,7 @@ class AgentApplicationService:
         agent_spec: AgentSpec,
         user_request: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> AgentValidationResult:
         """Проверить агента через AgentValidationService."""
         if self._agent_validation_service is None:
@@ -109,6 +110,7 @@ class AgentApplicationService:
             agent_spec,
             user_request or agent_spec.goal.main_goal,
             progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
         )
 
     def create_validate_and_save_agent(
@@ -126,6 +128,7 @@ class AgentApplicationService:
         self,
         user_request: str,
         progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
         """Собрать агента, выполнить проверочный запуск и сохранить при успехе."""
         if progress_callback is not None:
@@ -161,6 +164,7 @@ class AgentApplicationService:
             agent_spec,
             user_request,
             progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
         )
         validation_state = None
         if (
@@ -174,6 +178,38 @@ class AgentApplicationService:
         if validation_result.status == AgentValidationStatus.PASSED:
             self.save_agent(agent_spec)
         return agent_spec, validation_result, validation_state
+
+    def resume_after_human(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        human_message: str,
+        approved: bool = True,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
+        """Продолжить приостановленный пробный запуск после действия/ответа человека."""
+        if self._agent_validation_service is None:
+            raise ValueError("AgentValidationService не подключён")
+        if not hasattr(self._agent_validation_service, "resume_after_human"):
+            raise ValueError("AgentValidationService не поддерживает продолжение")
+
+        validation_result = self._agent_validation_service.resume_after_human(
+            agent_spec,
+            state,
+            human_message,
+            approved=approved,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        new_state = None
+        if hasattr(self._agent_validation_service, "get_validation_state"):
+            new_state = self._agent_validation_service.get_validation_state(
+                validation_result.run_id
+            )
+        if validation_result.status == AgentValidationStatus.PASSED:
+            self.save_agent(agent_spec)
+        return agent_spec, validation_result, new_state
 
     def _build_template_fallback_agent(self, user_request: str) -> AgentSpec:
         """Построить fallback AgentSpec без LLM, чтобы UI мог показать результат."""

@@ -8,14 +8,18 @@ save_agent / create_agent_from_request). Экран лишь показывае�
 
 from __future__ import annotations
 
+from threading import Event
 from typing import Callable
 
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -35,6 +39,7 @@ from agent_desktop_constructor.app.ui.helpers import (
 )
 from agent_desktop_constructor.app.ui.workers.create_flow_worker import CreateFlowWorker
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
+from agent_desktop_constructor.core.models.runtime_state import AgentRunStatus
 
 EXAMPLE_REQUEST = (
     "Собери мои поручения из почты Outlook и из 1С "
@@ -203,6 +208,10 @@ class AgentCreateWidget(QWidget):
         self._thread: QThread | None = None
         self._worker: CreateFlowWorker | None = None
         self._action_buttons: list[QPushButton] = []
+        self._cancel_event = Event()
+        self._paused_agent: AgentSpec | None = None
+        self._paused_state: object | None = None
+        self._human_radios: list[tuple[QRadioButton, str | None]] = []
 
         self._build_ui()
         self._connect_signals()
@@ -251,6 +260,10 @@ class AgentCreateWidget(QWidget):
 
         layout.addLayout(self._build_buttons())
 
+        self._human_panel = self._build_human_panel()
+        self._human_panel.setVisible(False)
+        layout.addWidget(self._human_panel)
+
         # Живой ход выполнения: показывает текст LLM и вызовы инструментов в
         # реальном времени, чтобы окно не выглядело зависшим.
         live_label = QLabel("Живой ход выполнения")
@@ -288,54 +301,114 @@ class AgentCreateWidget(QWidget):
         return container
 
     def _build_buttons(self) -> QHBoxLayout:
-        """Ряд основных действий процесса."""
-        self.preview_button = QPushButton("Построить план")
-        self.check_tools_button = QPushButton("Проверить инструменты")
-        self.validate_button = QPushButton("Пробный запуск")
-        self.save_button = QPushButton("Сохранить агента")
-        self.validate_run_button = QPushButton("Собрать, проверить и запустить")
-        self.clear_button = QPushButton("Очистить")
+        """Ряд основных действий: Создать, Сохранить, Сбросить и Остановить."""
+        self.create_button = QPushButton("Создать")
+        self.save_button = QPushButton("Сохранить")
+        self.reset_button = QPushButton("Сбросить")
+        self.stop_button = QPushButton("Остановить")
 
         secondary = (
             "QPushButton { background:#232733; color:#e6e9ef; border:1px solid #333846;"
             "border-radius:8px; padding:9px 14px; font-size:12px; font-weight:600; }"
             "QPushButton:hover { background:#2b3040; }"
+            "QPushButton:disabled { color:#5a5f6b; border-color:#2a2e39; }"
         )
         primary = (
             "QPushButton { background:#2f6bff; color:#ffffff; border:none;"
             "border-radius:8px; padding:9px 16px; font-size:12px; font-weight:700; }"
             "QPushButton:hover { background:#3f79ff; }"
+            "QPushButton:disabled { background:#26324f; color:#8b93a7; }"
         )
-        for button in (
-            self.preview_button,
-            self.check_tools_button,
-            self.validate_button,
-            self.save_button,
-            self.clear_button,
-        ):
+        stop_style = (
+            "QPushButton { background:#a12727; color:#ffffff; border:none;"
+            "border-radius:8px; padding:9px 16px; font-size:12px; font-weight:700; }"
+            "QPushButton:hover { background:#c23232; }"
+            "QPushButton:disabled { background:#3a2626; color:#8b7676; }"
+        )
+        for button in (self.save_button, self.reset_button):
             button.setStyleSheet(secondary)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.validate_run_button.setStyleSheet(primary)
-        self.validate_run_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.create_button.setStyleSheet(primary)
+        self.create_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_button.setStyleSheet(stop_style)
+        self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_button.setEnabled(False)
 
+        # Кнопки, которые блокируются на время фоновой работы агента.
         self._action_buttons = [
-            self.preview_button,
-            self.check_tools_button,
-            self.validate_button,
+            self.create_button,
             self.save_button,
-            self.validate_run_button,
+            self.reset_button,
         ]
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        row.addWidget(self.preview_button)
-        row.addWidget(self.check_tools_button)
-        row.addWidget(self.validate_button)
+        row.addWidget(self.create_button)
         row.addWidget(self.save_button)
-        row.addWidget(self.validate_run_button)
-        row.addWidget(self.clear_button)
+        row.addWidget(self.reset_button)
+        row.addWidget(self.stop_button)
         row.addStretch(1)
         return row
+
+    def _build_human_panel(self) -> QFrame:
+        """Панель участия человека: вопрос/просьба, варианты ответа и свой вариант."""
+        panel = QFrame()
+        panel.setObjectName("humanPanel")
+        panel.setStyleSheet(
+            "#humanPanel { background:#241d12; border:1px solid #8a6d15;"
+            "border-radius:10px; }"
+            "QLabel { color:#f0e6cf; }"
+            "QRadioButton { color:#f0e6cf; font-size:12px; padding:2px 0; }"
+            "QLineEdit { background:#12141a; color:#e6e9ef; border:1px solid #4a4030;"
+            "border-radius:6px; padding:6px; font-size:12px; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        self.human_title = QLabel("Агенту требуется ваше участие")
+        self.human_title.setStyleSheet(
+            "font-size:14px; font-weight:700; color:#ffdf9e;"
+        )
+        layout.addWidget(self.human_title)
+
+        self.human_question = QLabel()
+        self.human_question.setWordWrap(True)
+        self.human_question.setStyleSheet("font-size:13px; color:#f4ecd8;")
+        layout.addWidget(self.human_question)
+
+        self.human_plan = QLabel()
+        self.human_plan.setWordWrap(True)
+        self.human_plan.setStyleSheet("font-size:11px; color:#c9b98f;")
+        layout.addWidget(self.human_plan)
+
+        self._human_options_host = QWidget()
+        self._human_options_layout = QVBoxLayout(self._human_options_host)
+        self._human_options_layout.setContentsMargins(0, 0, 0, 0)
+        self._human_options_layout.setSpacing(2)
+        layout.addWidget(self._human_options_host)
+
+        self._human_button_group = QButtonGroup(panel)
+
+        self.human_custom_edit = QLineEdit()
+        self.human_custom_edit.setPlaceholderText("Свой вариант ответа…")
+        layout.addWidget(self.human_custom_edit)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.human_continue_button = QPushButton("Продолжить")
+        self.human_continue_button.setStyleSheet(
+            "QPushButton { background:#1f7a3d; color:#ffffff; border:none;"
+            "border-radius:8px; padding:9px 16px; font-size:12px; font-weight:700; }"
+            "QPushButton:hover { background:#248c47; }"
+            "QPushButton:disabled { background:#274a34; color:#8bb59a; }"
+        )
+        self.human_continue_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.human_continue_button.clicked.connect(self.continue_after_human)
+        actions.addWidget(self.human_continue_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        return panel
 
     def _build_stage_cards(self) -> None:
         """Создать карточки стадий в ленте."""
@@ -422,12 +495,10 @@ class AgentCreateWidget(QWidget):
 
     def _connect_signals(self) -> None:
         """Связать кнопки со слотами (логика конструктора не меняется)."""
-        self.preview_button.clicked.connect(self.build_preview)
-        self.check_tools_button.clicked.connect(self.check_tools)
-        self.validate_button.clicked.connect(self.validate_agent)
+        self.create_button.clicked.connect(self.create_validate_and_run)
         self.save_button.clicked.connect(self.save_agent)
-        self.validate_run_button.clicked.connect(self.create_validate_and_run)
-        self.clear_button.clicked.connect(self.clear)
+        self.reset_button.clicked.connect(self.clear)
+        self.stop_button.clicked.connect(self.request_stop)
         self.dev_toggle.toggled.connect(self._toggle_dev)
 
     def _toggle_dev(self, checked: bool) -> None:
@@ -469,6 +540,7 @@ class AgentCreateWidget(QWidget):
             return
 
         self._set_buttons_enabled(False)
+        self.stop_button.setEnabled(True)
         thread = QThread()
         worker = CreateFlowWorker(job)
         self._thread = thread
@@ -492,7 +564,17 @@ class AgentCreateWidget(QWidget):
             thread.wait(5000)
         self._thread = None
         self._worker = None
+        self.stop_button.setEnabled(False)
+        self._cancel_event.clear()
         self._set_buttons_enabled(True)
+
+    def request_stop(self) -> None:
+        """Запросить остановку выполняющегося агента (кооперативно, между шагами)."""
+        if not self._is_busy():
+            return
+        self._cancel_event.set()
+        self.stop_button.setEnabled(False)
+        self._append_log("⏹ Запрошена остановка агента. Останавливаю после текущего шага…")
 
     # -------------------------------------------------------------- actions
 
@@ -651,17 +733,20 @@ class AgentCreateWidget(QWidget):
 
         self._reset_stages()
         self.live_log.clear()
+        self._cancel_event.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
         self.select_stage(STAGE_TRIAL)
 
         service = self._container.agent_service
+        cancel_event = self._cancel_event
 
         def job(progress: Callable[[str], None]) -> object:
             return service.create_validate_and_run_once(
                 user_request,
                 progress_callback=progress,
+                cancel_callback=cancel_event.is_set,
             )
 
         self._run_in_background(
@@ -679,12 +764,145 @@ class AgentCreateWidget(QWidget):
         self._apply_validation(validation)
         self.select_stage(STAGE_RESULT)
         if state is None:
+            self._hide_human_panel()
             show_info(self, "Агент не запущен", validation.summary)
             return
+        if self._is_awaiting_human(state):
+            self._prompt_human(agent_spec, state)
+            return
+        self._hide_human_panel()
         show_info(
             self,
             "Агент запущен",
             f"Проверка пройдена, run_id={state.run_id}, status={state.status.value}",
+        )
+
+    @staticmethod
+    def _is_awaiting_human(state: object) -> bool:
+        """Проверить, приостановлен ли запуск и ждёт участия человека."""
+        return getattr(state, "status", None) in {
+            AgentRunStatus.PAUSED_FOR_HUMAN,
+            AgentRunStatus.PAUSED_FOR_CREDENTIALS,
+        }
+
+    def _prompt_human(self, agent_spec: AgentSpec, state: object) -> None:
+        """Показать панель участия человека по приостановленному состоянию."""
+        self._paused_agent = agent_spec
+        self._paused_state = state
+        approval = getattr(state, "pending_human_approval", None)
+        variables = getattr(state, "variables", {}) or {}
+        if approval is not None:
+            question = approval.question
+            options = list(approval.options)
+        else:
+            question = variables.get(
+                "credential_request_reason", "Агенту требуется ваше участие."
+            )
+            options = ["Я выполнил(а) требуемое действие"]
+
+        self.human_question.setText(question)
+        plan = variables.get("human_plan_ahead")
+        if plan:
+            self.human_plan.setText(f"После вашего ответа агент планирует: {plan}")
+            self.human_plan.setVisible(True)
+        else:
+            self.human_plan.setVisible(False)
+        self._populate_human_options(options)
+        self.human_custom_edit.clear()
+        self.human_continue_button.setEnabled(True)
+        self._human_panel.setVisible(True)
+        self._append_log("⏸ Агент ожидает вашего ответа/действия. Ответьте и нажмите «Продолжить».")
+
+    def _populate_human_options(self, options: list[str]) -> None:
+        """Перестроить радиокнопки вариантов ответа + «Свой вариант»."""
+        for radio, _ in self._human_radios:
+            self._human_button_group.removeButton(radio)
+            radio.setParent(None)
+            radio.deleteLater()
+        self._human_radios = []
+        while self._human_options_layout.count():
+            item = self._human_options_layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.setParent(None)
+
+        for index, option in enumerate(options):
+            radio = QRadioButton(option)
+            self._human_button_group.addButton(radio)
+            self._human_options_layout.addWidget(radio)
+            self._human_radios.append((radio, option))
+            if index == 0:
+                radio.setChecked(True)
+
+        # Последний вариант — всегда свой ответ (значение берётся из поля ввода).
+        custom_radio = QRadioButton("Свой вариант ответа")
+        self._human_button_group.addButton(custom_radio)
+        self._human_options_layout.addWidget(custom_radio)
+        self._human_radios.append((custom_radio, None))
+        custom_radio.toggled.connect(self._on_custom_radio_toggled)
+
+    def _on_custom_radio_toggled(self, checked: bool) -> None:
+        """Если выбран свой вариант — сфокусировать поле ввода."""
+        if checked:
+            self.human_custom_edit.setFocus()
+
+    def _selected_human_answer(self) -> str | None:
+        """Вернуть выбранный ответ человека (вариант или свой текст)."""
+        for radio, option in self._human_radios:
+            if not radio.isChecked():
+                continue
+            if option is None:
+                return self.human_custom_edit.text().strip()
+            return option
+        # Если ничего не выбрано, но введён свой текст — используем его.
+        return self.human_custom_edit.text().strip() or None
+
+    def _hide_human_panel(self) -> None:
+        """Скрыть панель участия человека и очистить контекст паузы."""
+        self._human_panel.setVisible(False)
+        self._paused_agent = None
+        self._paused_state = None
+
+    def continue_after_human(self) -> None:
+        """Продолжить работу агента после ответа/действия человека."""
+        if self._paused_state is None or self._paused_agent is None:
+            return
+        if self._is_busy():
+            return
+        answer = self._selected_human_answer()
+        if not answer:
+            show_error(
+                self,
+                "Нужен ответ",
+                "Выберите вариант или введите свой ответ, затем нажмите «Продолжить».",
+            )
+            return
+
+        agent_spec = self._paused_agent
+        state = self._paused_state
+        self._human_panel.setVisible(False)
+        self._cancel_event.clear()
+        self._set_running(STAGE_TRIAL)
+        self.select_stage(STAGE_TRIAL)
+        self._append_log(f"▶ Продолжаю после ответа человека: {answer}")
+
+        service = self._container.agent_service
+        cancel_event = self._cancel_event
+
+        def job(progress: Callable[[str], None]) -> object:
+            return service.resume_after_human(
+                agent_spec,
+                state,
+                answer,
+                approved=True,
+                progress_callback=progress,
+                cancel_callback=cancel_event.is_set,
+            )
+
+        self._run_in_background(
+            job,
+            self._on_create_run_completed,
+            self._on_create_run_failed,
         )
 
     def _on_create_run_failed(self, message: str) -> None:
@@ -726,6 +944,7 @@ class AgentCreateWidget(QWidget):
             return
         self._preview_agent = None
         self._last_request = ""
+        self._hide_human_panel()
         self.request_edit.clear()
         self.live_log.clear()
         self.general_output.clear()

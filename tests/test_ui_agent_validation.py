@@ -87,7 +87,12 @@ class FakeValidationUiService:
             progress_callback("trial-progress")
         return self.validation
 
-    def create_validate_and_run_once(self, user_request: str, progress_callback=None):
+    def create_validate_and_run_once(
+        self,
+        user_request: str,
+        progress_callback=None,
+        cancel_callback=None,
+    ):
         """Вернуть validation и runtime state."""
         self.calls.append(f"create_validate_and_run_once:{user_request}")
         if progress_callback is not None:
@@ -104,15 +109,22 @@ class FakeValidationUiService:
 
 
 def test_agent_create_widget_has_validation_buttons(qt_app) -> None:
-    """UI имеет кнопки проверки агента."""
+    """UI имеет только кнопки Создать/Сохранить/Сбросить и Остановить."""
     from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
         AgentCreateWidget,
     )
 
     widget = AgentCreateWidget(SimpleNamespace(agent_service=FakeValidationUiService()))
 
-    assert widget.validate_button.text() == "Пробный запуск"
-    assert widget.validate_run_button.text() == "Собрать, проверить и запустить"
+    assert widget.create_button.text() == "Создать"
+    assert widget.save_button.text() == "Сохранить"
+    assert widget.reset_button.text() == "Сбросить"
+    assert widget.stop_button.text() == "Остановить"
+    # Кнопка остановки активируется только во время выполнения.
+    assert widget.stop_button.isEnabled() is False
+    # Старые кнопки удалены из интерфейса.
+    assert not hasattr(widget, "validate_button")
+    assert not hasattr(widget, "preview_button")
 
 
 def test_agent_create_widget_calls_validation_service(qt_app, monkeypatch) -> None:

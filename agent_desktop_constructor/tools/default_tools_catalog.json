@@ -1151,6 +1151,42 @@
         "Изменить значение ячейки в отчёте"
       ],
       "planner_hint": "Редактирует существующий .xlsx в папке агента. operations — список: append_row (values), set_cell (cell='B2', value), add_sheet (name), delete_sheet (name). Файл должен уже существовать (создай через excel.create_workbook)."
+    },
+    {
+      "name": "agent.wait",
+      "title": "Пауза агента",
+      "description": "Откладывает работу агента на заданное число секунд.",
+      "category": "agent",
+      "side_effect_level": "read",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "number",
+            "minimum": 0,
+            "description": "На сколько секунд отложить работу"
+          }
+        },
+        "required": ["seconds"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "requested_seconds": {"type": "number"},
+          "waited_seconds": {"type": "number"},
+          "capped": {"type": "boolean"},
+          "cancelled": {"type": "boolean"}
+        }
+      },
+      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent", "generic_agent"],
+      "examples": [
+        "Подождать 60 секунд, пока придёт письмо с кодом подтверждения",
+        "Сделать паузу перед повторной попыткой, чтобы не превысить лимит запросов",
+        "Подождать, пока загрузится страница, прежде чем делать скриншот"
+      ],
+      "planner_hint": "Безопасное read-действие. Отложи работу на N секунд через input_data.seconds. Используй для ожидания: пока придёт письмо/код, загрузится страница, истечёт задержка перед повтором или снимется ограничение по частоте. Не жди слишком долго без необходимости; максимум 3600 секунд."
     }
   ]
 }

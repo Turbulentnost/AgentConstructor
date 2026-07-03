@@ -26,6 +26,7 @@ from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
 from agent_desktop_constructor.tools.gateway import ToolGateway
 from agent_desktop_constructor.tools.registry import ToolRegistry
+from agent_desktop_constructor.tools.wait_tool import WAIT_TOOL_NAME
 
 CALL_DECISIONS = {
     SupervisorDecisionType.CALL_TOOL,
@@ -429,7 +430,10 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         proposal = decision.tool_call
         signature = _action_signature(proposal.tool_name, proposal.input_data)
         is_vision_tool = proposal.tool_name in VISION_INTERACTION_TOOLS
-        if signature in executed_signatures and not is_vision_tool:
+        # Паузу (agent.wait) можно повторять — например, периодически ждать
+        # письмо/код. Дедупликация по сигнатуре её не блокирует.
+        allow_repeat = is_vision_tool or proposal.tool_name == WAIT_TOOL_NAME
+        if signature in executed_signatures and not allow_repeat:
             note = (
                 f"Действие {proposal.tool_name} с теми же параметрами уже выполнялось "
                 "— повтор пропущен."
@@ -470,7 +474,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
             return "repeat"
 
-        if not is_vision_tool:
+        if not allow_repeat:
             executed_signatures.append(signature)
         self._execute_loop_tool(
             agent_spec=agent_spec,
@@ -494,6 +498,24 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 self._emit_progress(f"↺ {no_progress_note}")
                 return "repeat"
         return False
+
+    def _prepare_wait_tool(self, tool_name: str, proposed_input: dict) -> None:
+        """Показать значок паузы и включить прерывание сна при остановке."""
+        if tool_name != WAIT_TOOL_NAME:
+            return
+        try:
+            seconds = float(proposed_input.get("seconds"))
+        except (TypeError, ValueError):
+            seconds = 0.0
+        self._emit_progress(
+            f"⏳ Агент делает паузу на {seconds:g} с и продолжит автоматически…"
+        )
+        try:
+            tool = self._tool_registry.get(tool_name)
+        except Exception:
+            return
+        if hasattr(tool, "cancel_check"):
+            tool.cancel_check = self._is_cancel_requested
 
     def _execute_loop_tool(
         self,
@@ -524,6 +546,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             tool_name=tool_name,
             details={"reason": reason},
         )
+        self._prepare_wait_tool(tool_name, proposed_input)
         result = self._tool_gateway.execute_tool(
             agent_spec=agent_spec,
             run_id=state.run_id,
@@ -572,6 +595,17 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 tool_name=tool_name,
                 details={"output_keys": output_keys},
             )
+            if tool_name == WAIT_TOOL_NAME:
+                waited = output_data.get("waited_seconds", 0)
+                if output_data.get("cancelled"):
+                    self._emit_progress(
+                        f"⏳ Пауза прервана после {waited:g} с (остановка агента)."
+                    )
+                else:
+                    self._emit_progress(
+                        f"⏳ Пауза {waited:g} с завершена. Продолжаю работу…"
+                    )
+                return
             self._emit_progress(
                 f"✓ Инструмент {tool_name} выполнен. Данные: "
                 f"{', '.join(output_keys) if output_keys else 'нет полей'}"

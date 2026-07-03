@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
@@ -16,8 +18,15 @@ from agent_desktop_constructor.core.models.tooling import (
 from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.workers.browser_cdp_worker import (
+    DEFAULT_CDP_PORT,
     BrowserCdpError,
     BrowserCdpWorker,
+    BrowserLaunchConfig,
+)
+from agent_desktop_constructor.workers.browser_detect import (
+    find_readable_browser,
+    list_installed_browsers,
+    resolve_browser_executable,
 )
 
 DEFAULT_MAX_RESULTS = 5
@@ -34,6 +43,104 @@ DUCKDUCKGO_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
 DUCKDUCKGO_LITE_ENDPOINT = "https://lite.duckduckgo.com/lite/"
 TITLE_RESULT_CLASSES = ("result__a", "result-link")
 SNIPPET_RESULT_CLASSES = ("result__snippet", "result-snippet")
+
+
+class BrowserWorkerProvider:
+    """Выдаёт CDP-worker для конкретного браузера или дефолтного (авто-выбор)."""
+
+    def __init__(self, default_worker: BrowserCdpWorker) -> None:
+        """Сохранить дефолтный worker и кэш per-browser workers."""
+        self._default_worker = default_worker
+        self._by_browser: dict[str, BrowserCdpWorker] = {}
+
+    def get(self, browser: object) -> BrowserCdpWorker:
+        """Вернуть worker: дефолтный (авто) или под конкретный браузер."""
+        name = str(browser or "").strip()
+        if not name:
+            return self._default_worker
+        key = name.casefold()
+        cached = self._by_browser.get(key)
+        if cached is not None:
+            return cached
+        if find_readable_browser(key) is None:
+            raise BrowserCdpError(
+                f"Браузер {name!r} не поддерживает чтение через CDP. Доступны "
+                "Chromium-браузеры: edge, chrome, brave, yandex, opera, vivaldi, "
+                "chromium. Проверь список через browser.list_installed_browsers."
+            )
+        executable = resolve_browser_executable(key)
+        if executable is None:
+            raise BrowserCdpError(
+                f"Браузер {name!r} не найден на устройстве. Посмотри доступные "
+                "через browser.list_installed_browsers."
+            )
+        worker = BrowserCdpWorker(
+            BrowserLaunchConfig(
+                port=DEFAULT_CDP_PORT + 1 + len(self._by_browser),
+                executable_path=executable,
+                user_data_dir=str(
+                    Path(tempfile.gettempdir()) / f"agent_constructor_cdp_{key}"
+                ),
+            )
+        )
+        self._by_browser[key] = worker
+        return worker
+
+
+class BrowserListInstalledBrowsersTool(BaseTool):
+    """Определяет установленные на устройстве браузеры (read-only, без запуска)."""
+
+    def __init__(self) -> None:
+        """Создать инструмент browser.list_installed_browsers."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.list_installed_browsers",
+                title="Список браузеров на устройстве",
+                description=(
+                    "Определяет, какие браузеры установлены на компьютере "
+                    "(Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, "
+                    "Firefox): путь, версия и поддержка чтения через CDP."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                timeout_seconds=15,
+                input_schema={"type": "object", "properties": {}},
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "browsers": {"type": "array"},
+                        "count": {"type": "integer"},
+                        "default_readable_browser": {"type": "string"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Вернуть список установленных браузеров."""
+        try:
+            browsers = list_installed_browsers()
+        except Exception as exc:  # noqa: BLE001 - изоляция ошибок сканирования ФС
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="BROWSER_DETECT_ERROR",
+                error_message=str(exc),
+            )
+        default_readable = next(
+            (item["name"] for item in browsers if item.get("readable")),
+            "",
+        )
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "browsers": browsers,
+                "count": len(browsers),
+                "default_readable_browser": default_readable,
+            },
+        )
 
 
 class BrowserSearchWebTool(BaseTool):
@@ -130,6 +237,7 @@ class BrowserOpenPageTool(BaseTool):
                     "properties": {
                         "url": {"type": "string"},
                         "max_chars": {"type": "integer"},
+                        "browser": {"type": "string"},
                     },
                     "required": ["url"],
                 },
@@ -144,11 +252,16 @@ class BrowserOpenPageTool(BaseTool):
                 },
             )
         )
-        self._worker = worker or BrowserCdpWorker()
+        self._provider = BrowserWorkerProvider(worker or BrowserCdpWorker())
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Открыть страницу через browser worker."""
-        return _execute_browser_worker(self.definition.name, self._worker.open_page, input_data)
+        return _execute_browser_worker(
+            self.definition.name,
+            self._provider,
+            "open_page",
+            input_data,
+        )
 
 
 class BrowserExtractTableTool(BaseTool):
@@ -170,6 +283,7 @@ class BrowserExtractTableTool(BaseTool):
                     "properties": {
                         "url": {"type": "string"},
                         "table_hint": {"type": "string"},
+                        "browser": {"type": "string"},
                     },
                     "required": ["url"],
                 },
@@ -183,13 +297,14 @@ class BrowserExtractTableTool(BaseTool):
                 },
             )
         )
-        self._worker = worker or BrowserCdpWorker()
+        self._provider = BrowserWorkerProvider(worker or BrowserCdpWorker())
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Извлечь таблицы через browser worker."""
         return _execute_browser_worker(
             self.definition.name,
-            self._worker.extract_table,
+            self._provider,
+            "extract_table",
             input_data,
         )
 
@@ -215,6 +330,7 @@ class BrowserScrollPageTool(BaseTool):
                         "direction": {"type": "string"},
                         "pixels": {"type": "integer"},
                         "max_chars": {"type": "integer"},
+                        "browser": {"type": "string"},
                     },
                     "required": ["url"],
                 },
@@ -229,13 +345,14 @@ class BrowserScrollPageTool(BaseTool):
                 },
             )
         )
-        self._worker = worker or BrowserCdpWorker()
+        self._provider = BrowserWorkerProvider(worker or BrowserCdpWorker())
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Прокрутить страницу через browser worker."""
         return _execute_browser_worker(
             self.definition.name,
-            self._worker.scroll_page,
+            self._provider,
+            "scroll_page",
             input_data,
         )
 
@@ -261,6 +378,7 @@ class BrowserClickLinkTool(BaseTool):
                         "link_text": {"type": "string"},
                         "href": {"type": "string"},
                         "max_chars": {"type": "integer"},
+                        "browser": {"type": "string"},
                     },
                     "required": ["url"],
                 },
@@ -275,13 +393,14 @@ class BrowserClickLinkTool(BaseTool):
                 },
             )
         )
-        self._worker = worker or BrowserCdpWorker()
+        self._provider = BrowserWorkerProvider(worker or BrowserCdpWorker())
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Перейти по ссылке через browser worker."""
         return _execute_browser_worker(
             self.definition.name,
-            self._worker.click_link,
+            self._provider,
+            "click_link",
             input_data,
         )
 
@@ -295,6 +414,7 @@ def register_web_tools(
     """Зарегистрировать read-only web tools."""
     browser_worker = worker or BrowserCdpWorker()
     tools = [
+        BrowserListInstalledBrowsersTool(),
         BrowserSearchWebTool(),
         BrowserOpenPageTool(browser_worker),
         BrowserExtractTableTool(browser_worker),
@@ -307,9 +427,16 @@ def register_web_tools(
         registry.register(tool)
 
 
-def _execute_browser_worker(tool_name: str, action, input_data: dict) -> ToolCallResult:
-    """Выполнить browser worker action и нормализовать ошибку в ToolCallResult."""
+def _execute_browser_worker(
+    tool_name: str,
+    provider: "BrowserWorkerProvider",
+    method_name: str,
+    input_data: dict,
+) -> ToolCallResult:
+    """Выбрать worker нужного браузера и выполнить его action безопасно."""
     try:
+        worker = provider.get(input_data.get("browser"))
+        action = getattr(worker, method_name)
         output_data = action(input_data)
     except BrowserCdpError as exc:
         return ToolCallResult(

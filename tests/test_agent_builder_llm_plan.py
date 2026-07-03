@@ -70,17 +70,20 @@ def test_agent_builder_builds_agent_spec_from_llm_agent_plan() -> None:
     ]
 
 
-def test_agent_spec_contains_only_tools_selected_by_llm() -> None:
-    """AgentSpec содержит инструменты, выбранные LLM."""
+def test_agent_spec_grants_selected_tools_first_then_safe_autonomous_tools() -> None:
+    """Выбранный LLM инструмент идёт первым, а агенту доступны безопасные read/draft."""
     builder = AgentBuilder(llm_planner=FakeLLMToolPlanner(make_plan()), use_llm_planner=True)
 
     agent_spec = builder.build_from_request("Проверь календарь")
 
-    assert [tool.tool_name for tool in agent_spec.tools] == ["outlook.read_calendar"]
+    tool_names = [tool.tool_name for tool in agent_spec.tools]
+    assert tool_names[0] == "outlook.read_calendar"
+    assert "browser.search_web" in tool_names
+    assert "llm.analyze_collected_data" in tool_names
 
 
-def test_agent_builder_does_not_add_template_tools_when_llm_enabled() -> None:
-    """AgentBuilder не добавляет инструменты вручную, если включён LLM planning."""
+def test_agent_spec_does_not_auto_grant_write_or_dangerous_tools() -> None:
+    """write/dangerous (email.send, document.approve) не выдаются автоматически."""
     builder = AgentBuilder(llm_planner=FakeLLMToolPlanner(make_plan()), use_llm_planner=True)
 
     agent_spec = builder.build_from_request(
@@ -88,9 +91,20 @@ def test_agent_builder_does_not_add_template_tools_when_llm_enabled() -> None:
     )
 
     tool_names = {tool.tool_name for tool in agent_spec.tools}
-    assert tool_names == {"outlook.read_calendar"}
-    assert "llm.analyze_collected_data" not in tool_names
-    assert "report.build_schedule_recommendations" not in tool_names
+    assert "email.send" not in tool_names
+    assert "document.approve" not in tool_names
+
+
+def test_agent_builder_uses_llm_plan_graph_not_template() -> None:
+    """При LLM planning граф строится из шагов LLM-плана, а не из шаблона."""
+    builder = AgentBuilder(llm_planner=FakeLLMToolPlanner(make_plan()), use_llm_planner=True)
+
+    agent_spec = builder.build_from_request(
+        "Нужен агент, который смотрит все совещания и планирует график"
+    )
+
+    node_ids = [node.node_id for node in agent_spec.graph_nodes]
+    assert node_ids[:2] == ["read_calendar", "final_summary"]
 
 
 def test_template_fallback_works_only_when_llm_planning_disabled() -> None:

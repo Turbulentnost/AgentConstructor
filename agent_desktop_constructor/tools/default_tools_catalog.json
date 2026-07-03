@@ -330,6 +330,38 @@
       "planner_hint": "Используй после извлечения и анализа текста документа для подготовки итогового отчёта."
     },
     {
+      "name": "browser.list_installed_browsers",
+      "title": "Список браузеров на устройстве",
+      "description": "Определяет установленные на компьютере браузеры (Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, Firefox): имя, путь, версию и поддержку чтения страниц через CDP.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "browsers": {"type": "array"},
+          "count": {"type": "integer"},
+          "default_readable_browser": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Какие браузеры установлены на компьютере",
+        "Проверить, установлен ли Edge/Chrome"
+      ],
+      "planner_hint": "Используй, когда нужно узнать, какие браузеры есть на устройстве, или в каком браузере можно читать страницы. Верни поле browser в browser.open_page/click_link/scroll_page/extract_table, чтобы работать в конкретном браузере (например edge или chrome). Для чтения подходят только Chromium-браузеры (supports_cdp=true)."
+    },
+    {
       "name": "browser.search_web",
       "title": "Поиск web-информации",
       "description": "Обычный поиск в интернете (как Google) по любому запросу: новости, факты, лунный календарь, гороскоп, справочные данные. Возвращает список результатов с заголовками, сниппетами и ссылками, а также краткий ответ.",
@@ -380,7 +412,8 @@
         "type": "object",
         "properties": {
           "url": {"type": "string"},
-          "max_chars": {"type": "integer"}
+          "max_chars": {"type": "integer"},
+          "browser": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -416,7 +449,8 @@
         "type": "object",
         "properties": {
           "url": {"type": "string"},
-          "table_hint": {"type": "string"}
+          "table_hint": {"type": "string"},
+          "browser": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -451,7 +485,8 @@
           "url": {"type": "string"},
           "direction": {"type": "string"},
           "pixels": {"type": "integer"},
-          "max_chars": {"type": "integer"}
+          "max_chars": {"type": "integer"},
+          "browser": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -489,7 +524,8 @@
           "url": {"type": "string"},
           "link_text": {"type": "string"},
           "href": {"type": "string"},
-          "max_chars": {"type": "integer"}
+          "max_chars": {"type": "integer"},
+          "browser": {"type": "string"}
         },
         "required": ["url"]
       },

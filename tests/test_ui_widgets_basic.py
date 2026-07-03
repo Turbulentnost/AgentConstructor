@@ -21,6 +21,19 @@ from tests.test_storage import make_agent_spec
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+def _wait_for_widget_idle(widget, qt_app, timeout_ms: int = 5000) -> None:
+    """Прокрутить event loop, пока фоновая операция виджета не завершится."""
+    import time
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while getattr(widget, "_thread", None) is not None:
+        qt_app.processEvents()
+        if time.monotonic() > deadline:
+            raise AssertionError("Фоновая операция UI не завершилась вовремя")
+        time.sleep(0.01)
+    qt_app.processEvents()
+
+
 @pytest.fixture(scope="session")
 def qt_app():
     """Создать QApplication для headless UI-тестов."""
@@ -166,6 +179,7 @@ def test_preview_and_save_use_service(qt_app, monkeypatch) -> None:
     widget.request_edit.setPlainText("создай агента")
 
     widget.build_preview()
+    _wait_for_widget_idle(widget, qt_app)
     widget.save_agent()
 
     assert container.agent_service.calls == [

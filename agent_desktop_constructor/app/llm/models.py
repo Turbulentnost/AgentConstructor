@@ -10,19 +10,34 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from agent_desktop_constructor.app.llm.errors import LLMInvalidJSONError
 
 
+class LLMImageContent(BaseModel):
+    """Изображение (например скриншот), передаваемое LLM для анализа UI."""
+
+    base64_data: str
+    media_type: str = "image/png"
+
+    @field_validator("base64_data")
+    @classmethod
+    def validate_base64_data(cls, value: str) -> str:
+        """Проверить, что base64-данные изображения заполнены."""
+        if not value.strip():
+            raise ValueError("base64_data изображения не должен быть пустым")
+        return value
+
+
 class LLMMessage(BaseModel):
-    """Одно сообщение OpenAI-compatible chat completion."""
+    """Одно сообщение chat completion, опционально с изображениями (multimodal)."""
 
     role: Literal["system", "user", "assistant"]
     content: str
+    images: list[LLMImageContent] = Field(default_factory=list)
 
-    @field_validator("content")
-    @classmethod
-    def validate_content(cls, value: str) -> str:
-        """Проверить, что content заполнен."""
-        if not value.strip():
-            raise ValueError("content не должен быть пустым")
-        return value
+    @model_validator(mode="after")
+    def validate_content_or_images(self) -> LLMMessage:
+        """Content обязателен, если нет изображений; иначе допускается пустой текст."""
+        if not self.content.strip() and not self.images:
+            raise ValueError("content не должен быть пустым без изображений")
+        return self
 
 
 class LLMRequest(BaseModel):

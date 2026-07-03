@@ -37,11 +37,72 @@ def test_register_web_tools_registers_browser_search_web() -> None:
 
     register_web_tools(registry)
 
+    assert registry.has_tool("browser.list_installed_browsers")
     assert registry.has_tool("browser.search_web")
     assert registry.has_tool("browser.open_page")
     assert registry.has_tool("browser.extract_table")
     assert registry.has_tool("browser.scroll_page")
     assert registry.has_tool("browser.click_link")
+
+
+def test_browser_list_installed_browsers_returns_detected(monkeypatch) -> None:
+    """browser.list_installed_browsers возвращает найденные браузеры."""
+    from agent_desktop_constructor.tools.web_tools import (
+        BrowserListInstalledBrowsersTool,
+    )
+
+    fake_browsers = [
+        {
+            "name": "edge",
+            "family": "chromium",
+            "executable_path": "C:/edge/msedge.exe",
+            "version": "122.0.0.0",
+            "supports_cdp": True,
+            "readable": True,
+        },
+        {
+            "name": "firefox",
+            "family": "gecko",
+            "executable_path": "C:/ff/firefox.exe",
+            "version": None,
+            "supports_cdp": False,
+            "readable": False,
+        },
+    ]
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.list_installed_browsers",
+        lambda: fake_browsers,
+    )
+
+    result = BrowserListInstalledBrowsersTool().execute({})
+
+    assert result.ok is True
+    assert result.output_data["count"] == 2
+    assert result.output_data["default_readable_browser"] == "edge"
+    assert result.output_data["browsers"][0]["name"] == "edge"
+
+
+def test_browser_open_page_routes_to_specific_browser() -> None:
+    """browser=... направляет вызов в worker конкретного браузера."""
+    default_worker = FakeBrowserWorker()
+
+    result = BrowserOpenPageTool(default_worker).execute(
+        {"url": "https://example.com"}
+    )
+
+    assert result.ok is True
+    assert default_worker.calls == [("open_page", {"url": "https://example.com"})]
+
+
+def test_browser_open_page_rejects_non_cdp_browser() -> None:
+    """Firefox (не Chromium) не поддерживает чтение через CDP — понятная ошибка."""
+    result = BrowserOpenPageTool(FakeBrowserWorker()).execute(
+        {"url": "https://example.com", "browser": "firefox"}
+    )
+
+    assert result.ok is False
+    assert result.error_type == "BROWSER_CDP_ERROR"
+    assert "firefox" in result.error_message.lower()
 
 
 def test_browser_search_web_weather_uses_wttr(monkeypatch) -> None:

@@ -57,9 +57,11 @@ class FakeValidationService:
             variables={"final_message": "Проверка прошла"},
         )
 
-    def validate_agent(self, agent_spec, user_request: str):
+    def validate_agent(self, agent_spec, user_request: str, progress_callback=None):
         """Вернуть validation result."""
         self.calls.append(user_request)
+        if progress_callback is not None:
+            progress_callback("проверка началась")
         self.state.agent_id = agent_spec.agent_id
         return AgentValidationResult(
             agent_id=agent_spec.agent_id,

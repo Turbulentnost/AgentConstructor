@@ -170,11 +170,25 @@ class AgentBuilder:
             requirements.append(self._build_new_tool_or_human_requirement())
         return requirements
 
+    _AUTONOMOUS_TOOL_LEVELS = (
+        ToolSideEffectLevel.READ,
+        ToolSideEffectLevel.CREATE_DRAFT,
+    )
+
     def _build_tools_from_llm_plan(
         self,
         plan: LLMAgentPlan,
     ) -> list[AgentToolPermission]:
-        """Создать AgentSpec tools строго из выбранных LLM tool_name."""
+        """Разрешить агенту инструменты для самостоятельного планирования в цикле.
+
+        Инструменты, выбранные LLM в первичном плане, идут первыми (сохраняя порядок).
+        Дополнительно агенту выдаются ВСЕ безопасные инструменты каталога
+        (read и create_draft), чтобы LLM в ReAct-цикле могла сама выбирать и
+        комбинировать инструменты (в т.ч. веб-поиск), а не только те, что попали
+        в первичный план. write/dangerous (например email.send, document.approve)
+        НЕ выдаются автоматически — только если их явно выбрала LLM, и они всё
+        равно требуют подтверждения человека на этапе исполнения.
+        """
         ordered_tool_names: list[str] = []
         for planned_tool in plan.selected_tools:
             if planned_tool.tool_name not in ordered_tool_names:
@@ -182,6 +196,14 @@ class AgentBuilder:
         for step in plan.steps:
             if step.tool_name is not None and step.tool_name not in ordered_tool_names:
                 ordered_tool_names.append(step.tool_name)
+
+        for tool in self.tools_catalog.tools:
+            if tool.name in ordered_tool_names:
+                continue
+            if tool.side_effect_level not in self._AUTONOMOUS_TOOL_LEVELS:
+                continue
+            ordered_tool_names.append(tool.name)
+
         return [
             self._build_tool_permission_from_catalog(tool_name)
             for tool_name in ordered_tool_names

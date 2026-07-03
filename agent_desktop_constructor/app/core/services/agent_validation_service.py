@@ -60,6 +60,7 @@ class AgentValidationService:
         user_request: str,
         progress_callback: Callable[[str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        extra_variables: dict | None = None,
     ) -> AgentValidationResult:
         """Проверить AgentSpec и выполнить пробный запуск.
 
@@ -81,7 +82,7 @@ class AgentValidationService:
             )
 
         state = self._run_trial(
-            agent_spec, user_request, progress_callback, cancel_callback
+            agent_spec, user_request, progress_callback, cancel_callback, extra_variables
         )
         self._validation_states[state.run_id] = state
         return self._build_validation_result(agent_spec, state)
@@ -163,6 +164,7 @@ class AgentValidationService:
         user_request: str,
         progress_callback: Callable[[str], None] | None,
         cancel_callback: Callable[[], bool] | None = None,
+        extra_variables: dict | None = None,
     ) -> AgentRuntimeState:
         """Выполнить пробный запуск, безопасно подключив/сняв progress/cancel-колбэки."""
         supports_progress = progress_callback is not None and hasattr(
@@ -175,14 +177,17 @@ class AgentValidationService:
             self._runtime.set_progress_callback(progress_callback)
         if supports_cancel:
             self._runtime.set_cancel_callback(cancel_callback)
+        initial_variables = {
+            "user_request": user_request,
+            "validation_mode": True,
+            "read_only_trial_run": True,
+        }
+        if extra_variables:
+            initial_variables.update(extra_variables)
         try:
             return self._runtime.run(
                 agent_spec,
-                initial_variables={
-                    "user_request": user_request,
-                    "validation_mode": True,
-                    "read_only_trial_run": True,
-                },
+                initial_variables=initial_variables,
             )
         finally:
             if supports_progress:

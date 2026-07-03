@@ -65,6 +65,7 @@ class FakeValidationService:
         user_request: str,
         progress_callback=None,
         cancel_callback=None,
+        extra_variables=None,
     ):
         """Вернуть validation result."""
         self.calls.append(user_request)

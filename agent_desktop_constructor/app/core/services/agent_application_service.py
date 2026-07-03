@@ -49,6 +49,7 @@ class AgentApplicationService:
         human_approval_repository: HumanApprovalRepository | None = None,
         agent_validation_service: object | None = None,
         metadata_generator: object | None = None,
+        workspace_resolver: object | None = None,
     ) -> None:
         """Создать сервис с repository или memory-only режимом."""
         self._agent_builder = agent_builder
@@ -60,6 +61,7 @@ class AgentApplicationService:
         self._human_approval_repository = human_approval_repository
         self._agent_validation_service = agent_validation_service
         self._metadata_generator = metadata_generator
+        self._workspace_resolver = workspace_resolver
         self._memory_agents: dict[str, AgentSpec] = {}
         self._memory_audit_logs: list[dict] = []
         self._audit_warnings: list[str] = []
@@ -148,6 +150,7 @@ class AgentApplicationService:
         initial_variables: dict | None = None,
         progress_callback: Callable[[str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        attachment_paths: list[str] | None = None,
     ) -> AgentRuntimeState:
         """Запустить сохранённого агента по его исходному графу с live-прогрессом.
 
@@ -156,6 +159,14 @@ class AgentApplicationService:
         """
         agent_spec = self.get_agent(agent_id)
         variables = initial_variables or {"user_request": agent_spec.goal.main_goal}
+        attached_files = self.ingest_attachments(agent_id, attachment_paths)
+        if attached_files:
+            variables = {**variables, "attached_files": attached_files}
+            if progress_callback is not None:
+                progress_callback(
+                    "📎 Прикреплённые файлы добавлены в контекст: "
+                    + ", ".join(item["name"] for item in attached_files)
+                )
         self._add_audit(
             action="agent.run_started",
             details={"agent_id": agent_spec.agent_id},
@@ -245,6 +256,7 @@ class AgentApplicationService:
         user_request: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        extra_variables: dict | None = None,
     ) -> AgentValidationResult:
         """Проверить агента через AgentValidationService."""
         if self._agent_validation_service is None:
@@ -254,6 +266,7 @@ class AgentApplicationService:
             user_request or agent_spec.goal.main_goal,
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
+            extra_variables=extra_variables,
         )
 
     def create_validate_and_save_agent(
@@ -267,11 +280,33 @@ class AgentApplicationService:
             self.save_agent(agent_spec)
         return agent_spec, validation_result
 
+    def ingest_attachments(
+        self,
+        agent_id: str,
+        attachment_paths: list[str] | None,
+    ) -> list[dict]:
+        """Скопировать вложения в рабочую папку агента и вернуть их контент.
+
+        Возвращает список ``{name, content}`` для передачи в контекст LLM. При
+        отсутствии resolver или путей — пустой список.
+        """
+        if not attachment_paths or self._workspace_resolver is None:
+            return []
+        from agent_desktop_constructor.tools.attachment_reader import ingest_attachment
+
+        workspace = self._workspace_resolver.for_agent(agent_id)
+        results: list[dict] = []
+        for path in attachment_paths:
+            if path:
+                results.append(ingest_attachment(workspace, path))
+        return results
+
     def create_validate_and_run_once(
         self,
         user_request: str,
         progress_callback: Callable[[str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        attachment_paths: list[str] | None = None,
     ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
         """Собрать агента, выполнить проверочный запуск и сохранить при успехе."""
         if progress_callback is not None:
@@ -301,6 +336,12 @@ class AgentApplicationService:
                 ),
                 None,
             )
+        attached_files = self.ingest_attachments(agent_spec.agent_id, attachment_paths)
+        if attached_files and progress_callback is not None:
+            progress_callback(
+                "📎 Прикреплённые файлы прочитаны и добавлены в контекст: "
+                + ", ".join(item["name"] for item in attached_files)
+            )
         if progress_callback is not None:
             progress_callback("🔎 План построен. Запускаю пробный прогон агента…")
         validation_result = self.validate_agent(
@@ -308,6 +349,9 @@ class AgentApplicationService:
             user_request,
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
+            extra_variables=(
+                {"attached_files": attached_files} if attached_files else None
+            ),
         )
         validation_state = None
         if (

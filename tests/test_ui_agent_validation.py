@@ -92,6 +92,7 @@ class FakeValidationUiService:
         user_request: str,
         progress_callback=None,
         cancel_callback=None,
+        attachment_paths=None,
     ):
         """Вернуть validation и runtime state."""
         self.calls.append(f"create_validate_and_run_once:{user_request}")

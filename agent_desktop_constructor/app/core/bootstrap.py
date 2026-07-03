@@ -14,6 +14,7 @@ from agent_desktop_constructor.app.core.models.agent_build_mode import AgentBuil
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
 from agent_desktop_constructor.app.llm.agent_metadata import AgentMetadataGenerator
 from agent_desktop_constructor.app.llm.client_factory import build_llm_client
+from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
 from agent_desktop_constructor.app.llm.supervisor import LLMSupervisor
 from agent_desktop_constructor.app.runtime.runtime_factory import build_runtime
 from agent_desktop_constructor.app.tools.tool_registry_factory import build_tool_registry
@@ -116,6 +117,9 @@ def build_application_container(
         human_approval_repository=human_approval_repository,
         agent_validation_service=agent_validation_service,
         metadata_generator=metadata_generator,
+        workspace_resolver=AgentWorkspaceResolver(
+            app_config.resolve_agent_workspaces_root()
+        ),
     )
 
     return ApplicationContainer(

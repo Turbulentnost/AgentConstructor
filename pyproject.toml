@@ -13,6 +13,7 @@ dependencies = [
     "pytest",
     "sqlalchemy",
     "PySide6",
+    "openpyxl",
     "pywin32 >= 306 ; sys_platform == 'win32'",
 ]
 

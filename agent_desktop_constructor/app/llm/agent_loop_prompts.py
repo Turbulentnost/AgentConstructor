@@ -124,6 +124,14 @@ Runtime сам безопасно исполнит инструмент чере
         "human_responses": runtime_state.variables.get("human_responses", []),
         "decision_schema": AGENT_LOOP_SCHEMA_DESCRIPTION,
     }
+    attached_files = runtime_state.variables.get("attached_files")
+    if attached_files:
+        user_payload["attached_files"] = attached_files
+        user_payload["attached_files_note"] = (
+            "Пользователь прикрепил файлы при создании агента. Их содержимое ниже, "
+            "а сами файлы лежат в рабочей папке агента — их можно читать и "
+            "редактировать через инструменты excel.* по имени файла."
+        )
     if isinstance(last_screenshot, dict) and last_screenshot.get("base64"):
         user_payload["screen_context"] = {
             "has_screenshot": True,

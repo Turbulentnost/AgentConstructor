@@ -6,7 +6,9 @@ from agent_desktop_constructor.app.llm.client_factory import build_llm_client
 from agent_desktop_constructor.app.tools.llm_analysis_tools import (
     register_llm_analysis_tools,
 )
+from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
 from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
+from agent_desktop_constructor.tools.excel_tools import register_excel_tools
 from agent_desktop_constructor.tools.fake_task_control_tools import (
     register_fake_task_control_tools,
 )
@@ -21,6 +23,7 @@ from agent_desktop_constructor.workers.subprocess_com_worker import SubprocessCo
 def build_tool_registry(config: AppConfig) -> ToolRegistry:
     """Собрать ToolRegistry без вызова инструментов и COM."""
     registry = ToolRegistry()
+    excel_resolver = AgentWorkspaceResolver(config.resolve_agent_workspaces_root())
 
     if config.run_mode == AppRunMode.FAKE:
         register_fake_task_control_tools(registry)
@@ -31,6 +34,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             skip_existing=True,
         )
         register_web_tools(registry, skip_existing=True)
+        register_excel_tools(registry, excel_resolver, skip_existing=True)
         return registry
 
     if config.run_mode == AppRunMode.OUTLOOK_READONLY:
@@ -46,6 +50,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
                 skip_existing=True,
             )
         _apply_com_timeout(registry, config)
+        register_excel_tools(registry, excel_resolver, skip_existing=True)
         return registry
 
     if config.run_mode == AppRunMode.OFFLINE:
@@ -57,6 +62,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             skip_existing=True,
         )
         register_web_tools(registry, skip_existing=True)
+        register_excel_tools(registry, excel_resolver, skip_existing=True)
         return registry
 
     raise ValueError(f"Неизвестный run_mode: {config.run_mode}")

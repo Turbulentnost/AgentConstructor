@@ -42,6 +42,10 @@ class SettingsWidget(QWidget):
         self.use_llm_planner_checkbox = QCheckBox()
         self.llm_base_url_edit = QLineEdit()
         self.llm_model_name_edit = QLineEdit()
+        self.llm_proxy_url_edit = QLineEdit()
+        self.llm_proxy_url_edit.setPlaceholderText(
+            "http://192.168.2.135:8080 (пусто = напрямую к LLM)"
+        )
         self.com_safe_mode_checkbox = QCheckBox()
         self.com_worker_timeout_spin = self._make_spinbox(1, 3600)
         self.outlook_mail_days_spin = self._make_spinbox(1, 3650)
@@ -59,6 +63,7 @@ class SettingsWidget(QWidget):
         form.addRow("Использовать LLM Planner:", self.use_llm_planner_checkbox)
         form.addRow("LLM base_url:", self.llm_base_url_edit)
         form.addRow("LLM model_name:", self.llm_model_name_edit)
+        form.addRow("LLM proxy URL:", self.llm_proxy_url_edit)
         form.addRow("COM safe mode:", self.com_safe_mode_checkbox)
         form.addRow("COM worker timeout:", self.com_worker_timeout_spin)
         form.addRow("Outlook mail days:", self.outlook_mail_days_spin)
@@ -149,6 +154,7 @@ class SettingsWidget(QWidget):
         self.use_llm_planner_checkbox.setChecked(config.use_llm_planner)
         self.llm_base_url_edit.setText(config.llm_base_url)
         self.llm_model_name_edit.setText(config.llm_model_name)
+        self.llm_proxy_url_edit.setText(config.llm_proxy_url or "")
         self.com_safe_mode_checkbox.setChecked(config.com_safe_mode)
         self.com_worker_timeout_spin.setValue(config.com_worker_timeout_seconds)
         self.outlook_mail_days_spin.setValue(config.outlook_mail_days)
@@ -168,6 +174,7 @@ class SettingsWidget(QWidget):
             use_llm_planner=self.use_llm_planner_checkbox.isChecked(),
             llm_base_url=self.llm_base_url_edit.text().strip(),
             llm_model_name=self.llm_model_name_edit.text().strip(),
+            llm_proxy_url=self.llm_proxy_url_edit.text().strip() or None,
             com_safe_mode=self.com_safe_mode_checkbox.isChecked(),
             com_worker_timeout_seconds=self.com_worker_timeout_spin.value(),
             outlook_mail_days=self.outlook_mail_days_spin.value(),

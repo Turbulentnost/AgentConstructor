@@ -14,6 +14,7 @@ from typing import Callable
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -212,6 +213,7 @@ class AgentCreateWidget(QWidget):
         self._paused_agent: AgentSpec | None = None
         self._paused_state: object | None = None
         self._human_radios: list[tuple[QRadioButton, str | None]] = []
+        self._attachment_paths: list[str] = []
 
         self._build_ui()
         self._connect_signals()
@@ -257,6 +259,28 @@ class AgentCreateWidget(QWidget):
             "border-radius:8px; padding:8px; font-size:13px;"
         )
         layout.addWidget(self.request_edit)
+
+        attach_row = QHBoxLayout()
+        self.attach_button = QPushButton("📎 Прикрепить файл")
+        self.attach_button.setStyleSheet(
+            "QPushButton { background:#232733; color:#e6e9ef; border:1px solid #333846;"
+            "border-radius:8px; padding:7px 12px; font-size:12px; }"
+            "QPushButton:hover { border:1px solid #3d6fd6; }"
+        )
+        self.attach_button.clicked.connect(self.attach_files)
+        self.attach_clear_button = QPushButton("Очистить вложения")
+        self.attach_clear_button.setStyleSheet(
+            "QPushButton { background:transparent; color:#9aa0ac; border:none;"
+            "font-size:11px; }"
+            "QPushButton:hover { color:#c76b6b; }"
+        )
+        self.attach_clear_button.clicked.connect(self.clear_attachments)
+        self.attach_label = QLabel("Файлы не прикреплены")
+        self.attach_label.setStyleSheet("color:#7f8794; font-size:11px;")
+        attach_row.addWidget(self.attach_button)
+        attach_row.addWidget(self.attach_clear_button)
+        attach_row.addWidget(self.attach_label, 1)
+        layout.addLayout(attach_row)
 
         layout.addLayout(self._build_buttons())
 
@@ -741,12 +765,14 @@ class AgentCreateWidget(QWidget):
 
         service = self._container.agent_service
         cancel_event = self._cancel_event
+        attachment_paths = list(self._attachment_paths)
 
         def job(progress: Callable[[str], None]) -> object:
             return service.create_validate_and_run_once(
                 user_request,
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
+                attachment_paths=attachment_paths,
             )
 
         self._run_in_background(
@@ -945,6 +971,36 @@ class AgentCreateWidget(QWidget):
             f"«{agent_spec.name}» сохранён в каталоге.",
         )
 
+    def attach_files(self) -> None:
+        """Выбрать файлы, которые агент прочитает и получит в свою рабочую папку."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Прикрепить файлы для агента",
+            "",
+            "Файлы (*.xlsx *.csv *.txt *.json *.md);;Все файлы (*.*)",
+        )
+        if not paths:
+            return
+        for path in paths:
+            if path not in self._attachment_paths:
+                self._attachment_paths.append(path)
+        self._update_attach_label()
+
+    def clear_attachments(self) -> None:
+        """Убрать все прикреплённые файлы."""
+        self._attachment_paths = []
+        self._update_attach_label()
+
+    def _update_attach_label(self) -> None:
+        """Обновить подпись со списком прикреплённых файлов."""
+        if not self._attachment_paths:
+            self.attach_label.setText("Файлы не прикреплены")
+            return
+        from pathlib import Path
+
+        names = ", ".join(Path(path).name for path in self._attachment_paths)
+        self.attach_label.setText(f"Прикреплено: {names}")
+
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""
         if self._is_busy():
@@ -952,6 +1008,7 @@ class AgentCreateWidget(QWidget):
             return
         self._preview_agent = None
         self._last_request = ""
+        self.clear_attachments()
         self._hide_human_panel()
         self.request_edit.clear()
         self.live_log.clear()

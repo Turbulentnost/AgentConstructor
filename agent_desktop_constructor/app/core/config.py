@@ -31,11 +31,13 @@ class AppConfig(BaseModel):
     agent_build_mode: AgentBuildMode = AgentBuildMode.LLM_SUPERVISED
     database_path: str = "./data/agents.db"
     tools_catalog_path: str | None = None
+    agent_workspaces_root: str | None = None
     use_llm_planner: bool = False
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "http://192.168.1.157:1234"
     llm_model_name: str = "openai/gpt-oss-120b"
     llm_api_key: str | None = None
+    llm_proxy_url: str | None = None
     llm_temperature: float = Field(default=0.2, ge=0, le=2)
     llm_timeout_seconds: int = Field(default=120, gt=0)
     llm_max_tokens: int = Field(default=4096, gt=0)
@@ -59,8 +61,37 @@ class AppConfig(BaseModel):
             raise ValueError("Поле не должно быть пустым")
         return value
 
+    def resolve_agent_workspaces_root(self) -> Path:
+        """Вернуть корневую папку рабочих директорий агентов.
+
+        По умолчанию — ``agent_workspaces`` рядом с базой данных агентов, чтобы
+        файлы агентов хранились вместе с остальными данными приложения.
+        """
+        if self.agent_workspaces_root:
+            root = Path(self.agent_workspaces_root)
+        else:
+            root = Path(self.database_path).resolve().parent / "agent_workspaces"
+        return root
+
     def to_llm_config(self) -> LLMConfig:
-        """Преобразовать AppConfig в LLMConfig."""
+        """Преобразовать AppConfig в LLMConfig.
+
+        Если задан ``llm_proxy_url``, все запросы идут не напрямую к LLM, а на
+        наш прокси-сервис (OpenAI-compatible). Прокси сам держит VPN и ключи и
+        сам делает fallback по цепочке Codex -> ChatGPT -> LM Studio, поэтому
+        провайдер принудительно становится ``openai_compatible`` без api_key.
+        """
+        proxy_url = (self.llm_proxy_url or "").strip()
+        if proxy_url:
+            return LLMConfig(
+                provider="openai_compatible",
+                base_url=proxy_url,
+                model_name=self.llm_model_name,
+                api_key=None,
+                temperature=self.llm_temperature,
+                timeout_seconds=self.llm_timeout_seconds,
+                max_tokens=self.llm_max_tokens,
+            )
         return LLMConfig(
             provider=self.llm_provider,
             base_url=self.llm_base_url,
@@ -104,6 +135,7 @@ def load_app_config_from_env() -> AppConfig:
     _set_if_present(values, "llm_base_url", "AGENT_APP_LLM_BASE_URL")
     _set_if_present(values, "llm_model_name", "AGENT_APP_LLM_MODEL_NAME")
     _set_if_present(values, "llm_api_key", "AGENT_APP_LLM_API_KEY")
+    _set_if_present(values, "llm_proxy_url", "AGENT_APP_LLM_PROXY_URL")
     _set_bool_if_present(values, "use_llm_planner", "AGENT_APP_USE_LLM_PLANNER")
     _set_bool_if_present(values, "com_safe_mode", "AGENT_APP_COM_SAFE_MODE")
     _set_int_if_present(

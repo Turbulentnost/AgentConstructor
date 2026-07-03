@@ -8,6 +8,7 @@
   "llm_provider": "anthropic",
   "llm_base_url": "https://api.anthropic.com",
   "llm_model_name": "claude-sonnet-4-6",
+  "llm_proxy_url": "http://192.168.2.135:8080",
   "llm_temperature": 0.2,
   "llm_timeout_seconds": 120,
   "com_safe_mode": true,

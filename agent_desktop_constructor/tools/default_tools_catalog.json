@@ -1030,6 +1030,127 @@
         "Утвердить документ после отдельного бизнес-подтверждения"
       ],
       "planner_hint": "Используй только если утверждение явно разрешено бизнес-процедурой и подтверждено человеком."
+    },
+    {
+      "name": "excel.list_files",
+      "title": "Список файлов агента",
+      "description": "Возвращает список файлов в личной рабочей папке агента.",
+      "category": "excel",
+      "side_effect_level": "read",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {"type": "object", "properties": {}},
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "files": {"type": "array"},
+          "count": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "examples": [
+        "Посмотреть, какие файлы уже есть в папке агента"
+      ],
+      "planner_hint": "Безопасное read-действие. Используй, чтобы узнать какие Excel/файлы уже лежат в рабочей папке агента (например, прикреплённый пользователем файл), прежде чем читать или редактировать их."
+    },
+    {
+      "name": "excel.read_workbook",
+      "title": "Чтение Excel",
+      "description": "Читает данные листа .xlsx (заголовки и строки) из папки агента.",
+      "category": "excel",
+      "side_effect_level": "read",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string", "description": "Имя .xlsx в папке агента"},
+          "sheet": {"type": "string", "description": "Имя листа (по умолчанию активный)"},
+          "max_rows": {"type": "integer", "description": "Максимум строк для чтения"}
+        },
+        "required": ["filename"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "sheet": {"type": "string"},
+          "sheets": {"type": "array"},
+          "rows": {"type": "array"},
+          "row_count": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "examples": [
+        "Прочитать таблицу из прикреплённого файла",
+        "Считать данные листа Excel для анализа"
+      ],
+      "planner_hint": "Безопасное read-действие. Читает существующий .xlsx из рабочей папки агента. Если пользователь прикрепил Excel-файл при создании агента, он уже лежит в папке — сначала вызови excel.list_files, затем excel.read_workbook по имени файла."
+    },
+    {
+      "name": "excel.create_workbook",
+      "title": "Создание Excel",
+      "description": "Создаёт новый .xlsx с заголовками и строками в папке агента.",
+      "category": "excel",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string"},
+          "sheet": {"type": "string"},
+          "headers": {"type": "array", "items": {"type": "string"}},
+          "rows": {"type": "array", "description": "Массив строк, каждая строка — массив значений"},
+          "overwrite": {"type": "boolean"}
+        },
+        "required": ["filename"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string"},
+          "written_rows": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "examples": [
+        "Создать Excel-отчёт с результатами",
+        "Сохранить собранные данные в новую таблицу"
+      ],
+      "planner_hint": "Создаёт новый файл Excel в личной песочнице агента (безопасно, без внешних систем). Передай headers (заголовки столбцов) и rows (массив массивов). Если файл уже есть — используй overwrite=true или excel.edit_workbook."
+    },
+    {
+      "name": "excel.edit_workbook",
+      "title": "Редактирование Excel",
+      "description": "Изменяет существующий .xlsx: добавляет строки, задаёт ячейки, добавляет/удаляет листы.",
+      "category": "excel",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string"},
+          "operations": {
+            "type": "array",
+            "description": "Список операций: {action:'append_row', sheet, values}, {action:'set_cell', sheet, cell, value}, {action:'add_sheet', name}, {action:'delete_sheet', name}"
+          }
+        },
+        "required": ["filename", "operations"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string"},
+          "applied": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "examples": [
+        "Дополнить существующую таблицу новыми строками",
+        "Изменить значение ячейки в отчёте"
+      ],
+      "planner_hint": "Редактирует существующий .xlsx в папке агента. operations — список: append_row (values), set_cell (cell='B2', value), add_sheet (name), delete_sheet (name). Файл должен уже существовать (создай через excel.create_workbook)."
     }
   ]
 }

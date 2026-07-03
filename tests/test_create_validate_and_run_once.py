@@ -1,5 +1,7 @@
 """Тесты AgentApplicationService.create_validate_and_run_once."""
 
+import pytest
+
 from agent_desktop_constructor.app.core.models.agent_validation import (
     AgentValidationResult,
     AgentValidationStatus,
@@ -86,8 +88,8 @@ class FakeValidationService:
         return None
 
 
-def test_create_validate_and_run_once_saves_and_returns_validation_state() -> None:
-    """При passed сервис сохраняет агента и возвращает проверочный state."""
+def test_create_validate_and_run_once_does_not_autosave_on_pass() -> None:
+    """Даже при passed прогон НЕ сохраняет агента — сохранение только по кнопке."""
     runtime = FakeRuntime()
     validation_service = FakeValidationService(AgentValidationStatus.PASSED)
     service = AgentApplicationService(
@@ -101,7 +103,25 @@ def test_create_validate_and_run_once_saves_and_returns_validation_state() -> No
     assert validation.status == AgentValidationStatus.PASSED
     assert state is validation_service.state
     assert runtime.run_calls == 0
-    assert service.get_agent(agent_spec.agent_id) == agent_spec
+    # Агент НЕ должен сохраняться автоматически после прогона.
+    with pytest.raises(ValueError):
+        service.get_agent(agent_spec.agent_id)
+
+
+def test_finalize_and_save_agent_persists_with_metadata() -> None:
+    """finalize_and_save_agent сохраняет агента и проставляет карточку/дату."""
+    runtime = FakeRuntime()
+    service = AgentApplicationService(
+        agent_builder=AgentBuilder(),
+        runtime=runtime,
+    )
+    spec = AgentBuilder().build_from_request("Найди совещания в Outlook")
+
+    saved = service.finalize_and_save_agent(spec, "Найди совещания в Outlook")
+
+    assert saved.created_at is not None
+    assert saved.short_description
+    assert service.get_agent(saved.agent_id) == saved
 
 
 def test_create_validate_and_run_once_does_not_save_failed_agent() -> None:

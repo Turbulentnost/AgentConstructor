@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Callable
 
 from agent_desktop_constructor.app.core.models.human_approval import (
@@ -29,6 +30,11 @@ from agent_desktop_constructor.storage.repositories import (
 )
 
 
+def _utc_now_iso() -> str:
+    """Вернуть текущую дату/время в ISO-формате (UTC)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 class AgentApplicationService:
     """Сервисный слой приложения для UI, CLI и будущих application workflows."""
 
@@ -42,6 +48,7 @@ class AgentApplicationService:
         run_event_repository: RunEventRepository | None = None,
         human_approval_repository: HumanApprovalRepository | None = None,
         agent_validation_service: object | None = None,
+        metadata_generator: object | None = None,
     ) -> None:
         """Создать сервис с repository или memory-only режимом."""
         self._agent_builder = agent_builder
@@ -52,6 +59,7 @@ class AgentApplicationService:
         self._run_event_repository = run_event_repository
         self._human_approval_repository = human_approval_repository
         self._agent_validation_service = agent_validation_service
+        self._metadata_generator = metadata_generator
         self._memory_agents: dict[str, AgentSpec] = {}
         self._memory_audit_logs: list[dict] = []
         self._audit_warnings: list[str] = []
@@ -84,6 +92,141 @@ class AgentApplicationService:
             action="agent.saved",
             details={"agent_id": agent_spec.agent_id, "name": agent_spec.name},
         )
+
+    def finalize_and_save_agent(
+        self,
+        agent_spec: AgentSpec,
+        user_request: str | None = None,
+    ) -> AgentSpec:
+        """Сформировать карточку (название/описание/краткое) и сохранить агента.
+
+        Вызывается только по явной команде пользователя «Сохранить». Проставляет
+        человекочитаемые name/description/short_description и дату создания.
+        """
+        finalized = self._apply_agent_metadata(agent_spec, user_request)
+        self.save_agent(finalized)
+        return finalized
+
+    def _apply_agent_metadata(
+        self,
+        agent_spec: AgentSpec,
+        user_request: str | None,
+    ) -> AgentSpec:
+        """Дополнить AgentSpec карточкой и датой создания (без сохранения)."""
+        updates: dict = {}
+        if self._metadata_generator is not None:
+            try:
+                metadata = self._metadata_generator.generate(
+                    user_request or agent_spec.goal.main_goal,
+                    agent_spec,
+                )
+                updates.update(
+                    name=metadata.name,
+                    description=metadata.description,
+                    short_description=metadata.short_description,
+                )
+            except Exception as exc:
+                self._audit_warnings.append(f"Ошибка генерации карточки агента: {exc}")
+        if not agent_spec.short_description and "short_description" not in updates:
+            updates["short_description"] = agent_spec.goal.main_goal
+        updates["created_at"] = agent_spec.created_at or _utc_now_iso()
+        return agent_spec.model_copy(update=updates)
+
+    def delete_agent(self, agent_id: str) -> None:
+        """Удалить сохранённого агента по agent_id."""
+        if self._agent_repository is not None and hasattr(
+            self._agent_repository, "delete_agent"
+        ):
+            self._agent_repository.delete_agent(agent_id)
+        else:
+            self._memory_agents.pop(agent_id, None)
+        self._add_audit(action="agent.deleted", details={"agent_id": agent_id})
+
+    def run_saved_agent(
+        self,
+        agent_id: str,
+        initial_variables: dict | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> AgentRuntimeState:
+        """Запустить сохранённого агента по его исходному графу с live-прогрессом.
+
+        Работает по той же схеме, что и при создании (тот же runtime и граф),
+        но с актуальными данными и без пробного read-only режима.
+        """
+        agent_spec = self.get_agent(agent_id)
+        variables = initial_variables or {"user_request": agent_spec.goal.main_goal}
+        self._add_audit(
+            action="agent.run_started",
+            details={"agent_id": agent_spec.agent_id},
+        )
+        self._set_runtime_callbacks(progress_callback, cancel_callback)
+        try:
+            state = self._runtime.run(agent_spec, variables)
+        finally:
+            self._clear_runtime_callbacks(progress_callback, cancel_callback)
+        self._add_audit(
+            action="agent.run_finished",
+            details={"agent_id": agent_spec.agent_id, "status": state.status.value},
+            run_id=state.run_id,
+        )
+        return state
+
+    def resume_saved_agent_after_human(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        human_message: str,
+        approved: bool = True,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> AgentRuntimeState:
+        """Продолжить запуск сохранённого агента после ответа/действия человека."""
+        if not hasattr(self._runtime, "resume_with_human_input"):
+            raise ValueError("Runtime не поддерживает продолжение после человека")
+        self._set_runtime_callbacks(progress_callback, cancel_callback)
+        try:
+            new_state = self._runtime.resume_with_human_input(
+                agent_spec, state, human_message, approved
+            )
+        finally:
+            self._clear_runtime_callbacks(progress_callback, cancel_callback)
+        self._add_audit(
+            action="human.approval_approved" if approved else "human.approval_rejected",
+            details={"agent_id": agent_spec.agent_id, "approved": approved},
+            run_id=new_state.run_id,
+        )
+        return new_state
+
+    def _set_runtime_callbacks(
+        self,
+        progress_callback: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
+    ) -> None:
+        """Подключить progress/cancel callbacks к runtime, если поддерживаются."""
+        if progress_callback is not None and hasattr(
+            self._runtime, "set_progress_callback"
+        ):
+            self._runtime.set_progress_callback(progress_callback)
+        if cancel_callback is not None and hasattr(
+            self._runtime, "set_cancel_callback"
+        ):
+            self._runtime.set_cancel_callback(cancel_callback)
+
+    def _clear_runtime_callbacks(
+        self,
+        progress_callback: Callable[[str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
+    ) -> None:
+        """Отключить ранее установленные callbacks runtime."""
+        if progress_callback is not None and hasattr(
+            self._runtime, "set_progress_callback"
+        ):
+            self._runtime.set_progress_callback(None)
+        if cancel_callback is not None and hasattr(
+            self._runtime, "set_cancel_callback"
+        ):
+            self._runtime.set_cancel_callback(None)
 
     def create_agent_from_request(
         self,
@@ -175,8 +318,8 @@ class AgentApplicationService:
                 validation_result.run_id
             )
 
-        if validation_result.status == AgentValidationStatus.PASSED:
-            self.save_agent(agent_spec)
+        # Агент НЕ сохраняется автоматически после прогона — только по явной
+        # команде пользователя (кнопка «Сохранить»).
         return agent_spec, validation_result, validation_state
 
     def resume_after_human(
@@ -207,8 +350,7 @@ class AgentApplicationService:
             new_state = self._agent_validation_service.get_validation_state(
                 validation_result.run_id
             )
-        if validation_result.status == AgentValidationStatus.PASSED:
-            self.save_agent(agent_spec)
+        # Без автосохранения: агент сохраняется только по явной команде пользователя.
         return agent_spec, validation_result, new_state
 
     def _build_template_fallback_agent(self, user_request: str) -> AgentSpec:

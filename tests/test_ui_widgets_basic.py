@@ -159,11 +159,10 @@ def test_agent_selection_does_not_run_agent(qt_app) -> None:
 
     container = FakeUiContainer()
     widget = AgentListWidget(container)
-    widget.refresh()
-    widget.table.selectRow(0)
+    widget.open_agent(widget._agents[0])
 
-    assert container.agent_service.calls == ["list_agents"]
     assert "run_agent:agent-1" not in container.agent_service.calls
+    assert "run_saved_agent:agent-1" not in container.agent_service.calls
 
 
 def test_preview_and_save_use_service(qt_app, monkeypatch) -> None:
@@ -190,8 +189,8 @@ def test_preview_and_save_use_service(qt_app, monkeypatch) -> None:
     assert widget.tools_table.rowCount() == len(container.agent_service.agent_spec.tools)
 
 
-def test_save_without_preview_uses_create_agent_from_request(qt_app, monkeypatch) -> None:
-    """Save без preview вызывает create_agent_from_request."""
+def test_save_without_preview_builds_then_saves(qt_app, monkeypatch) -> None:
+    """Save без preview строит spec и сохраняет его (без автосохранения)."""
     from agent_desktop_constructor.app.ui.widgets import agent_create_widget
     from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
         AgentCreateWidget,
@@ -205,7 +204,8 @@ def test_save_without_preview_uses_create_agent_from_request(qt_app, monkeypatch
     widget.save_agent()
 
     assert container.agent_service.calls == [
-        "create_agent_from_request:новый агент:True"
+        "build_preview:новый агент",
+        "save_agent:agent-1",
     ]
 
 

@@ -161,6 +161,8 @@ class AgentSpec(BaseModel):
     agent_id: str
     name: str
     description: str
+    short_description: str | None = None
+    created_at: str | None = None
     goal: AgentGoal
     data_requirements: list[AgentDataRequirement]
     tools: list[AgentToolPermission]

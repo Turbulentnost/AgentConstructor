@@ -116,6 +116,15 @@ class AgentRepository:
                 for entity in entities
             ]
 
+    def delete_agent(self, agent_id: str) -> None:
+        """Удалить агента по agent_id (если существует)."""
+        with self._session_factory() as session:
+            entity = session.get(AgentEntity, agent_id)
+            if entity is None:
+                return
+            session.delete(entity)
+            session.commit()
+
 
 class AgentRunRepository:
     """Репозиторий для состояния конкретных запусков агента."""

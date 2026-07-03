@@ -918,24 +918,32 @@ class AgentCreateWidget(QWidget):
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
 
+        service = self._container.agent_service
         try:
             if self._preview_agent is not None:
-                agent_spec = self._preview_agent
-                self._container.agent_service.save_agent(agent_spec)
+                source = self._preview_agent
+                request = self._last_request or user_request
             else:
-                agent_spec = self._container.agent_service.create_agent_from_request(
-                    user_request,
-                    save=True,
-                )
-                self._preview_agent = agent_spec
-                self._last_request = user_request
-                self._render_preview(agent_spec)
-                self._render_plan_stages(agent_spec)
+                source = service.build_preview(user_request)
+                request = user_request
+            if hasattr(service, "finalize_and_save_agent"):
+                agent_spec = service.finalize_and_save_agent(source, request)
+            else:
+                agent_spec = source
+                service.save_agent(agent_spec)
+            self._preview_agent = agent_spec
+            self._last_request = request
+            self._render_preview(agent_spec)
+            self._render_plan_stages(agent_spec)
         except Exception as exc:
             show_error(self, "Ошибка сохранения агента", exc)
             return
 
-        show_info(self, "Агент сохранён", f"Агент сохранён: {agent_spec.agent_id}")
+        show_info(
+            self,
+            "Агент сохранён",
+            f"«{agent_spec.name}» сохранён в каталоге.",
+        )
 
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""

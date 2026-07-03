@@ -12,6 +12,7 @@ from agent_desktop_constructor.app.core.services.agent_validation_service import
 )
 from agent_desktop_constructor.app.core.models.agent_build_mode import AgentBuildMode
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
+from agent_desktop_constructor.app.llm.agent_metadata import AgentMetadataGenerator
 from agent_desktop_constructor.app.llm.client_factory import build_llm_client
 from agent_desktop_constructor.app.llm.supervisor import LLMSupervisor
 from agent_desktop_constructor.app.runtime.runtime_factory import build_runtime
@@ -78,10 +79,12 @@ def build_application_container(
     tool_gateway = ToolGateway(tool_registry)
     llm_supervisor = None
     agent_loop_planner = None
+    metadata_generator = AgentMetadataGenerator()
     if app_config.use_llm_planner:
         llm_client = build_llm_client(app_config.to_llm_config())
         llm_supervisor = LLMSupervisor(llm_client, tools_catalog)
         agent_loop_planner = LLMAgentLoopPlanner(llm_client, tools_catalog)
+        metadata_generator = AgentMetadataGenerator(llm_client)
     runtime = build_runtime(
         app_config,
         tool_gateway,
@@ -112,6 +115,7 @@ def build_application_container(
         run_event_repository=run_event_repository,
         human_approval_repository=human_approval_repository,
         agent_validation_service=agent_validation_service,
+        metadata_generator=metadata_generator,
     )
 
     return ApplicationContainer(

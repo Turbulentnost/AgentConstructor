@@ -107,7 +107,7 @@ def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:
 
     widget = AgentListWidget(fake_container)
 
-    assert widget.table.columnCount() == 6
+    assert widget.title_label.text() == "Каталог агентов"
 
 
 def test_approval_queue_widget_can_be_created(qt_app, fake_container) -> None:
@@ -279,8 +279,9 @@ def test_agent_list_refresh_uses_service(qt_app) -> None:
 
     widget.refresh()
 
-    assert container.agent_service.calls == ["list_agents"]
-    assert widget.table.rowCount() == 1
+    # Конструктор уже подгружает список сразу, refresh() читает повторно.
+    assert container.agent_service.calls == ["list_agents", "list_agents"]
+    assert len(widget._agents) == 1
 
 
 def test_run_list_actions_use_service(qt_app, monkeypatch) -> None:

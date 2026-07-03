@@ -11,11 +11,22 @@ from __future__ import annotations
 from threading import Event
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPointF,
+    Property,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    QThread,
+    QTimer,
+)
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -75,13 +86,13 @@ STAGE_ORDER: list[tuple[str, str, str]] = [
 
 # status -> (подпись бейджа, цвет фона, цвет текста, значок)
 STATUS_STYLE: dict[str, tuple[str, str, str, str]] = {
-    "pending": ("Ожидает", "#3a3f4b", "#c8ccd4", "○"),
-    "running": ("Выполняется", "#1e4fd6", "#ffffff", "◐"),
-    "passed": ("Пройдено", "#1f7a3d", "#eafff0", "✓"),
-    "warning": ("Предупреждение", "#8a6d15", "#fff6d6", "!"),
-    "failed": ("Ошибка", "#a12727", "#ffe6e6", "✕"),
-    "needs_human": ("Нужен человек", "#8a4b17", "#ffe9d6", "☺"),
-    "needs_credentials": ("Нужна авторизация", "#8a6d15", "#fff6d6", "🔑"),
+    "pending": ("Ожидает", "#20283a", "#9da9bf", "○"),
+    "running": ("В процессе", "#183a76", "#dbe8ff", "◐"),
+    "passed": ("Готово", "#113d2a", "#c9ffdf", "✓"),
+    "warning": ("Внимание", "#4c3d19", "#ffe7a3", "!"),
+    "failed": ("Ошибка", "#551f2c", "#ffd4df", "✕"),
+    "needs_human": ("Нужен человек", "#57351c", "#ffe1bd", "☺"),
+    "needs_credentials": ("Авторизация", "#4c3d19", "#ffe7a3", "🔑"),
 }
 
 
@@ -93,8 +104,283 @@ def _short(text: object, max_len: int = 90) -> str:
     return value[: max_len - 1] + "…"
 
 
+class NeonStepIndicator(QWidget):
+    """Неоновый индикатор шага: круг, галочка и линия перехода."""
+
+    def __init__(
+        self,
+        index: int,
+        is_last: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        """Создать индикатор с анимируемыми progress-свойствами."""
+        super().__init__(parent)
+        self._index = index
+        self._is_last = is_last
+        self._status = "pending"
+        self._outline_progress = 0.0
+        self._check_progress = 0.0
+        self._connector_progress = 0.0
+        self._dash_offset = 0.0
+        self._pulse = 0.0
+        self._animations: list[QPropertyAnimation] = []
+
+        self.setFixedWidth(48)
+        self.setMinimumHeight(80)
+
+        self._motion_timer = QTimer(self)
+        self._motion_timer.setInterval(28)
+        self._motion_timer.timeout.connect(self._advance_motion)
+
+    def _advance_motion(self) -> None:
+        """Обновить dash-offset и пульсацию для running-состояния."""
+        self._dash_offset = (self._dash_offset + 0.9) % 32
+        self._pulse = (self._pulse + 0.035) % 1.0
+        if self._status == "running":
+            self._outline_progress = 0.18 + (self._pulse * 0.72)
+        self.update()
+
+    def set_status(self, status: str) -> None:
+        """Запустить визуальную анимацию под новый статус."""
+        self._status = status
+        self._clear_animations()
+        if status == "running":
+            self._check_progress = 0.0
+            self._motion_timer.start()
+        elif status == "passed":
+            self._motion_timer.stop()
+            self._animate_to("outlineProgress", self._outline_progress, 1.0, 760)
+            self._animate_to("connectorProgress", self._connector_progress, 1.0, 680)
+            self._animate_to("checkProgress", 0.0, 1.0, 980, delay_ms=360)
+        elif status in {"failed", "warning", "needs_human", "needs_credentials"}:
+            self._motion_timer.stop()
+            self._outline_progress = 1.0
+            self._connector_progress = 0.0
+            self._check_progress = 0.0
+        else:
+            self._motion_timer.stop()
+            self._outline_progress = 0.0
+            self._connector_progress = 0.0
+            self._check_progress = 0.0
+        self.update()
+
+    def _animate_to(
+        self,
+        property_name: bytes | str,
+        start: float,
+        end: float,
+        duration_ms: int,
+        delay_ms: int = 0,
+    ) -> None:
+        """Анимировать одно числовое свойство индикатора."""
+        property_bytes = (
+            bytes(property_name, "ascii")
+            if isinstance(property_name, str)
+            else property_name
+        )
+        animation = QPropertyAnimation(self, property_bytes)
+        animation.setDuration(duration_ms)
+        animation.setStartValue(start)
+        animation.setEndValue(end)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+        def start_animation() -> None:
+            animation.start()
+
+        animation.finished.connect(
+            lambda: (
+                self._animations.remove(animation)
+                if animation in self._animations
+                else None
+            )
+        )
+        self._animations.append(animation)
+        if delay_ms:
+            QTimer.singleShot(delay_ms, start_animation)
+        else:
+            start_animation()
+
+    def _clear_animations(self) -> None:
+        for animation in list(self._animations):
+            animation.stop()
+        self._animations.clear()
+
+    def _status_color(self) -> QColor:
+        if self._status == "passed":
+            return QColor("#2fffa3")
+        if self._status == "running":
+            return QColor("#4b8bff")
+        if self._status == "failed":
+            return QColor("#ff5d7a")
+        if self._status in {"warning", "needs_human", "needs_credentials"}:
+            return QColor("#ffd166")
+        return QColor("#52607a")
+
+    def _glow_pen(self, color: QColor, width: float, alpha: int) -> QPen:
+        glow = QColor(color)
+        glow.setAlpha(alpha)
+        pen = QPen(glow, width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        return pen
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        """Нарисовать круг, анимированную обводку, галочку и connector."""
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        center = QPointF(24, 27)
+        radius = 14
+        circle_rect = QRectF(
+            center.x() - radius,
+            center.y() - radius,
+            radius * 2,
+            radius * 2,
+        )
+        color = self._status_color()
+
+        if not self._is_last:
+            self._paint_connector(painter, center, radius, color)
+
+        # Base dashed neon circle.
+        base = QColor("#637391")
+        base.setAlpha(112)
+        base_pen = QPen(base, 1.15)
+        base_pen.setDashPattern([3.5, 5.5])
+        base_pen.setDashOffset(self._dash_offset)
+        base_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(base_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(circle_rect)
+
+        if self._status == "pending":
+            painter.setPen(QColor("#8291ad"))
+            painter.drawText(circle_rect, Qt.AlignmentFlag.AlignCenter, str(self._index))
+            return
+
+        # Soft glow behind active arc.
+        for width, alpha in ((10, 20), (5.5, 42), (2.6, 190)):
+            painter.setPen(self._glow_pen(color, width, alpha))
+            painter.drawArc(
+                circle_rect,
+                90 * 16,
+                int(-360 * 16 * max(0.03, min(1.0, self._outline_progress))),
+            )
+
+        if self._status == "passed":
+            painter.setPen(QColor("#0b1713"))
+            painter.drawText(circle_rect, Qt.AlignmentFlag.AlignCenter, "")
+            self._paint_check(painter, center, color)
+        elif self._status == "running":
+            dot = QColor("#eef5ff")
+            painter.setPen(QPen(dot, 1.0))
+            painter.drawText(circle_rect, Qt.AlignmentFlag.AlignCenter, str(self._index))
+        elif self._status == "failed":
+            painter.setPen(self._glow_pen(color, 2.5, 230))
+            painter.drawLine(QPointF(19, 22), QPointF(29, 32))
+            painter.drawLine(QPointF(29, 22), QPointF(19, 32))
+        else:
+            painter.setPen(self._glow_pen(color, 2.6, 230))
+            painter.drawLine(QPointF(24, 19), QPointF(24, 29))
+            painter.drawPoint(QPointF(24, 35))
+
+    def _paint_connector(
+        self,
+        painter: QPainter,
+        center: QPointF,
+        radius: int,
+        color: QColor,
+    ) -> None:
+        start_y = center.y() + radius + 7
+        end_y = self.height() - 6
+        x = center.x()
+        if end_y <= start_y:
+            return
+
+        pending = QColor("#354052")
+        pending.setAlpha(130)
+        pending_pen = QPen(pending, 1.2)
+        pending_pen.setDashPattern([3.5, 5.5])
+        pending_pen.setDashOffset(self._dash_offset)
+        pending_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pending_pen)
+        painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
+
+        progress = max(0.0, min(1.0, self._connector_progress))
+        if progress <= 0:
+            return
+        solid_end = start_y + (end_y - start_y) * progress
+        for width, alpha in ((6, 22), (3, 74), (1.6, 220)):
+            painter.setPen(self._glow_pen(color, width, alpha))
+            painter.drawLine(QPointF(x, start_y), QPointF(x, solid_end))
+
+    def _paint_check(self, painter: QPainter, center: QPointF, color: QColor) -> None:
+        progress = max(0.0, min(1.0, self._check_progress))
+        if progress <= 0:
+            return
+
+        start = QPointF(center.x() - 6, center.y())
+        mid = QPointF(center.x() - 2, center.y() + 5)
+        end = QPointF(center.x() + 9, center.y() - 7)
+
+        path = QPainterPath(start)
+        if progress <= 0.42:
+            local = progress / 0.42
+            point = QPointF(
+                start.x() + (mid.x() - start.x()) * local,
+                start.y() + (mid.y() - start.y()) * local,
+            )
+            path.lineTo(point)
+        else:
+            path.lineTo(mid)
+            local = (progress - 0.42) / 0.58
+            point = QPointF(
+                mid.x() + (end.x() - mid.x()) * local,
+                mid.y() + (end.y() - mid.y()) * local,
+            )
+            path.lineTo(point)
+
+        for width, alpha in ((7, 28), (4, 82), (2.4, 245)):
+            painter.setPen(self._glow_pen(color, width, alpha))
+            painter.drawPath(path)
+
+    def get_outline_progress(self) -> float:
+        return self._outline_progress
+
+    def set_outline_progress(self, value: float) -> None:
+        self._outline_progress = float(value)
+        self.update()
+
+    def get_check_progress(self) -> float:
+        return self._check_progress
+
+    def set_check_progress(self, value: float) -> None:
+        self._check_progress = float(value)
+        self.update()
+
+    def get_connector_progress(self) -> float:
+        return self._connector_progress
+
+    def set_connector_progress(self, value: float) -> None:
+        self._connector_progress = float(value)
+        self.update()
+
+    outlineProgress = Property(
+        float,
+        get_outline_progress,
+        set_outline_progress,
+    )
+    checkProgress = Property(float, get_check_progress, set_check_progress)
+    connectorProgress = Property(
+        float,
+        get_connector_progress,
+        set_connector_progress,
+    )
+
+
 class StageCard(QFrame):
-    """Карточка одной стадии в вертикальной ленте выполнения."""
+    """Карточка одной стадии в неоновой ленте выполнения."""
 
     def __init__(
         self,
@@ -102,6 +388,7 @@ class StageCard(QFrame):
         stage_id: str,
         title: str,
         subtitle: str,
+        is_last: bool,
         on_click: Callable[[str], None],
         parent: QWidget | None = None,
     ) -> None:
@@ -113,11 +400,9 @@ class StageCard(QFrame):
         self._selected = False
         self.setObjectName("stageCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(86)
 
-        self._number = QLabel(str(index))
-        self._number.setObjectName("stageNumber")
-        self._number.setFixedSize(26, 26)
-        self._number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._indicator = NeonStepIndicator(index, is_last)
 
         self._title = QLabel(title)
         self._title.setObjectName("stageTitle")
@@ -129,21 +414,22 @@ class StageCard(QFrame):
         self._badge.setObjectName("stageBadge")
         self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
-        head.addWidget(self._number, 0, Qt.AlignmentFlag.AlignTop)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self._indicator, 0, Qt.AlignmentFlag.AlignTop)
         text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(2)
-        text_col.addWidget(self._title)
+        text_col.setContentsMargins(0, 8, 12, 8)
+        text_col.setSpacing(4)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(self._title, 1)
+        title_row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
+        text_col.addLayout(title_row)
         text_col.addWidget(self._subtitle)
-        head.addLayout(text_col, 1)
-        head.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.addLayout(head)
+        text_col.addStretch(1)
+        row.addLayout(text_col, 1)
 
         self.set_status("pending")
 
@@ -151,7 +437,8 @@ class StageCard(QFrame):
         """Обновить статус стадии и перерисовать бейдж."""
         self._status = status if status in STATUS_STYLE else "pending"
         label, bg, fg, icon = STATUS_STYLE[self._status]
-        self._badge.setText(f"{icon}  {label}")
+        self._indicator.set_status(self._status)
+        self._badge.setText(f"{icon} {label}")
         self._badge.setStyleSheet(
             f"background:{bg}; color:{fg}; border-radius:9px;"
             "padding:3px 10px; font-size:11px; font-weight:600;"
@@ -168,25 +455,202 @@ class StageCard(QFrame):
         self._apply_frame_style()
 
     def _apply_frame_style(self) -> None:
-        border = "#4c8bf5" if self._selected else "#2b2f3a"
-        bg = "#232733" if self._selected else "#1c1f27"
+        border = "#5d8cff" if self._selected else "#243047"
+        bg = "#192030" if self._selected else "#111722"
+        glow = "rgba(77,139,255,0.22)" if self._selected else "rgba(47,255,163,0.08)"
         self.setStyleSheet(
             "#stageCard {"
             f"background:{bg}; border:1px solid {border};"
-            "border-radius:10px;"
+            "border-radius:14px;"
             "}"
-            "#stageNumber {"
-            "background:#2b2f3a; color:#c8ccd4; border-radius:13px;"
-            "font-weight:700;"
-            "}"
-            "#stageTitle { color:#f0f2f6; font-size:13px; font-weight:600; }"
-            "#stageSubtitle { color:#8b909c; font-size:11px; }"
+            "#stageCard:hover { border:1px solid #536b99; background:#151d2b; }"
+            f"#stageCard {{ selection-background-color:{glow}; }}"
+            "#stageTitle { color:#f5f7ff; font-size:13px; font-weight:700; }"
+            "#stageSubtitle { color:#8d9ab3; font-size:11px; line-height:1.35; }"
+            "#stageBadge { border:1px solid rgba(255,255,255,0.07); }"
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         """Выбрать стадию по клику."""
         self._on_click(self.stage_id)
         super().mousePressEvent(event)
+
+
+class LiveLogView(QScrollArea):
+    """Стеклянная лента live-событий вместо обычного текстового поля."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Создать прокручиваемую ленту событий агента."""
+        super().__init__(parent)
+        self._items: list[QFrame] = []
+        self._animations: list[QPropertyAnimation] = []
+
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setObjectName("liveLogView")
+
+        self._host = QWidget()
+        self._host.setObjectName("liveLogHost")
+        self._layout = QVBoxLayout(self._host)
+        self._layout.setContentsMargins(10, 10, 10, 10)
+        self._layout.setSpacing(7)
+
+        self._placeholder = QLabel(
+            "События появятся здесь: LLM-планирование, вызовы инструментов, "
+            "проверки, ожидание человека и итог."
+        )
+        self._placeholder.setWordWrap(True)
+        self._placeholder.setObjectName("livePlaceholder")
+        self._layout.addWidget(self._placeholder)
+        self._layout.addStretch(1)
+
+        self.setWidget(self._host)
+        self.setStyleSheet(
+            "#liveLogView {"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "stop:0 #0b101a, stop:0.52 #0d1320, stop:1 #111827);"
+            "border:1px solid #263247; border-radius:14px;"
+            "}"
+            "#liveLogHost { background:transparent; }"
+            "#livePlaceholder { color:#66738b; font-size:12px; padding:8px; }"
+            "#liveLogItem {"
+            "background:rgba(18,26,41,0.82); border:1px solid #253249;"
+            "border-radius:10px;"
+            "}"
+            "#liveLogItem QLabel { color:#d6deec; font-size:12px; }"
+            "#liveLogMeta { color:#7e8ba5; font-size:10px; font-weight:700; }"
+            "#liveLogDot { border-radius:5px; }"
+        )
+
+    def setReadOnly(self, _read_only: bool) -> None:  # noqa: N802 (Qt compatibility)
+        """Совместимость с QTextEdit API."""
+
+    def setPlaceholderText(self, text: str) -> None:  # noqa: N802 (Qt compatibility)
+        """Совместимость с QTextEdit API."""
+        self._placeholder.setText(text)
+
+    def append(self, message: str) -> None:
+        """Добавить событие в ленту с мягким появлением."""
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._placeholder.setVisible(False)
+
+        item = QFrame()
+        item.setObjectName("liveLogItem")
+        item.setStyleSheet(self._item_style(text))
+
+        dot = QLabel()
+        dot.setObjectName("liveLogDot")
+        dot.setFixedSize(10, 10)
+        dot.setStyleSheet(f"background:{self._accent_color(text)}; border-radius:5px;")
+
+        meta = QLabel(self._event_label(text))
+        meta.setObjectName("liveLogMeta")
+
+        body = QLabel(self._clean_message(text))
+        body.setTextFormat(Qt.TextFormat.PlainText)
+        body.setWordWrap(True)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(7)
+        header.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(meta, 1)
+
+        layout = QVBoxLayout(item)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
+        layout.addLayout(header)
+        layout.addWidget(body)
+
+        self._layout.insertWidget(max(0, self._layout.count() - 1), item)
+        self._items.append(item)
+        if len(self._items) > 80:
+            old = self._items.pop(0)
+            old.setParent(None)
+            old.deleteLater()
+        self._fade_in(item)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def clear(self) -> None:
+        """Очистить события."""
+        for item in self._items:
+            item.setParent(None)
+            item.deleteLater()
+        self._items.clear()
+        self._placeholder.setVisible(True)
+
+    def _fade_in(self, item: QWidget) -> None:
+        effect = QGraphicsOpacityEffect(item)
+        effect.setOpacity(0.0)
+        item.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(260)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(
+            lambda: (
+                self._animations.remove(animation)
+                if animation in self._animations
+                else None
+            )
+        )
+        self._animations.append(animation)
+        animation.start()
+
+    def _scroll_to_bottom(self) -> None:
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _event_label(self, text: str) -> str:
+        if text.startswith("✅"):
+            return "COMPLETED"
+        if text.startswith("⚠") or text.startswith("❌"):
+            return "ATTENTION"
+        if text.startswith("⏸"):
+            return "WAITING FOR HUMAN"
+        if text.startswith("📎"):
+            return "ATTACHMENT"
+        if text.startswith("🧩") or "LLM" in text:
+            return "LLM"
+        if text.startswith("🔎"):
+            return "CHECK"
+        if text.startswith("▶"):
+            return "RUN"
+        if text.startswith("⏹"):
+            return "STOP"
+        return "EVENT"
+
+    def _accent_color(self, text: str) -> str:
+        if text.startswith("✅"):
+            return "#2fffa3"
+        if text.startswith("⚠") or text.startswith("❌"):
+            return "#ff5d7a"
+        if text.startswith("⏸"):
+            return "#ffd166"
+        if text.startswith("📎"):
+            return "#8ec3ff"
+        if text.startswith("🔎"):
+            return "#c084fc"
+        if text.startswith("▶"):
+            return "#4b8bff"
+        return "#7aa2ff"
+
+    def _item_style(self, text: str) -> str:
+        color = self._accent_color(text)
+        return (
+            "#liveLogItem {"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            f"stop:0 {color}, stop:0.012 #172033, stop:1 #0f1624);"
+            f"border:1px solid {color}; border-radius:10px;"
+            "}"
+        )
+
+    @staticmethod
+    def _clean_message(text: str) -> str:
+        return text.lstrip("✅⚠❌⏸📎🧩🔎▶⏹ ").strip() or text
 
 
 class AgentCreateWidget(QWidget):
@@ -242,12 +706,12 @@ class AgentCreateWidget(QWidget):
         container = QWidget()
         container.setObjectName("centerArea")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
 
         title = QLabel("Создать агента")
         title.setObjectName("screenTitle")
-        title.setStyleSheet("font-size:20px; font-weight:700; color:#f2f4f8;")
+        title.setStyleSheet("font-size:21px; font-weight:800; color:#f6f8ff;")
         layout.addWidget(title)
 
         request_label = QLabel("Запрос пользователя")
@@ -258,8 +722,9 @@ class AgentCreateWidget(QWidget):
         self.request_edit.setPlaceholderText(EXAMPLE_REQUEST)
         self.request_edit.setFixedHeight(96)
         self.request_edit.setStyleSheet(
-            "background:#12141a; color:#e6e9ef; border:1px solid #2b2f3a;"
-            "border-radius:8px; padding:8px; font-size:13px;"
+            "background:#0f1624; color:#e8eefb; border:1px solid #263247;"
+            "border-radius:12px; padding:10px; font-size:13px;"
+            "selection-background-color:#2f6bff;"
         )
         layout.addWidget(self.request_edit)
 
@@ -294,20 +759,17 @@ class AgentCreateWidget(QWidget):
         # Живой ход выполнения: показывает текст LLM и вызовы инструментов в
         # реальном времени, чтобы окно не выглядело зависшим.
         live_label = QLabel("Живой ход выполнения")
-        live_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
+        live_label.setStyleSheet(
+            "color:#c7d2e5; font-size:12px; font-weight:700; "
+            "letter-spacing:0.4px;"
+        )
         layout.addWidget(live_label)
 
-        self.live_log = QTextEdit()
-        self.live_log.setReadOnly(True)
-        self.live_log.setFixedHeight(150)
+        self.live_log = LiveLogView()
+        self.live_log.setFixedHeight(168)
         self.live_log.setPlaceholderText(
             "Здесь построчно появляется ход работы агента: планирование LLM, "
             "выбор инструментов, результаты и итоговый вывод."
-        )
-        self.live_log.setStyleSheet(
-            "background:#0c0e13; color:#cdd3dd; border:1px solid #2b2f3a;"
-            "border-radius:8px; padding:8px; font-size:12px;"
-            "font-family:Consolas,'Courier New',monospace;"
         )
         layout.addWidget(self.live_log)
 
@@ -326,14 +788,19 @@ class AgentCreateWidget(QWidget):
         feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
         feed_host = QWidget()
         self._feed_layout = QVBoxLayout(feed_host)
-        self._feed_layout.setContentsMargins(0, 4, 0, 4)
-        self._feed_layout.setSpacing(8)
+        self._feed_layout.setContentsMargins(0, 6, 2, 6)
+        self._feed_layout.setSpacing(7)
         self._build_stage_cards()
         self._feed_layout.addStretch(1)
         feed_scroll.setWidget(feed_host)
         layout.addWidget(feed_scroll, 1)
 
-        container.setStyleSheet("#centerArea { background:#14161c; }")
+        container.setStyleSheet(
+            "#centerArea {"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "stop:0 #0d111a, stop:0.55 #101827, stop:1 #0b1018);"
+            "}"
+        )
         return container
 
     def _build_buttons(self) -> QHBoxLayout:
@@ -448,8 +915,16 @@ class AgentCreateWidget(QWidget):
 
     def _build_stage_cards(self) -> None:
         """Создать карточки стадий в ленте."""
+        last_index = len(STAGE_ORDER)
         for index, (stage_id, title, subtitle) in enumerate(STAGE_ORDER, start=1):
-            card = StageCard(index, stage_id, title, subtitle, self.select_stage)
+            card = StageCard(
+                index,
+                stage_id,
+                title,
+                subtitle,
+                index == last_index,
+                self.select_stage,
+            )
             self._stage_cards[stage_id] = card
             self._feed_layout.addWidget(card)
 
@@ -459,29 +934,33 @@ class AgentCreateWidget(QWidget):
         panel.setObjectName("detailsPanel")
         panel.setMinimumWidth(320)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
 
         header = QLabel("Детали шага")
-        header.setStyleSheet("font-size:16px; font-weight:700; color:#f2f4f8;")
+        header.setStyleSheet("font-size:16px; font-weight:800; color:#f6f8ff;")
         layout.addWidget(header)
 
         self.detail_title = QLabel("Запрос пользователя")
         self.detail_title.setStyleSheet(
-            "font-size:13px; font-weight:600; color:#dfe3ea;"
+            "font-size:13px; font-weight:700; color:#dfe7f7;"
         )
         self.detail_title.setWordWrap(True)
         layout.addWidget(self.detail_title)
 
         self.detail_status = QLabel()
-        self.detail_status.setStyleSheet("font-size:12px;")
+        self.detail_status.setStyleSheet(
+            "font-size:12px; padding:6px 10px; border-radius:9px;"
+            "background:#111a29; border:1px solid #263247;"
+        )
         layout.addWidget(self.detail_status)
 
         self.detail_view = QTextEdit()
         self.detail_view.setReadOnly(True)
         self.detail_view.setStyleSheet(
-            "background:#12141a; color:#d6dae2; border:1px solid #2b2f3a;"
-            "border-radius:8px; padding:10px; font-size:12px;"
+            "background:#0f1624; color:#d8e0ee; border:1px solid #263247;"
+            "border-radius:13px; padding:12px; font-size:12px;"
+            "selection-background-color:#2f6bff;"
         )
         layout.addWidget(self.detail_view, 1)
 
@@ -489,9 +968,11 @@ class AgentCreateWidget(QWidget):
         self.dev_toggle = QPushButton("▸ Для разработчика (JSON и таблицы)")
         self.dev_toggle.setCheckable(True)
         self.dev_toggle.setStyleSheet(
-            "QPushButton { text-align:left; background:transparent; color:#8b909c;"
-            "border:none; padding:4px 0; font-size:11px; }"
-            "QPushButton:hover { color:#c8ccd4; }"
+            "QPushButton { text-align:left; background:#111a29; color:#8fa1bd;"
+            "border:1px solid #243047; border-radius:10px; padding:8px 10px;"
+            "font-size:11px; font-weight:700; }"
+            "QPushButton:hover { color:#d7e3f8; border-color:#536b99; }"
+            "QPushButton:checked { color:#e8f0ff; background:#172235; }"
         )
         self.dev_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(self.dev_toggle)
@@ -500,7 +981,13 @@ class AgentCreateWidget(QWidget):
         self._dev_container.setVisible(False)
         layout.addWidget(self._dev_container, 1)
 
-        panel.setStyleSheet("#detailsPanel { background:#0f1116; }")
+        panel.setStyleSheet(
+            "#detailsPanel {"
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            "stop:0 #0b1018, stop:0.65 #0d1420, stop:1 #101827);"
+            "border-left:1px solid #202b3f;"
+            "}"
+        )
         return panel
 
     def _build_dev_tabs(self) -> QWidget:
@@ -1093,8 +1580,8 @@ class AgentCreateWidget(QWidget):
         label, bg, fg, icon = STATUS_STYLE[card._status]
         self.detail_status.setText(f"{icon}  Статус: {label}")
         self.detail_status.setStyleSheet(
-            f"color:{bg if bg != '#3a3f4b' else '#9aa0ac'}; font-size:12px;"
-            "font-weight:600;"
+            f"color:{fg}; background:{bg}; font-size:12px; font-weight:700;"
+            "padding:6px 10px; border-radius:9px; border:1px solid #2b3852;"
         )
         self.detail_view.setPlainText(self._stage_details.get(stage_id, ""))
         if stage_id == STAGE_DEV:

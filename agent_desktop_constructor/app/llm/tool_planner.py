@@ -67,7 +67,34 @@ class LLMToolPlanner:
                 max_tokens=planning_max_tokens,
             )
         )
-        plan = _parse_agent_plan(response.content)
+        try:
+            plan = _parse_agent_plan(response.content)
+        except LLMInvalidJSONError as exc:
+            # Частый сбой локальных/прокси LLM: на длинных browser-сценариях модель
+            # начинает писать слишком подробный план и обрывает JSON внутри строки.
+            # Второй проход просит короткий, исполняемый runtime-план.
+            compact_response = self._llm_client.complete(
+                LLMRequest(
+                    messages=_build_compact_agent_plan_prompt(
+                        normalized_request,
+                        tools_catalog,
+                        previous_error=str(exc),
+                    ),
+                    temperature=0.0,
+                    model_name=self._llm_client.config.model_name,
+                    response_format="json_object",
+                    max_tokens=max(self._llm_client.config.max_tokens or 0, 12000),
+                )
+            )
+            try:
+                plan = _parse_agent_plan(compact_response.content)
+            except LLMInvalidJSONError as retry_exc:
+                raise LLMInvalidJSONError(
+                    "LLM дважды вернула невалидный AgentPlan JSON. "
+                    f"Первичная ошибка: {exc}. "
+                    f"Ошибка compact retry: {retry_exc}"
+                ) from retry_exc
+
         tool_names = [tool.tool_name for tool in plan.selected_tools]
         tool_names.extend(
             step.tool_name for step in plan.steps if step.tool_name is not None
@@ -122,6 +149,70 @@ JSON-схема:
   - "medium" — несколько шагов или 2 системы, немного интерактива;
   - "high" — многошаговая автоматизация UI (клики, ввод в формы, коды, PDF),
     несколько систем (браузер + Outlook + Excel), длинные сценарии.
+""".strip()
+    return [
+        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="user", content=user_prompt),
+    ]
+
+
+def _build_compact_agent_plan_prompt(
+    user_request: str,
+    tools_catalog: ToolsCatalog,
+    previous_error: str,
+) -> list[LLMMessage]:
+    """Собрать короткий retry-prompt, если первый AgentPlan JSON оборвался."""
+    temporal_context = build_temporal_context_text()
+    system_prompt = """
+Ты — LLM Planner конструктора ИИ-агентов.
+Предыдущий ответ был невалидным JSON, поэтому сейчас нужен КОМПАКТНЫЙ план.
+Верни только один валидный JSON-объект LLMAgentPlan без Markdown и пояснений.
+Не исполняй инструменты. Не придумывай tool_name. Runtime сам выполнит шаги.
+""".strip()
+    user_prompt = f"""
+Задача пользователя:
+{user_request}
+
+Временной контекст:
+{temporal_context}
+
+Доступные инструменты:
+{tools_catalog.to_planner_context()}
+
+Предыдущая ошибка JSON:
+{previous_error}
+
+Верни строго JSON:
+{{
+  "agent_name": "до 40 символов",
+  "goal": "одна короткая фраза до 180 символов",
+  "selected_tools": [
+    {{"tool_name": "точное имя из ToolsCatalog", "reason": "до 80 символов", "required": true}}
+  ],
+  "steps": [
+    {{
+      "step_id": "step_1",
+      "step_type": "tool_call | analysis | human_review | final",
+      "title": "до 50 символов",
+      "description": "до 120 символов",
+      "tool_name": null,
+      "depends_on": []
+    }}
+  ],
+  "missing_data": [],
+  "needs_human": false,
+  "warnings": [],
+  "complexity": "low | medium | high"
+}}
+
+Жёсткие ограничения compact retry:
+- Максимум 6 steps.
+- Не копируй длинную инструкцию пользователя в title/description/goal.
+- Для многошагового сайта выбери browser-набор инструментов и опиши действия
+  короткими обобщёнными шагами, детали останутся в user_request для runtime.
+- Если нужен код из Outlook/2FA/ручное действие, добавь human_review/ask-human шаг,
+  но не запрашивай секреты в плане.
+- Все строки должны быть короткими, без переводов строк внутри строк.
 """.strip()
     return [
         LLMMessage(role="system", content=system_prompt),

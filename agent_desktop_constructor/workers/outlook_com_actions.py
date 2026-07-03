@@ -44,6 +44,21 @@ TRANSIENT_COM_HRESULTS = {
 }
 MAX_COM_ATTEMPTS = 3
 COM_RETRY_DELAY_SECONDS = 1.0
+
+# HRESULT-ы «классический Outlook не установлен / COM-класс не зарегистрирован».
+# Частая причина на других ПК: установлен только «новый Outlook», который не
+# поддерживает COM-автоматизацию, либо classic Outlook не зарегистрирован.
+CLASS_NOT_REGISTERED_HRESULTS = {
+    -2147221164,  # REGDB_E_CLASSNOTREG (0x80040154)
+    -2147221005,  # CO_E_CLASSSTRING — недопустимая строка класса (0x800401F3)
+    -2147221231,  # CO_E_CLASSNOTREG для отдельного класса (0x80040111)
+}
+OUTLOOK_NOT_REGISTERED_MESSAGE = (
+    "Классический Outlook не найден или COM-автоматизация не зарегистрирована на "
+    "этом компьютере. Установите классический Microsoft Outlook (desktop) и хотя бы "
+    "раз запустите его с настроенным профилем. «Новый Outlook» и веб-версия COM не "
+    "поддерживают."
+)
 DEFAULT_MAIL_MAX_SCAN_ITEMS = 200
 DEFAULT_CALENDAR_MAX_SCAN_ITEMS = 1000
 MAX_SCAN_ITEMS = 2000
@@ -107,6 +122,17 @@ def _is_transient_com_error(exc: Exception) -> bool:
     return False
 
 
+def _is_class_not_registered_error(exc: Exception) -> bool:
+    """Определить, что COM-класс Outlook не зарегистрирован (нет classic Outlook)."""
+    args = getattr(exc, "args", None)
+    if args and isinstance(args[0], int) and args[0] in CLASS_NOT_REGISTERED_HRESULTS:
+        return True
+    text = str(exc).casefold()
+    return "80040154" in text or "class not registered" in text or (
+        "недопустимая строка класса" in text
+    )
+
+
 def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
     """Выполнить read-only COM-операцию с CoInitialize и повтором транзиентных ошибок.
 
@@ -128,6 +154,11 @@ def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) ->
             raise
         except Exception as exc:  # noqa: BLE001 — COM бросает разнотипные ошибки
             last_exc = exc
+            if _is_class_not_registered_error(exc):
+                _log_progress(f"step=com_error attempt={attempt} class_not_registered")
+                raise OutlookAccessError(
+                    f"{OUTLOOK_NOT_REGISTERED_MESSAGE} (детали COM: {exc})"
+                ) from exc
             transient = _is_transient_com_error(exc)
             _log_progress(
                 f"step=com_error attempt={attempt} transient={transient}: {exc}"

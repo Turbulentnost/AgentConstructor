@@ -107,6 +107,84 @@ def test_browser_search_web_requires_query() -> None:
     assert result.error_type == "INVALID_INPUT"
 
 
+SAMPLE_DDG_HTML = """
+<html><body>
+<div class="result results_links results_links_deep web-result">
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fmoon&rut=x">
+    Лунный календарь на 3 июля 2026
+  </a>
+  <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fmoon">
+    Благоприятные дни и фаза Луны на 3 июля 2026 года.
+  </a>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fhoroscope&rut=y">
+    Гороскоп на 3 июля 2026
+  </a>
+  <a class="result__snippet">Астрологический прогноз на день.</a>
+</div>
+</body></html>
+"""
+
+
+def test_duckduckgo_html_parser_extracts_results() -> None:
+    """Парсер SERP извлекает заголовки, сниппеты и раскодирует ссылки."""
+    from agent_desktop_constructor.tools.web_tools import _DuckDuckGoHtmlParser
+
+    parser = _DuckDuckGoHtmlParser()
+    parser.feed(SAMPLE_DDG_HTML)
+    results = parser.cleaned_results()
+
+    assert len(results) == 2
+    assert results[0]["title"] == "Лунный календарь на 3 июля 2026"
+    assert results[0]["url"] == "https://example.com/moon"
+    assert "Благоприятные дни" in results[0]["snippet"]
+    assert results[1]["url"] == "https://example.org/horoscope"
+
+
+def test_browser_search_web_returns_serp_results(monkeypatch) -> None:
+    """Общий запрос возвращает реальные результаты SERP, даже без instant answer."""
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools._read_text",
+        lambda base_url, params=None: SAMPLE_DDG_HTML,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools._read_json",
+        lambda url: {"AbstractText": "", "RelatedTopics": []},
+    )
+
+    result = BrowserSearchWebTool().execute(
+        {"query": "лунный календарь 3 июля 2026", "max_results": 5}
+    )
+
+    assert result.ok is True
+    assert result.output_data["source"] == "duckduckgo"
+    assert len(result.output_data["results"]) == 2
+    assert result.output_data["results"][0]["url"] == "https://example.com/moon"
+    assert result.output_data["answer"]
+
+
+def test_browser_search_web_errors_when_no_results(monkeypatch) -> None:
+    """Если и SERP, и instant answer пусты — возвращается понятная ошибка."""
+
+    def raise_network(*args, **kwargs):
+        raise RuntimeError("Не удалось выполнить web-поиск: network down")
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools._read_text",
+        raise_network,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools._read_json",
+        raise_network,
+    )
+
+    result = BrowserSearchWebTool().execute({"query": "что-то очень редкое"})
+
+    assert result.ok is False
+    assert result.error_type == "WEB_SEARCH_ERROR"
+
+
 class FakeBrowserWorker:
     """Fake CDP worker для tool unit-тестов."""
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Callable
 from uuid import uuid4
 
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEventType
@@ -58,6 +59,39 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._tools_catalog = tools_catalog
         self._tool_registry = tool_registry
         self._max_repeat_attempts = max_repeat_attempts
+        self._progress_callback: Callable[[str], None] | None = None
+
+    def set_progress_callback(
+        self,
+        callback: Callable[[str], None] | None,
+    ) -> None:
+        """Задать колбэк живого прогресса (текст LLM/инструментов) для UI."""
+        self._progress_callback = callback
+
+    def _emit_progress(self, message: str) -> None:
+        """Отправить строку прогресса в UI, не роняя выполнение при ошибке колбэка."""
+        callback = self._progress_callback
+        if callback is None:
+            return
+        try:
+            callback(message)
+        except Exception:
+            pass
+
+    def _emit_decision_progress(self, decision: SupervisorDecision) -> None:
+        """Транслировать в UI текст решения LLM (полностью, без обрезки)."""
+        reason = (decision.reason or "").strip()
+        if reason:
+            self._emit_progress(f"🧠 LLM: {reason}")
+        if decision.tool_call is not None:
+            tool_reason = (decision.tool_call.reason or "").strip()
+            suffix = f" — {tool_reason}" if tool_reason else ""
+            self._emit_progress(
+                f"→ LLM выбрала инструмент {decision.tool_call.tool_name}{suffix}"
+            )
+        final_message = (decision.final_message or "").strip()
+        if final_message:
+            self._emit_progress(f"✅ Итоговый вывод LLM: {final_message}")
 
     def run(
         self,
@@ -81,6 +115,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             "Запуск LLM-управляемого агента начат",
             details={"agent_id": agent_spec.agent_id},
         )
+        self._emit_progress(f"▶ Запуск агента «{agent_spec.name}». Цель: {agent_spec.goal.main_goal}")
 
         executed_signatures: list[str] = []
         repeat_notes: list[str] = []
@@ -89,6 +124,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
 
         while state.can_continue(limits.max_steps, limits.max_tool_calls):
             state.step_counter += 1
+            self._emit_progress(
+                f"🧠 Шаг {state.step_counter}: LLM планирует следующее действие…"
+            )
             try:
                 decision = self._planner.decide(
                     agent_spec,
@@ -104,11 +142,13 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     "LLM не смог принять решение шага",
                     details={"error": str(exc)},
                 )
+                self._emit_progress(f"⚠ LLM не смогла принять решение: {exc}")
                 break
 
             state.variables.setdefault("loop_decisions", []).append(
                 decision.model_dump(mode="json")
             )
+            self._emit_decision_progress(decision)
 
             stop = self._apply_loop_decision(
                 agent_spec=agent_spec,
@@ -324,12 +364,17 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             state.variables.setdefault("tool_outputs", {})[tool_name] = (
                 result.output_data or {}
             )
+            output_keys = sorted((result.output_data or {}).keys())
             self._add_run_event(
                 state,
                 AgentRunEventType.TOOL_CALL_COMPLETED,
                 f"Инструмент {tool_name} выполнен",
                 tool_name=tool_name,
-                details={"output_keys": sorted((result.output_data or {}).keys())},
+                details={"output_keys": output_keys},
+            )
+            self._emit_progress(
+                f"✓ Инструмент {tool_name} выполнен. Данные: "
+                f"{', '.join(output_keys) if output_keys else 'нет полей'}"
             )
             return
 
@@ -342,6 +387,10 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 "error_type": result.error_type,
                 "error_message": result.error_message,
             },
+        )
+        self._emit_progress(
+            f"✕ Инструмент {tool_name} ошибка "
+            f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}"
         )
 
     def _validate_tool_call(

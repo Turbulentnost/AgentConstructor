@@ -177,12 +177,19 @@ def apply_llm_api_key_from_env(config: AppConfig) -> AppConfig:
 
 
 def load_dotenv_into_environ(path: Path | str | None = None) -> None:
-    """Загрузить .env в os.environ, не переопределяя уже заданные переменные."""
-    frozen_candidates = (
-        [Path(sys.executable).resolve().parent / ".env"]
-        if getattr(sys, "frozen", False)
-        else []
-    )
+    """Загрузить .env в os.environ, не переопределяя уже заданные переменные.
+
+    В собранном exe (`sys.frozen`) ключи ищутся сначала рядом с exe (чтобы можно
+    было переопределить без пересборки), затем во вшитой копии внутри бандла
+    (`sys._MEIPASS`). Это позволяет Claude/OpenAI работать на других ПК без
+    ручного создания .env.
+    """
+    frozen_candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        frozen_candidates.append(Path(sys.executable).resolve().parent / ".env")
+        bundle_dir = getattr(sys, "_MEIPASS", None)
+        if bundle_dir:
+            frozen_candidates.append(Path(bundle_dir) / ".env")
     candidates = (
         [Path(path)]
         if path is not None

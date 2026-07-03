@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from agent_desktop_constructor.app.core.models.agent_validation import (
     AgentValidationResult,
     AgentValidationStatus,
@@ -56,8 +58,13 @@ class AgentValidationService:
         self,
         agent_spec: AgentSpec,
         user_request: str,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> AgentValidationResult:
-        """Проверить AgentSpec и выполнить пробный запуск."""
+        """Проверить AgentSpec и выполнить пробный запуск.
+
+        ``progress_callback`` (если задан) получает живые строки хода выполнения
+        (текст LLM, вызовы инструментов, результаты) для отображения в UI.
+        """
         errors = self._validate_agent_can_run(agent_spec)
         if errors:
             return AgentValidationResult(
@@ -70,14 +77,7 @@ class AgentValidationService:
                 suggested_fixes=["Проверьте ToolsCatalog, ToolRegistry и graph_nodes."],
             )
 
-        state = self._runtime.run(
-            agent_spec,
-            initial_variables={
-                "user_request": user_request,
-                "validation_mode": True,
-                "read_only_trial_run": True,
-            },
-        )
+        state = self._run_trial(agent_spec, user_request, progress_callback)
         self._validation_states[state.run_id] = state
         warnings = list(state.variables.get("supervisor_warnings", []))
         tool_result_checks = self._check_required_tool_results(agent_spec, state, warnings)
@@ -103,6 +103,31 @@ class AgentValidationService:
             output_data=output_data,
             suggested_fixes=self._suggest_fixes(status, errors, warnings, critical_errors),
         )
+
+    def _run_trial(
+        self,
+        agent_spec: AgentSpec,
+        user_request: str,
+        progress_callback: Callable[[str], None] | None,
+    ) -> AgentRuntimeState:
+        """Выполнить пробный запуск, безопасно подключив/сняв progress-колбэк."""
+        supports_progress = progress_callback is not None and hasattr(
+            self._runtime, "set_progress_callback"
+        )
+        if supports_progress:
+            self._runtime.set_progress_callback(progress_callback)
+        try:
+            return self._runtime.run(
+                agent_spec,
+                initial_variables={
+                    "user_request": user_request,
+                    "validation_mode": True,
+                    "read_only_trial_run": True,
+                },
+            )
+        finally:
+            if supports_progress:
+                self._runtime.set_progress_callback(None)
 
     def get_validation_state(self, run_id: str | None) -> AgentRuntimeState | None:
         """Вернуть состояние пробного запуска по run_id."""

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -33,6 +33,7 @@ from agent_desktop_constructor.app.ui.helpers import (
     show_error,
     show_info,
 )
+from agent_desktop_constructor.app.ui.workers.create_flow_worker import CreateFlowWorker
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 
 EXAMPLE_REQUEST = (
@@ -199,6 +200,9 @@ class AgentCreateWidget(QWidget):
         self._stage_cards: dict[str, StageCard] = {}
         self._stage_details: dict[str, str] = {}
         self._selected_stage: str | None = None
+        self._thread: QThread | None = None
+        self._worker: CreateFlowWorker | None = None
+        self._action_buttons: list[QPushButton] = []
 
         self._build_ui()
         self._connect_signals()
@@ -247,6 +251,26 @@ class AgentCreateWidget(QWidget):
 
         layout.addLayout(self._build_buttons())
 
+        # Живой ход выполнения: показывает текст LLM и вызовы инструментов в
+        # реальном времени, чтобы окно не выглядело зависшим.
+        live_label = QLabel("Живой ход выполнения")
+        live_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
+        layout.addWidget(live_label)
+
+        self.live_log = QTextEdit()
+        self.live_log.setReadOnly(True)
+        self.live_log.setFixedHeight(150)
+        self.live_log.setPlaceholderText(
+            "Здесь построчно появляется ход работы агента: планирование LLM, "
+            "выбор инструментов, результаты и итоговый вывод."
+        )
+        self.live_log.setStyleSheet(
+            "background:#0c0e13; color:#cdd3dd; border:1px solid #2b2f3a;"
+            "border-radius:8px; padding:8px; font-size:12px;"
+            "font-family:Consolas,'Courier New',monospace;"
+        )
+        layout.addWidget(self.live_log)
+
         # Пошаговая лента выполнения.
         feed_scroll = QScrollArea()
         feed_scroll.setWidgetResizable(True)
@@ -293,6 +317,14 @@ class AgentCreateWidget(QWidget):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.validate_run_button.setStyleSheet(primary)
         self.validate_run_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._action_buttons = [
+            self.preview_button,
+            self.check_tools_button,
+            self.validate_button,
+            self.save_button,
+            self.validate_run_button,
+        ]
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -404,32 +436,105 @@ class AgentCreateWidget(QWidget):
         arrow = "▾" if checked else "▸"
         self.dev_toggle.setText(f"{arrow} Для разработчика (JSON и таблицы)")
 
+    # ---------------------------------------------------- background flow
+
+    def _is_busy(self) -> bool:
+        """Вернуть True, если уже выполняется фоновая операция."""
+        return self._thread is not None
+
+    def _append_log(self, message: str) -> None:
+        """Добавить строку в живой лог хода выполнения."""
+        self.live_log.append(message)
+        scrollbar = self.live_log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        """Включить/выключить кнопки действий на время фоновой операции."""
+        for button in self._action_buttons:
+            button.setEnabled(enabled)
+
+    def _run_in_background(
+        self,
+        job: Callable[[Callable[[str], None]], object],
+        on_completed: Callable[[object], None],
+        on_failed: Callable[[str], None],
+    ) -> None:
+        """Запустить job в QThread, транслируя прогресс в живой лог."""
+        if self._is_busy():
+            show_info(
+                self,
+                "Идёт выполнение",
+                "Дождитесь завершения текущей операции.",
+            )
+            return
+
+        self._set_buttons_enabled(False)
+        thread = QThread()
+        worker = CreateFlowWorker(job)
+        self._thread = thread
+        self._worker = worker
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._append_log)
+        worker.completed.connect(on_completed)
+        worker.failed.connect(on_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_background_finished)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_background_finished(self) -> None:
+        """Сбросить ссылки на поток и вернуть кнопки в активное состояние."""
+        thread = self._thread
+        if thread is not None:
+            thread.wait(5000)
+        self._thread = None
+        self._worker = None
+        self._set_buttons_enabled(True)
+
     # -------------------------------------------------------------- actions
 
     def build_preview(self) -> None:
-        """Построить AgentSpec preview без сохранения и запуска."""
+        """Построить AgentSpec preview в фоне без сохранения и запуска."""
         user_request = self.request_edit.toPlainText().strip()
         if not user_request:
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
+        if self._is_busy():
+            return
 
         self._reset_stages()
+        self.live_log.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
-
-        try:
-            self._preview_agent = self._container.agent_service.build_preview(
-                user_request
-            )
-        except Exception as exc:
-            self._set_stage(STAGE_PLAN, "failed", "Не удалось построить план", str(exc))
-            show_error(self, "Ошибка предпросмотра", exc)
-            return
-
-        self._render_preview(self._preview_agent)
-        self._render_plan_stages(self._preview_agent)
         self.select_stage(STAGE_PLAN)
+
+        service = self._container.agent_service
+
+        def job(progress: Callable[[str], None]) -> object:
+            progress("🧩 Строю план агента через LLM…")
+            spec = service.build_preview(user_request)
+            progress("✅ План построен.")
+            return spec
+
+        self._run_in_background(job, self._on_preview_completed, self._on_preview_failed)
+
+    def _on_preview_completed(self, spec: object) -> None:
+        """Отобразить построенный preview AgentSpec."""
+        assert isinstance(spec, AgentSpec)
+        self._preview_agent = spec
+        self._render_preview(spec)
+        self._render_plan_stages(spec)
+        self.select_stage(STAGE_PLAN)
+
+    def _on_preview_failed(self, message: str) -> None:
+        """Показать ошибку построения плана."""
+        self._set_stage(STAGE_PLAN, "failed", "Не удалось построить план", message)
+        self._append_log(f"⚠ Ошибка предпросмотра: {message}")
+        show_error(self, "Ошибка предпросмотра", message)
 
     def check_tools(self) -> None:
         """Проверить регистрацию выбранных инструментов в ToolRegistry."""
@@ -480,74 +585,113 @@ class AgentCreateWidget(QWidget):
         self.select_stage(STAGE_CHECK)
 
     def validate_agent(self) -> None:
-        """Построить preview и выполнить пробную проверку агента."""
+        """Построить preview (при необходимости) и выполнить пробную проверку в фоне."""
         user_request = self.request_edit.toPlainText().strip()
         if not user_request and self._preview_agent is None:
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
-
-        try:
-            if self._preview_agent is None:
-                self._reset_stages()
-                self._last_request = user_request
-                self._set_stage(
-                    STAGE_REQUEST, "passed", _short(user_request), user_request
-                )
-                self._preview_agent = self._container.agent_service.build_preview(
-                    user_request
-                )
-                self._render_preview(self._preview_agent)
-                self._render_plan_stages(self._preview_agent)
-            self._set_running(STAGE_TRIAL)
-            validation = self._container.agent_service.validate_agent(
-                self._preview_agent,
-                user_request or self._last_request,
-            )
-        except Exception as exc:
-            self._set_stage(STAGE_TRIAL, "failed", "Ошибка пробного запуска", str(exc))
-            show_error(self, "Ошибка проверки агента", exc)
+        if self._is_busy():
             return
 
+        request = user_request or self._last_request
+        self._last_request = request
+        existing_spec = self._preview_agent
+        if existing_spec is None:
+            self._reset_stages()
+            self._set_stage(STAGE_REQUEST, "passed", _short(request), request)
+        self.live_log.clear()
+        self._set_running(STAGE_TRIAL)
+        self.select_stage(STAGE_TRIAL)
+
+        service = self._container.agent_service
+
+        def job(progress: Callable[[str], None]) -> object:
+            spec = existing_spec
+            if spec is None:
+                progress("🧩 Строю план агента через LLM…")
+                spec = service.build_preview(request)
+                progress("✅ План построен. Запускаю пробный прогон…")
+            validation = service.validate_agent(
+                spec,
+                request,
+                progress_callback=progress,
+            )
+            return (spec, validation)
+
+        self._run_in_background(
+            job,
+            self._on_validate_completed,
+            self._on_validate_failed,
+        )
+
+    def _on_validate_completed(self, result: object) -> None:
+        """Отобразить результат пробной проверки агента."""
+        spec, validation = result
+        self._preview_agent = spec
+        self._render_preview(spec)
+        self._render_plan_stages(spec)
         self._apply_validation(validation)
         self.select_stage(STAGE_RESULT)
         show_info(self, "Проверка агента", validation.summary)
 
+    def _on_validate_failed(self, message: str) -> None:
+        """Показать ошибку пробного запуска."""
+        self._set_stage(STAGE_TRIAL, "failed", "Ошибка пробного запуска", message)
+        self._append_log(f"⚠ Ошибка проверки агента: {message}")
+        show_error(self, "Ошибка проверки агента", message)
+
     def create_validate_and_run(self) -> None:
-        """Собрать, проверить и запустить агента при успешной проверке."""
+        """Собрать, проверить и запустить агента в фоне при успешной проверке."""
         user_request = self.request_edit.toPlainText().strip()
         if not user_request:
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
+        if self._is_busy():
+            return
 
         self._reset_stages()
+        self.live_log.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
+        self.select_stage(STAGE_TRIAL)
 
-        try:
-            agent_spec, validation, state = (
-                self._container.agent_service.create_validate_and_run_once(user_request)
+        service = self._container.agent_service
+
+        def job(progress: Callable[[str], None]) -> object:
+            return service.create_validate_and_run_once(
+                user_request,
+                progress_callback=progress,
             )
-            self._preview_agent = agent_spec
-        except Exception as exc:
-            self._set_stage(STAGE_PLAN, "failed", "Не удалось собрать агента", str(exc))
-            show_error(self, "Ошибка проверки и запуска", exc)
-            return
 
+        self._run_in_background(
+            job,
+            self._on_create_run_completed,
+            self._on_create_run_failed,
+        )
+
+    def _on_create_run_completed(self, result: object) -> None:
+        """Отобразить результат «собрать, проверить и запустить»."""
+        agent_spec, validation, state = result
+        self._preview_agent = agent_spec
         self._render_preview(agent_spec)
         self._render_plan_stages(agent_spec)
         self._apply_validation(validation)
-
+        self.select_stage(STAGE_RESULT)
         if state is None:
-            self.select_stage(STAGE_RESULT)
             show_info(self, "Агент не запущен", validation.summary)
             return
-        self.select_stage(STAGE_RESULT)
         show_info(
             self,
             "Агент запущен",
             f"Проверка пройдена, run_id={state.run_id}, status={state.status.value}",
         )
+
+    def _on_create_run_failed(self, message: str) -> None:
+        """Показать ошибку сборки/проверки/запуска."""
+        self._set_stage(STAGE_PLAN, "failed", "Не удалось собрать агента", message)
+        self._append_log(f"⚠ Ошибка проверки и запуска: {message}")
+        show_error(self, "Ошибка проверки и запуска", message)
 
     def save_agent(self) -> None:
         """Сохранить preview или создать и сохранить агента из запроса."""
@@ -577,9 +721,13 @@ class AgentCreateWidget(QWidget):
 
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""
+        if self._is_busy():
+            show_info(self, "Идёт выполнение", "Дождитесь завершения операции.")
+            return
         self._preview_agent = None
         self._last_request = ""
         self.request_edit.clear()
+        self.live_log.clear()
         self.general_output.clear()
         self.json_output.clear()
         set_table_rows(self.data_table, [], self._data_headers())

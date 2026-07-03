@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from agent_desktop_constructor.app.core.models.human_approval import (
     HumanApprovalRecord,
     HumanApprovalStatus,
@@ -98,6 +100,7 @@ class AgentApplicationService:
         self,
         agent_spec: AgentSpec,
         user_request: str | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> AgentValidationResult:
         """Проверить агента через AgentValidationService."""
         if self._agent_validation_service is None:
@@ -105,6 +108,7 @@ class AgentApplicationService:
         return self._agent_validation_service.validate_agent(
             agent_spec,
             user_request or agent_spec.goal.main_goal,
+            progress_callback=progress_callback,
         )
 
     def create_validate_and_save_agent(
@@ -121,8 +125,11 @@ class AgentApplicationService:
     def create_validate_and_run_once(
         self,
         user_request: str,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
         """Собрать агента, выполнить проверочный запуск и сохранить при успехе."""
+        if progress_callback is not None:
+            progress_callback("🧩 Строю план агента через LLM…")
         try:
             agent_spec = self.build_preview(user_request)
         except Exception as exc:
@@ -148,7 +155,13 @@ class AgentApplicationService:
                 ),
                 None,
             )
-        validation_result = self.validate_agent(agent_spec, user_request)
+        if progress_callback is not None:
+            progress_callback("🔎 План построен. Запускаю пробный прогон агента…")
+        validation_result = self.validate_agent(
+            agent_spec,
+            user_request,
+            progress_callback=progress_callback,
+        )
         validation_state = None
         if (
             self._agent_validation_service is not None

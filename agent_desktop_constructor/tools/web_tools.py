@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from html.parser import HTMLParser
 from typing import Any
 from urllib import error, parse, request
 
@@ -21,6 +22,18 @@ from agent_desktop_constructor.workers.browser_cdp_worker import (
 
 DEFAULT_MAX_RESULTS = 5
 MAX_RESULTS = 10
+
+# Реалистичный браузерный User-Agent: DuckDuckGo HTML/Lite отдаёт результаты
+# только «браузерным» клиентам, иначе возвращает пустую страницу.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+# Endpoints обычного веб-поиска DuckDuckGo (SERP как в Google), без API-ключа.
+DUCKDUCKGO_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
+DUCKDUCKGO_LITE_ENDPOINT = "https://lite.duckduckgo.com/lite/"
+TITLE_RESULT_CLASSES = ("result__a", "result-link")
+SNIPPET_RESULT_CLASSES = ("result__snippet", "result-snippet")
 
 
 class BrowserSearchWebTool(BaseTool):
@@ -82,7 +95,7 @@ class BrowserSearchWebTool(BaseTool):
             if _looks_like_weather_query(query):
                 output_data = _search_weather(query, max_results)
             else:
-                output_data = _search_duckduckgo(query, max_results)
+                output_data = _search_web(query, max_results)
         except Exception as exc:  # noqa: BLE001 - urllib возвращает разные ошибки
             return ToolCallResult(
                 ok=False,
@@ -367,8 +380,70 @@ def _search_weather(query: str, max_results: int) -> dict:
     }
 
 
-def _search_duckduckgo(query: str, max_results: int) -> dict:
-    """Получить краткие результаты через DuckDuckGo Instant Answer API."""
+def _search_web(query: str, max_results: int) -> dict:
+    """Выполнить обычный веб-поиск (как Google) и вернуть реальные результаты.
+
+    Стратегия:
+    1. SERP DuckDuckGo (html → lite) — общий поиск по любым запросам;
+    2. Instant Answer API — короткий прямой ответ для фактологических запросов.
+    Результаты объединяются и дедуплицируются.
+    """
+    errors: list[str] = []
+    serp_results: list[dict[str, str]] = []
+    try:
+        serp_results = _search_duckduckgo_html(query, max_results)
+    except Exception as exc:  # noqa: BLE001 - сеть/парсинг могут падать по-разному
+        errors.append(str(exc))
+
+    answer = ""
+    instant_results: list[dict[str, str]] = []
+    try:
+        answer, instant_results = _duckduckgo_instant_answer(query, max_results)
+    except Exception as exc:  # noqa: BLE001 - instant answer опционален
+        errors.append(str(exc))
+
+    combined = _dedupe_results([*instant_results, *serp_results], max_results)
+    if not answer and combined:
+        answer = combined[0].get("snippet") or combined[0].get("title") or ""
+
+    if not combined and not answer:
+        raise RuntimeError(
+            "Веб-поиск не вернул результатов"
+            + (f": {'; '.join(errors)}" if errors else ".")
+        )
+
+    return {
+        "query": query,
+        "answer": answer,
+        "results": combined,
+        "source": "duckduckgo",
+    }
+
+
+def _search_duckduckgo_html(query: str, max_results: int) -> list[dict[str, str]]:
+    """Получить обычные результаты веб-поиска, распарсив SERP DuckDuckGo."""
+    last_error: Exception | None = None
+    for endpoint in (DUCKDUCKGO_HTML_ENDPOINT, DUCKDUCKGO_LITE_ENDPOINT):
+        try:
+            html = _read_text(endpoint, {"q": query, "kl": "ru-ru"})
+        except Exception as exc:  # noqa: BLE001 - пробуем следующий endpoint
+            last_error = exc
+            continue
+        parser = _DuckDuckGoHtmlParser()
+        parser.feed(html)
+        results = parser.cleaned_results()
+        if results:
+            return results[:max_results]
+    if last_error is not None:
+        raise RuntimeError(f"Не удалось получить результаты поиска: {last_error}")
+    return []
+
+
+def _duckduckgo_instant_answer(
+    query: str,
+    max_results: int,
+) -> tuple[str, list[dict[str, str]]]:
+    """Получить короткий прямой ответ через DuckDuckGo Instant Answer API."""
     params = parse.urlencode(
         {
             "q": query,
@@ -406,12 +481,133 @@ def _search_duckduckgo(query: str, max_results: int) -> dict:
             }
         )
     answer = abstract or str(payload.get("Answer") or "").strip()
-    return {
-        "query": query,
-        "answer": answer,
-        "results": results[:max_results],
-        "source": "duckduckgo",
-    }
+    return answer, results
+
+
+class _DuckDuckGoHtmlParser(HTMLParser):
+    """Лёгкий парсер SERP DuckDuckGo (html и lite) без внешних зависимостей."""
+
+    def __init__(self) -> None:
+        """Создать парсер результатов поиска."""
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._capture_title = False
+        self._capture_snippet = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Начать захват заголовка результата или сниппета по классу элемента."""
+        attributes = {name: (value or "") for name, value in attrs}
+        css_class = attributes.get("class", "")
+        if tag == "a" and _has_result_class(css_class, TITLE_RESULT_CLASSES):
+            self.results.append(
+                {
+                    "title": "",
+                    "url": _decode_ddg_href(attributes.get("href", "")),
+                    "snippet": "",
+                    "source": "duckduckgo",
+                }
+            )
+            self._capture_title = True
+            return
+        if _has_result_class(css_class, SNIPPET_RESULT_CLASSES) and self.results:
+            self._capture_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        """Остановить захват при закрытии соответствующего контейнера."""
+        if self._capture_title and tag == "a":
+            self._capture_title = False
+        if self._capture_snippet and tag in {"a", "div", "td", "span"}:
+            self._capture_snippet = False
+
+    def handle_data(self, data: str) -> None:
+        """Накопить текст заголовка/сниппета текущего результата."""
+        if not self.results:
+            return
+        if self._capture_title:
+            self.results[-1]["title"] += data
+        elif self._capture_snippet:
+            self.results[-1]["snippet"] += data
+
+    def cleaned_results(self) -> list[dict[str, str]]:
+        """Вернуть только валидные результаты с http-ссылкой и заголовком."""
+        cleaned: list[dict[str, str]] = []
+        for item in self.results:
+            title = " ".join(item["title"].split())
+            snippet = " ".join(item["snippet"].split())
+            url = item["url"].strip()
+            if not title or not url.startswith("http"):
+                continue
+            cleaned.append(
+                {
+                    "title": title,
+                    "snippet": snippet,
+                    "url": url,
+                    "source": "duckduckgo",
+                }
+            )
+        return cleaned
+
+
+def _has_result_class(css_class: str, markers: tuple[str, ...]) -> bool:
+    """Проверить, что class-атрибут содержит один из маркеров результата."""
+    tokens = css_class.split()
+    return any(marker in tokens for marker in markers)
+
+
+def _decode_ddg_href(href: str) -> str:
+    """Достать реальный URL из редирект-ссылки DuckDuckGo (/l/?uddg=...)."""
+    if not href:
+        return ""
+    normalized = "https:" + href if href.startswith("//") else href
+    try:
+        parsed = parse.urlparse(normalized)
+    except ValueError:
+        return normalized
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        target = parse.parse_qs(parsed.query).get("uddg", [])
+        if target:
+            return parse.unquote(target[0])
+    return normalized
+
+
+def _dedupe_results(
+    results: list[dict[str, str]],
+    max_results: int,
+) -> list[dict[str, str]]:
+    """Убрать дубли по URL и обрезать до max_results, сохранив порядок."""
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for item in results:
+        key = (item.get("url") or item.get("title") or "").strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= max_results:
+            break
+    return unique
+
+
+def _read_text(base_url: str, params: dict[str, str] | None = None) -> str:
+    """Прочитать HTML по URL с браузерным User-Agent и понятной ошибкой."""
+    url = f"{base_url}?{parse.urlencode(params)}" if params else base_url
+    http_request = request.Request(
+        url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "ru,en;q=0.9",
+            "User-Agent": BROWSER_USER_AGENT,
+        },
+        method="GET",
+    )
+    try:
+        with request.urlopen(http_request, timeout=20) as response:
+            raw = response.read()
+    except error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} при web-поиске") from exc
+    except (error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Не удалось выполнить web-поиск: {exc}") from exc
+    return raw.decode("utf-8", errors="replace")
 
 
 def _read_json(url: str) -> dict[str, Any]:

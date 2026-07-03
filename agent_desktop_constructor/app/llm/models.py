@@ -32,6 +32,7 @@ class LLMRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0, le=2)
     model_name: str
     response_format: str | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
 
     @field_validator("model_name")
     @classmethod

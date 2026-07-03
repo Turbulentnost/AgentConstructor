@@ -28,6 +28,19 @@ def qt_app():
     return QApplication.instance() or QApplication([])
 
 
+def _wait_for_idle(widget, qt_app, timeout_ms: int = 5000) -> None:
+    """Прокрутить event loop, пока фоновая операция виджета не завершится."""
+    import time
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while getattr(widget, "_thread", None) is not None:
+        qt_app.processEvents()
+        if time.monotonic() > deadline:
+            raise AssertionError("Фоновая операция UI не завершилась вовремя")
+        time.sleep(0.01)
+    qt_app.processEvents()
+
+
 class FakeValidationUiService:
     """Fake service для AgentCreateWidget."""
 
@@ -67,14 +80,18 @@ class FakeValidationUiService:
         self.calls.append(f"build_preview:{user_request}")
         return self.agent_spec
 
-    def validate_agent(self, agent_spec, user_request=None):
+    def validate_agent(self, agent_spec, user_request=None, progress_callback=None):
         """Вернуть validation result."""
         self.calls.append(f"validate_agent:{agent_spec.agent_id}:{user_request}")
+        if progress_callback is not None:
+            progress_callback("trial-progress")
         return self.validation
 
-    def create_validate_and_run_once(self, user_request: str):
+    def create_validate_and_run_once(self, user_request: str, progress_callback=None):
         """Вернуть validation и runtime state."""
         self.calls.append(f"create_validate_and_run_once:{user_request}")
+        if progress_callback is not None:
+            progress_callback("run-progress")
         return (
             self.agent_spec,
             self.validation,
@@ -111,6 +128,7 @@ def test_agent_create_widget_calls_validation_service(qt_app, monkeypatch) -> No
     widget.request_edit.setPlainText("Найди совещания")
 
     widget.validate_agent()
+    _wait_for_idle(widget, qt_app)
 
     assert service.calls == [
         "build_preview:Найди совещания",
@@ -135,6 +153,7 @@ def test_agent_create_widget_calls_create_validate_and_run(qt_app, monkeypatch) 
     widget.request_edit.setPlainText("Найди совещания")
 
     widget.create_validate_and_run()
+    _wait_for_idle(widget, qt_app)
 
     assert service.calls == ["create_validate_and_run_once:Найди совещания"]
 

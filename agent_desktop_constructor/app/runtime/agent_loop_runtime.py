@@ -465,6 +465,14 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             AgentRunStatus.FAILED,
         }:
             return True
+        # Vision-действие выполнилось, но не изменило страницу — не даём агенту
+        # бесконечно повторять одно и то же (например прокрутку без сдвига).
+        if is_vision_tool:
+            no_progress_note = state.variables.pop("_vision_no_progress_note", None)
+            if no_progress_note:
+                repeat_notes.append(no_progress_note)
+                self._emit_progress(f"↺ {no_progress_note}")
+                return "repeat"
         return False
 
     def _execute_loop_tool(
@@ -532,6 +540,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._record_tool_result(state, input_data, result)
         if result.ok:
             output_data = result.output_data or {}
+            if tool_name in VISION_INTERACTION_TOOLS:
+                self._track_vision_progress(state, tool_name, proposed_input, output_data)
             stored_output = self._stash_screenshot(state, output_data)
             state.variables.setdefault("tool_outputs", {})[tool_name] = stored_output
             output_keys = sorted(output_data.keys())
@@ -562,6 +572,56 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             f"✕ Инструмент {tool_name} ошибка "
             f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}"
         )
+
+    def _track_vision_progress(
+        self,
+        state: AgentRuntimeState,
+        tool_name: str,
+        proposed_input: dict,
+        output_data: dict,
+    ) -> None:
+        """Определить, изменило ли vision-действие страницу, и подготовить подсказку."""
+        signature = _action_signature(tool_name, proposed_input)
+        fingerprint = self._vision_fingerprint(output_data)
+        store = state.variables.setdefault("vision_fingerprints", {})
+        previous = store.get(signature)
+        store[signature] = fingerprint
+
+        note: str | None = None
+        if "scrolled" in output_data and not output_data.get("scrolled"):
+            note = (
+                f"browser.scroll не сдвинул область "
+                f"(target={output_data.get('scroll_target')}, "
+                f"at_bottom={output_data.get('at_bottom')}, "
+                f"at_top={output_data.get('at_top')}). Прокрутка в эту сторону/в этой "
+                "области больше ничего не даёт — смени направление, укажи x,y другой "
+                "прокручиваемой области или заверши сбор данных."
+            )
+        elif previous is not None and previous == fingerprint:
+            note = (
+                f"Действие {tool_name} повторно не изменило состояние страницы "
+                "(тот же адрес и та же позиция). Не повторяй его — попробуй другое "
+                "действие/область или заверши задачу выводом."
+            )
+        state.variables["_vision_no_progress_note"] = note
+
+    @staticmethod
+    def _vision_fingerprint(output_data: dict) -> str:
+        """Компактный отпечаток состояния страницы после vision-действия."""
+        parts = [
+            str(output_data.get("url") or ""),
+            str(output_data.get("title") or ""),
+        ]
+        has_scroll_metrics = False
+        for key in ("scroll_top", "scroll_left"):
+            if key in output_data:
+                has_scroll_metrics = True
+                parts.append(f"{key}={output_data.get(key)}")
+        if not has_scroll_metrics:
+            parts.append(
+                "shot=" + str(len(str(output_data.get("screenshot_base64") or "")))
+            )
+        return "|".join(parts)
 
     def _stash_screenshot(self, state: AgentRuntimeState, output_data: dict) -> dict:
         """Сохранить base64-скриншот отдельно (для image в промпте) и убрать из текста."""

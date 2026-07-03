@@ -132,15 +132,52 @@ class BrowserVisionWorker:
             return self._state_with_screenshot(session)
 
     def scroll(self, input_data: dict) -> dict:
-        """Прокрутить страницу и вернуть скриншот."""
+        """Прокрутить нужный контейнер и вернуть скриншот с метриками прокрутки.
+
+        Сама находит подходящую область прокрутки: если заданы x/y — берёт
+        элемент под этой точкой и его ближайшего прокручиваемого родителя;
+        иначе выбирает самый большой видимый прокручиваемый контейнер (например,
+        список чатов), а если такого нет — прокручивает всю страницу. Работает
+        по вертикали и по горизонтали и сообщает, сдвинулась ли страница и
+        достигнут ли край.
+        """
         direction = str(input_data.get("direction") or "down").strip().casefold()
-        pixels = _require_number(input_data.get("pixels"), "pixels", default=700)
-        delta = -pixels if direction in {"up", "вверх"} else pixels
+        pixels = int(_require_number(input_data.get("pixels"), "pixels", default=700))
+        has_point = input_data.get("x") is not None and input_data.get("y") is not None
+        x = int(_require_number(input_data.get("x"), "x", default=0)) if has_point else -1
+        y = int(_require_number(input_data.get("y"), "y", default=0)) if has_point else -1
+
+        dx = 0
+        dy = 0
+        if direction in {"up", "вверх"}:
+            dy = -pixels
+        elif direction in {"left", "влево"}:
+            dx = -pixels
+        elif direction in {"right", "вправо"}:
+            dx = pixels
+        else:
+            dy = pixels
+
+        script = _SCROLL_SCRIPT_TEMPLATE.format(dx=dx, dy=dy, x=x, y=y)
         with self._session() as session:
             session.send("Runtime.enable")
-            session.evaluate(f"window.scrollBy(0, {int(delta)}); true")
-            time.sleep(0.2)
-            return self._state_with_screenshot(session)
+            metrics = session.evaluate(script) or {}
+            time.sleep(0.25)
+            state = self._state_with_screenshot(session)
+        if isinstance(metrics, dict):
+            state.update(
+                {
+                    "scrolled": bool(metrics.get("scrolled")),
+                    "scroll_top": metrics.get("scroll_top"),
+                    "scroll_left": metrics.get("scroll_left"),
+                    "scroll_height": metrics.get("scroll_height"),
+                    "client_height": metrics.get("client_height"),
+                    "at_bottom": bool(metrics.get("at_bottom")),
+                    "at_top": bool(metrics.get("at_top")),
+                    "scroll_target": metrics.get("target"),
+                }
+            )
+        return state
 
     def _state_with_screenshot(self, session: _CdpSession) -> dict:
         """Собрать url/title/размеры и base64 PNG-скриншот текущей страницы."""
@@ -264,6 +301,69 @@ class BrowserVisionWorker:
                 return
             time.sleep(0.2)
         raise BrowserCdpError("Страница не загрузилась за timeout.")
+
+
+# JS находит правильную область прокрутки и двигает её. Без хардкода конкретных
+# сайтов: опирается только на CSS overflow и реальные размеры прокрутки.
+_SCROLL_SCRIPT_TEMPLATE = """
+(function() {{
+  var dx = {dx}, dy = {dy}, px = {x}, py = {y};
+  function scrollableAxis(el) {{
+    if (!(el instanceof Element)) return {{y: false, x: false}};
+    var s = getComputedStyle(el);
+    var canY = (s.overflowY === 'auto' || s.overflowY === 'scroll')
+      && el.scrollHeight > el.clientHeight + 2;
+    var canX = (s.overflowX === 'auto' || s.overflowX === 'scroll')
+      && el.scrollWidth > el.clientWidth + 2;
+    return {{y: canY, x: canX}};
+  }}
+  function needAxis(a) {{ return (dy !== 0 && a.y) || (dx !== 0 && a.x); }}
+  function fromPoint(x, y) {{
+    var el = document.elementFromPoint(x, y);
+    while (el && el !== document.body && el !== document.documentElement) {{
+      if (needAxis(scrollableAxis(el))) return el;
+      el = el.parentElement;
+    }}
+    return null;
+  }}
+  function largest() {{
+    var best = null, bestArea = 0;
+    var nodes = document.querySelectorAll('*');
+    for (var i = 0; i < nodes.length; i++) {{
+      var el = nodes[i];
+      var a = scrollableAxis(el);
+      if (!needAxis(a)) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 60 || rect.height < 60) continue;
+      if (rect.bottom < 0 || rect.top > (window.innerHeight || 0)) continue;
+      var area = (el.scrollHeight - el.clientHeight) + (el.scrollWidth - el.clientWidth);
+      if (area > bestArea) {{ bestArea = area; best = el; }}
+    }}
+    return best;
+  }}
+  var target = (px >= 0 && py >= 0) ? fromPoint(px, py) : largest();
+  var usedWindow = false;
+  if (!target) {{ target = document.scrollingElement || document.documentElement; usedWindow = true; }}
+  var beforeTop = target.scrollTop, beforeLeft = target.scrollLeft;
+  target.scrollTop = beforeTop + dy;
+  target.scrollLeft = beforeLeft + dx;
+  var afterTop = target.scrollTop, afterLeft = target.scrollLeft;
+  var desc = (usedWindow ? 'window' : (target.tagName || '').toLowerCase());
+  if (!usedWindow && target.className && typeof target.className === 'string') {{
+    desc += '.' + target.className.trim().split(/\\s+/).slice(0, 2).join('.');
+  }}
+  return {{
+    scrolled: (afterTop !== beforeTop) || (afterLeft !== beforeLeft),
+    scroll_top: afterTop,
+    scroll_left: afterLeft,
+    scroll_height: target.scrollHeight,
+    client_height: target.clientHeight,
+    at_bottom: (afterTop + target.clientHeight) >= (target.scrollHeight - 2),
+    at_top: afterTop <= 0,
+    target: desc.slice(0, 60)
+  }};
+}})()
+"""
 
 
 def _require_number(value: object, name: str, default: float | None = None) -> float:

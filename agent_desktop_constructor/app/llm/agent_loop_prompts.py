@@ -49,6 +49,12 @@ Runtime сам безопасно исполнит инструмент чере
 Правила:
 - Выбирай tool_name только из списка доступных инструментов. Не выдумывай новые.
 - НЕ повторяй уже выполненные действия с теми же параметрами (см. executed_actions).
+- В your_recent_steps ты видишь СВОИ последние решения и их обоснования — это твоя
+  память диалога. Прежде чем действовать, свери: не делаешь ли ты то же самое, что
+  и на прошлых шагах. Если несколько раз подряд выбирал одно действие, а результат
+  (collected_data/скриншот/метрики) не меняется — СМЕНИ стратегию или заверши.
+- Для прокрутки смотри поля scrolled и at_bottom/at_top в результате: если
+  scrolled=false или at_bottom=true — дальше в ту же сторону прокручивать бесполезно.
 - Смотри на результаты уже выполненных инструментов (collected_data) и решай:
   нужно ли собрать ещё данные другим инструментом или данных уже достаточно.
 - Если собранных данных достаточно для цели — верни finish_success и сформулируй
@@ -112,6 +118,7 @@ Runtime сам безопасно исполнит инструмент чере
         "available_tools": tools_context,
         "executed_steps": executed_steps,
         "executed_actions": executed_signatures,
+        "your_recent_steps": _recent_reasoning(runtime_state),
         "collected_data": collected_data,
         "repeat_notes": repeat_notes,
         "human_responses": runtime_state.variables.get("human_responses", []),
@@ -178,6 +185,27 @@ def _available_tools_context(
             }
         )
     return context
+
+
+def _recent_reasoning(runtime_state: AgentRuntimeState, limit: int = 8) -> list[dict]:
+    """Собрать краткую историю собственных решений LLM — её «память диалога»."""
+    decisions = runtime_state.variables.get("loop_decisions", [])
+    if not isinstance(decisions, list):
+        return []
+    recent: list[dict] = []
+    for item in decisions[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        tool_call = item.get("tool_call") or {}
+        recent.append(
+            {
+                "decision": item.get("decision_type"),
+                "tool": tool_call.get("tool_name"),
+                "input": tool_call.get("input_data"),
+                "reason": str(item.get("reason") or "")[:300],
+            }
+        )
+    return recent
 
 
 def _sanitize_collected_data(collected_data: dict) -> dict:

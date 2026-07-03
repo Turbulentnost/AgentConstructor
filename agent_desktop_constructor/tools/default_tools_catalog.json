@@ -727,7 +727,7 @@
     {
       "name": "browser.scroll",
       "title": "Прокрутка браузера (UI)",
-      "description": "Прокручивает управляемую вкладку вверх/вниз и возвращает скриншот.",
+      "description": "Прокручивает нужную область управляемой вкладки (не только всю страницу, но и внутренние списки/панели) и возвращает скриншот с метриками прокрутки: сдвинулась ли область (scrolled) и достигнут ли край (at_bottom/at_top).",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
@@ -735,8 +735,10 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "direction": {"type": "string"},
-          "pixels": {"type": "integer"}
+          "direction": {"type": "string", "enum": ["down", "up", "left", "right"]},
+          "pixels": {"type": "integer"},
+          "x": {"type": "integer"},
+          "y": {"type": "integer"}
         }
       },
       "output_schema": {
@@ -744,7 +746,14 @@
         "properties": {
           "url": {"type": "string"},
           "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"}
+          "screenshot_base64": {"type": "string"},
+          "scrolled": {"type": "boolean"},
+          "scroll_top": {"type": "integer"},
+          "scroll_height": {"type": "integer"},
+          "client_height": {"type": "integer"},
+          "at_bottom": {"type": "boolean"},
+          "at_top": {"type": "boolean"},
+          "scroll_target": {"type": "string"}
         }
       },
       "allowed_for_agent_types": [
@@ -757,7 +766,7 @@
         "Прокрутить страницу вниз, чтобы увидеть остальное",
         "Прокрутить список сообщений"
       ],
-      "planner_hint": "Используй, чтобы увидеть части UI ниже/выше текущего кадра. direction=down|up, pixels — на сколько прокрутить."
+      "planner_hint": "Прокрутка. direction=down|up|left|right, pixels — на сколько. Если на экране несколько прокручиваемых областей (например список чатов), укажи x,y точки внутри нужной области — инструмент прокрутит именно её. Всегда смотри в ответе scrolled и at_bottom: если scrolled=false или at_bottom=true, прокручивать дальше в ту же сторону бесполезно — меняй направление, область (x,y) или завершай сбор данных. НЕ повторяй одну и ту же прокрутку, если она ничего не меняет."
     },
     {
       "name": "onec.search_documents",

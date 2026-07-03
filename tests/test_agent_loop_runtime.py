@@ -6,7 +6,10 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
 )
 from agent_desktop_constructor.app.runtime.agent_loop_runtime import LLMAgentLoopRuntime
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
-from agent_desktop_constructor.core.models.runtime_state import AgentRunStatus
+from agent_desktop_constructor.core.models.runtime_state import (
+    AgentRunStatus,
+    AgentRuntimeState,
+)
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
 from agent_desktop_constructor.tools.fake_task_control_tools import (
     register_fake_task_control_tools,
@@ -267,6 +270,57 @@ def test_llm_loop_resume_executes_approved_tool() -> None:
     assert resumed.status == AgentRunStatus.COMPLETED
     sent = [r for r in resumed.tool_results if r.tool_name == "email.send"]
     assert sent and sent[0].ok is True
+
+
+def _blank_state() -> AgentRuntimeState:
+    """Пустое состояние для unit-проверок vision-прогресса."""
+    return AgentRuntimeState(
+        run_id="run-vision",
+        agent_id="agent-vision",
+        status=AgentRunStatus.RUNNING,
+    )
+
+
+def test_vision_scroll_without_move_sets_no_progress_note() -> None:
+    """scrolled=false помечается как отсутствие прогресса, чтобы прервать повтор."""
+    runtime = make_runtime(ScriptedPlanner())
+    state = _blank_state()
+
+    runtime._track_vision_progress(
+        state,
+        "browser.scroll",
+        {"direction": "down"},
+        {
+            "url": "https://web.telegram.org",
+            "title": "Telegram",
+            "scrolled": False,
+            "at_bottom": True,
+            "scroll_target": "div.chat-list",
+        },
+    )
+
+    note = state.variables.get("_vision_no_progress_note")
+    assert note is not None
+    assert "scroll" in note.lower()
+
+
+def test_vision_repeated_identical_state_sets_no_progress_note() -> None:
+    """Повтор действия с тем же отпечатком страницы помечается как без прогресса."""
+    runtime = make_runtime(ScriptedPlanner())
+    state = _blank_state()
+    output = {
+        "url": "https://web.telegram.org",
+        "title": "Telegram",
+        "scroll_top": 4100,
+        "scroll_left": 0,
+        "scrolled": True,
+    }
+
+    runtime._track_vision_progress(state, "browser.click", {"x": 10, "y": 20}, output)
+    assert state.variables.get("_vision_no_progress_note") is None
+
+    runtime._track_vision_progress(state, "browser.click", {"x": 10, "y": 20}, output)
+    assert state.variables.get("_vision_no_progress_note") is not None
 
 
 def test_llm_loop_dangerous_tool_requires_human_approval() -> None:

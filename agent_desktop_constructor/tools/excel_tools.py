@@ -314,7 +314,7 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
-            output_data={"filename": path.name, "applied": applied},
+            output_data={"filename": path.name, "applied": applied, "path": str(path)},
         )
 
     def _apply_operation(self, workbook, operation: dict, applied: list[str]) -> str | None:

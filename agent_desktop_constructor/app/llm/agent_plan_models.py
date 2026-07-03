@@ -58,6 +58,18 @@ class LLMAgentPlan(BaseModel):
     missing_data: list[str] = Field(default_factory=list)
     needs_human: bool = False
     warnings: list[str] = Field(default_factory=list)
+    complexity: str = "medium"
+
+    @field_validator("complexity", mode="before")
+    @classmethod
+    def normalize_complexity(cls, value: object) -> str:
+        """Привести сложность к low/medium/high, иначе medium."""
+        text = str(value or "").strip().lower()
+        if text in {"low", "простой", "простая", "низкая", "low complexity"}:
+            return "low"
+        if text in {"high", "сложный", "сложная", "высокая", "high complexity"}:
+            return "high"
+        return "medium"
 
     @field_validator("agent_name", "goal")
     @classmethod

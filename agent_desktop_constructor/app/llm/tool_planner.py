@@ -36,7 +36,8 @@ AGENT_PLAN_SCHEMA_DESCRIPTION = """
   ],
   "missing_data": [],
   "needs_human": false,
-  "warnings": []
+  "warnings": [],
+  "complexity": "low | medium | high"
 }
 """.strip()
 
@@ -54,12 +55,16 @@ class LLMToolPlanner:
         if not normalized_request:
             raise ValueError("user_request не должен быть пустым")
 
+        # План может быть длинным (много инструментов и шагов). Даём planning
+        # запросу заметно больший лимит токенов, чтобы JSON не обрывался.
+        planning_max_tokens = max(self._llm_client.config.max_tokens or 0, 8000)
         response = self._llm_client.complete(
             LLMRequest(
                 messages=_build_agent_plan_prompt(normalized_request, tools_catalog),
                 temperature=self._llm_client.config.temperature,
                 model_name=self._llm_client.config.model_name,
                 response_format="json_object",
+                max_tokens=planning_max_tokens,
             )
         )
         plan = _parse_agent_plan(response.content)
@@ -112,6 +117,11 @@ JSON-схема:
 - Если пользователь спрашивает про совещания, встречи, расписание, занятость или дела на день/неделю — включи outlook.read_calendar.
 - Если пользователь спрашивает про дни рождения в Outlook-сообщениях — включи outlook.search_mail.
 - Если нужен tool вне каталога, укажи warning/missing_data.
+- Оцени сложность задачи в поле complexity:
+  - "low" — 1 система, чтение/простое действие, мало шагов;
+  - "medium" — несколько шагов или 2 системы, немного интерактива;
+  - "high" — многошаговая автоматизация UI (клики, ввод в формы, коды, PDF),
+    несколько систем (браузер + Outlook + Excel), длинные сценарии.
 """.strip()
     return [
         LLMMessage(role="system", content=system_prompt),
@@ -120,11 +130,13 @@ JSON-схема:
 
 
 def _parse_agent_plan(content: str) -> LLMAgentPlan:
-    """Распарсить JSON LLMAgentPlan."""
+    """Распарсить JSON LLMAgentPlan, устойчиво к тексту вокруг объекта."""
     try:
-        payload = json.loads(content)
+        payload = _loads_json_object(content)
     except json.JSONDecodeError as exc:
-        raise LLMInvalidJSONError(f"LLM вернула невалидный AgentPlan JSON: {exc.msg}") from exc
+        raise LLMInvalidJSONError(
+            f"LLM вернула невалидный AgentPlan JSON: {exc.msg}"
+        ) from exc
 
     try:
         return LLMAgentPlan.model_validate(payload)
@@ -132,4 +144,45 @@ def _parse_agent_plan(content: str) -> LLMAgentPlan:
         raise LLMInvalidJSONError(
             f"JSON LLM не соответствует схеме LLMAgentPlan: {exc}"
         ) from exc
+
+
+def _loads_json_object(content: str) -> dict:
+    """Распарсить JSON-объект, игнорируя пояснения/текст вокруг него."""
+    text = (content or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        candidate = _extract_first_json_object(text)
+        if candidate is None:
+            raise
+        return json.loads(candidate)
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    """Найти первый сбалансированный JSON-объект, игнорируя скобки в строках."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 

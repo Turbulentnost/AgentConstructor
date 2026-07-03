@@ -33,7 +33,10 @@ from PySide6.QtWidgets import (
 
 from agent_desktop_constructor.app.core.bootstrap import ApplicationContainer
 from agent_desktop_constructor.app.ui.helpers import (
+    build_file_links_html,
+    collect_produced_files,
     format_json_preview,
+    open_local_path,
     set_table_rows,
     show_error,
     show_info,
@@ -307,6 +310,15 @@ class AgentCreateWidget(QWidget):
             "font-family:Consolas,'Courier New',monospace;"
         )
         layout.addWidget(self.live_log)
+
+        self.files_label = QLabel()
+        self.files_label.setTextFormat(Qt.TextFormat.RichText)
+        self.files_label.setOpenExternalLinks(False)
+        self.files_label.setWordWrap(True)
+        self.files_label.setVisible(False)
+        self.files_label.setStyleSheet("color:#8ec3ff; font-size:12px; padding:2px 0;")
+        self.files_label.linkActivated.connect(open_local_path)
+        layout.addWidget(self.files_label)
 
         # Пошаговая лента выполнения.
         feed_scroll = QScrollArea()
@@ -757,6 +769,7 @@ class AgentCreateWidget(QWidget):
 
         self._reset_stages()
         self.live_log.clear()
+        self.files_label.setVisible(False)
         self._cancel_event.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
@@ -797,11 +810,26 @@ class AgentCreateWidget(QWidget):
             self._prompt_human(agent_spec, state)
             return
         self._hide_human_panel()
+        self._show_produced_files(agent_spec, state)
         show_info(
             self,
             "Агент запущен",
             f"Проверка пройдена, run_id={state.run_id}, status={state.status.value}",
         )
+
+    def _show_produced_files(self, agent_spec: AgentSpec, state: object) -> None:
+        """Показать ссылки на созданные агентом файлы и на его рабочую папку."""
+        files = collect_produced_files(state)
+        folder = None
+        service = self._container.agent_service
+        if hasattr(service, "agent_workspace_dir"):
+            folder = service.agent_workspace_dir(agent_spec.agent_id)
+        html = build_file_links_html(files, folder)
+        if html:
+            self.files_label.setText(html)
+            self.files_label.setVisible(True)
+        else:
+            self.files_label.setVisible(False)
 
     @staticmethod
     def _is_awaiting_human(state: object) -> bool:
@@ -1012,6 +1040,7 @@ class AgentCreateWidget(QWidget):
         self._hide_human_panel()
         self.request_edit.clear()
         self.live_log.clear()
+        self.files_label.setVisible(False)
         self.general_output.clear()
         self.json_output.clear()
         set_table_rows(self.data_table, [], self._data_headers())
@@ -1220,6 +1249,10 @@ class AgentCreateWidget(QWidget):
             "Итоговый вывод агента:",
             validation.final_message or "Итоговый вывод пока не сформирован.",
         ]
+        if validation.errors:
+            result_detail_lines.append("")
+            result_detail_lines.append("Причины/ошибки:")
+            result_detail_lines += [f"- {item}" for item in validation.errors]
         if validation.suggested_fixes:
             result_detail_lines.append("")
             result_detail_lines.append("Что делать дальше:")

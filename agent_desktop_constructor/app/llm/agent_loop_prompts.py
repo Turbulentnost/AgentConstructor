@@ -26,6 +26,14 @@ AGENT_LOOP_SCHEMA_DESCRIPTION = """
   "confidence": 0.0,
   "warnings": []
 }
+
+ВАЖНО про decision_type:
+- decision_type принимает ТОЛЬКО одно из значений: call_tool, finish_success,
+  finish_failed, ask_human, request_credentials (а также retry_tool,
+  call_additional_tool, replan_graph, continue_to_next).
+- НИКОГДА не пиши имя инструмента (например "browser.screenshot") в decision_type.
+- Чтобы вызвать инструмент: decision_type="call_tool", а имя инструмента —
+  строго внутри tool_call.tool_name, параметры — внутри tool_call.input_data.
 """.strip()
 
 

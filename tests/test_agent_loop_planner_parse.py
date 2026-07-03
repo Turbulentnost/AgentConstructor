@@ -52,3 +52,34 @@ def test_parse_truncated_json_raises_invalid_json() -> None:
 
     with pytest.raises(LLMInvalidJSONError):
         _parse_agent_loop_decision(content)
+
+
+def test_tool_name_in_decision_type_is_coerced_to_call_tool() -> None:
+    """LLM положила имя инструмента в decision_type — чиним в call_tool."""
+    content = (
+        '{"decision_type": "browser.screenshot", '
+        '"reason": "Нужен свежий кадр", '
+        '"input_data": {"selector": "body"}}'
+    )
+
+    decision = _parse_agent_loop_decision(content)
+
+    assert decision.decision_type == SupervisorDecisionType.CALL_TOOL
+    assert decision.tool_call is not None
+    assert decision.tool_call.tool_name == "browser.screenshot"
+    assert decision.tool_call.input_data == {"selector": "body"}
+
+
+def test_top_level_tool_name_is_wrapped_into_tool_call() -> None:
+    """call_tool без вложенного tool_call, но с tool_name сверху — оборачиваем."""
+    content = (
+        '{"decision_type": "call_tool", "reason": "Кликаю кнопку", '
+        '"tool_name": "browser.click", "input_data": {"x": 10, "y": 20}}'
+    )
+
+    decision = _parse_agent_loop_decision(content)
+
+    assert decision.decision_type == SupervisorDecisionType.CALL_TOOL
+    assert decision.tool_call is not None
+    assert decision.tool_call.tool_name == "browser.click"
+    assert decision.tool_call.input_data == {"x": 10, "y": 20}

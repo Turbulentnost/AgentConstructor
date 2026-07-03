@@ -144,10 +144,24 @@ class AgentBuilder:
             data_requirements=data_requirements,
             tools=self._build_tools_from_llm_plan(plan),
             graph_nodes=graph_nodes,
-            runtime_limits=AgentRuntimeLimits(),
+            runtime_limits=self._build_runtime_limits_from_llm_plan(plan),
         )
         validate_agent_spec_tools_against_catalog(agent_spec, self.tools_catalog)
         return agent_spec
+
+    def _build_runtime_limits_from_llm_plan(
+        self,
+        plan: LLMAgentPlan,
+    ) -> AgentRuntimeLimits:
+        """Подобрать лимиты шагов по сложности задачи (авто из плана LLM)."""
+        tier = _estimate_complexity_tier(plan)
+        max_steps = {"low": 20, "medium": 50, "high": 100}[tier]
+        return AgentRuntimeLimits(
+            max_steps=max_steps,
+            max_tool_calls=int(max_steps * 1.5),
+            max_retries_per_tool=2,
+            low_confidence_threshold=0.65,
+        )
 
     def _build_llm_plan_data_requirements(
         self,
@@ -550,3 +564,48 @@ class AgentBuilder:
     ) -> AgentActionLevel:
         """Преобразовать риск инструмента из каталога в permission AgentSpec."""
         return AgentActionLevel(side_effect_level.value)
+
+
+# Инструменты, требующие пошаговой работы с живым UI: каждый плановый шаг
+# разворачивается в много итераций runtime (скриншот → решение → действие).
+_INTERACTIVE_UI_TOOLS = frozenset(
+    {
+        "browser.click",
+        "browser.type_text",
+        "browser.press_key",
+        "browser.scroll",
+        "browser.screenshot",
+        "browser.navigate",
+    }
+)
+
+_COMPLEXITY_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def _estimate_complexity_tier(plan: LLMAgentPlan) -> str:
+    """Определить сложность задачи из плана LLM (оценка LLM + структура плана).
+
+    Итоговая сложность — максимум из оценки самой LLM и эвристики по плану,
+    чтобы не занизить лимит шагов для длинных UI-сценариев.
+    """
+    llm_tier = getattr(plan, "complexity", "medium") or "medium"
+
+    plan_tool_names = {tool.tool_name for tool in plan.selected_tools}
+    plan_tool_names.update(
+        step.tool_name for step in plan.steps if step.tool_name is not None
+    )
+
+    systems = {name.split(".", 1)[0] for name in plan_tool_names if "." in name}
+    has_interactive_ui = bool(plan_tool_names & _INTERACTIVE_UI_TOOLS)
+    step_count = len(plan.steps)
+
+    if has_interactive_ui or len(systems) >= 3 or step_count >= 10:
+        heuristic_tier = "high"
+    elif len(systems) >= 2 or step_count >= 5:
+        heuristic_tier = "medium"
+    else:
+        heuristic_tier = "low"
+
+    if _COMPLEXITY_ORDER[llm_tier] >= _COMPLEXITY_ORDER[heuristic_tier]:
+        return llm_tier
+    return heuristic_tier

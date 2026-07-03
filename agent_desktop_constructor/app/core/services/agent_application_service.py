@@ -134,6 +134,12 @@ class AgentApplicationService:
         updates["created_at"] = agent_spec.created_at or _utc_now_iso()
         return agent_spec.model_copy(update=updates)
 
+    def agent_workspace_dir(self, agent_id: str) -> str | None:
+        """Вернуть путь к рабочей папке агента (где создаются файлы)."""
+        if self._workspace_resolver is None:
+            return None
+        return str(self._workspace_resolver.for_agent(agent_id).directory)
+
     def delete_agent(self, agent_id: str) -> None:
         """Удалить сохранённого агента по agent_id."""
         if self._agent_repository is not None and hasattr(
@@ -314,6 +320,9 @@ class AgentApplicationService:
         try:
             agent_spec = self.build_preview(user_request)
         except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            if progress_callback is not None:
+                progress_callback(f"⚠ Не удалось построить план агента. Причина: {reason}")
             agent_spec = self._build_template_fallback_agent(user_request)
             return (
                 agent_spec,
@@ -321,18 +330,15 @@ class AgentApplicationService:
                     agent_id=agent_spec.agent_id,
                     status=AgentValidationStatus.FAILED,
                     run_id=None,
-                    errors=[str(exc)],
+                    errors=[reason],
                     warnings=[
                         "LLM Planner не смог построить план. "
                         "Показан fallback AgentSpec по шаблону."
                     ],
-                    summary="Не удалось построить LLM-план агента.",
+                    summary=f"Не удалось построить LLM-план агента. Причина: {reason}",
                     final_message=None,
                     output_data=None,
-                    suggested_fixes=[
-                        "Проверьте, что LLM endpoint запущен и модель загружена.",
-                        "Увеличьте timeout LLM в настройках или повторите попытку.",
-                    ],
+                    suggested_fixes=self._suggest_planning_fixes(exc),
                 ),
                 None,
             )
@@ -396,6 +402,31 @@ class AgentApplicationService:
             )
         # Без автосохранения: агент сохраняется только по явной команде пользователя.
         return agent_spec, validation_result, new_state
+
+    @staticmethod
+    def _suggest_planning_fixes(exc: Exception) -> list[str]:
+        """Подсказки по устранению именно этой причины сбоя планирования."""
+        text = f"{type(exc).__name__}: {exc}".lower()
+        if "невалидный" in text or "json" in text or "unterminated" in text:
+            return [
+                "LLM вернула неполный/некорректный JSON плана (часто из-за "
+                "слишком длинного ответа). Упростите или разбейте запрос на "
+                "части, либо увеличьте лимит токенов LLM (llm_max_tokens).",
+            ]
+        if "не найден" in text or "каталог" in text or "tool" in text:
+            return [
+                "LLM выбрала инструмент, которого нет в каталоге. Переформулируйте "
+                "запрос под доступные инструменты (браузер, Outlook, Excel, отчёты).",
+            ]
+        if "подключ" in text or "connection" in text or "timeout" in text or "http" in text:
+            return [
+                "Проблема связи с LLM: проверьте, что endpoint запущен и доступен.",
+                "Увеличьте timeout LLM в настройках или повторите попытку.",
+            ]
+        return [
+            "Проверьте, что LLM endpoint запущен и модель загружена.",
+            "Повторите попытку; при повторе ошибки упростите запрос.",
+        ]
 
     def _build_template_fallback_agent(self, user_request: str) -> AgentSpec:
         """Построить fallback AgentSpec без LLM, чтобы UI мог показать результат."""

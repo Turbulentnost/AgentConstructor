@@ -186,7 +186,8 @@ def test_create_validate_and_run_once_returns_failed_validation_on_builder_timeo
 
     assert agent_spec.agent_id
     assert validation.status == AgentValidationStatus.FAILED
-    assert validation.errors == ["timed out"]
+    assert validation.errors == ["TimeoutError: timed out"]
+    assert "timed out" in validation.summary
     assert validation.run_id is None
     assert state is None
     assert validation_service.calls == []

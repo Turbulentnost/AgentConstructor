@@ -60,6 +60,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         run_event_repository: object | None = None,
         human_approval_repository: object | None = None,
         max_repeat_attempts: int = 2,
+        max_decision_retries: int = 3,
     ) -> None:
         """Создать LLM-управляемый runtime без прямого доступа LLM к инструментам."""
         super().__init__(
@@ -73,6 +74,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._tools_catalog = tools_catalog
         self._tool_registry = tool_registry
         self._max_repeat_attempts = max_repeat_attempts
+        self._max_decision_retries = max_decision_retries
         self._progress_callback: Callable[[str], None] | None = None
         self._cancel_callback: Callable[[], bool] | None = None
 
@@ -263,6 +265,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         repeat_notes: list[str] = list(state.variables.get("loop_repeat_notes", []))
         repeat_count = int(state.variables.get("loop_repeat_count", 0))
         limits = agent_spec.runtime_limits
+        decision_failures = 0
 
         while state.can_continue(limits.max_steps, limits.max_tool_calls):
             if self._is_cancel_requested():
@@ -287,6 +290,22 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     repeat_notes=list(repeat_notes),
                 )
             except Exception as exc:
+                decision_failures += 1
+                if decision_failures <= self._max_decision_retries:
+                    hint = (
+                        "На прошлом шаге твой JSON-ответ не прошёл проверку: "
+                        f"{exc}. Верни строго валидный JSON решения: decision_type "
+                        "— одно из значений схемы (call_tool/finish_success/…), а имя "
+                        "инструмента только в tool_call.tool_name."
+                    )
+                    if hint not in repeat_notes:
+                        repeat_notes.append(hint)
+                    self._emit_progress(
+                        f"⚠ Ответ LLM не прошёл проверку (попытка "
+                        f"{decision_failures}/{self._max_decision_retries}), "
+                        f"прошу переформулировать: {exc}"
+                    )
+                    continue
                 state.mark_failed(f"LLM не смог принять решение: {exc}")
                 self._add_run_event(
                     state,
@@ -297,6 +316,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 self._emit_progress(f"⚠ LLM не смогла принять решение: {exc}")
                 break
 
+            decision_failures = 0
             state.variables.setdefault("loop_decisions", []).append(
                 decision.model_dump(mode="json")
             )

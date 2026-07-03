@@ -10,7 +10,10 @@ from agent_desktop_constructor.app.llm.agent_loop_prompts import build_agent_loo
 from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
 from agent_desktop_constructor.app.llm.errors import LLMInvalidJSONError
 from agent_desktop_constructor.app.llm.models import LLMRequest
-from agent_desktop_constructor.app.llm.supervisor_models import SupervisorDecision
+from agent_desktop_constructor.app.llm.supervisor_models import (
+    SupervisorDecision,
+    SupervisorDecisionType,
+)
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
@@ -51,13 +54,27 @@ class LLMAgentLoopPlanner:
                 response_format="json_object",
             )
         )
-        decision = _parse_agent_loop_decision(response.content)
+        decision = _parse_agent_loop_decision(response.content, self._tools_catalog)
         if decision.tool_call is not None:
             self._tools_catalog.validate_tool_names([decision.tool_call.tool_name])
         return decision
 
 
-def _parse_agent_loop_decision(content: str) -> SupervisorDecision:
+_VALID_DECISION_TYPES = {member.value for member in SupervisorDecisionType}
+_TOOL_INPUT_KEYS = (
+    "input_data",
+    "input",
+    "arguments",
+    "parameters",
+    "params",
+    "tool_input",
+)
+
+
+def _parse_agent_loop_decision(
+    content: str,
+    tools_catalog: ToolsCatalog | None = None,
+) -> SupervisorDecision:
     """Распарсить JSON решения цикла в SupervisorDecision."""
     try:
         payload = _loads_json_object(content)
@@ -66,12 +83,84 @@ def _parse_agent_loop_decision(content: str) -> SupervisorDecision:
             f"LLM вернул невалидный JSON решения цикла: {exc.msg}"
         ) from exc
 
+    payload = _normalize_decision_payload(payload, tools_catalog)
+
     try:
         return SupervisorDecision.model_validate(payload)
     except ValidationError as exc:
         raise LLMInvalidJSONError(
             f"JSON решения цикла не соответствует схеме SupervisorDecision: {exc}"
         ) from exc
+
+
+def _looks_like_tool_name(name: str, tools_catalog: ToolsCatalog | None) -> bool:
+    """Понять, является ли строка именем инструмента (а не типом решения)."""
+    if "." in name:
+        return True
+    if tools_catalog is None:
+        return False
+    try:
+        tools_catalog.get_tool(name)
+        return True
+    except Exception:
+        return False
+
+
+def _extract_tool_input(payload: dict) -> dict:
+    """Собрать входные данные инструмента из распространённых ключей LLM."""
+    for key in _TOOL_INPUT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    tool_call = payload.get("tool_call")
+    if isinstance(tool_call, dict) and isinstance(tool_call.get("input_data"), dict):
+        return tool_call["input_data"]
+    return {}
+
+
+def _normalize_decision_payload(
+    payload: object,
+    tools_catalog: ToolsCatalog | None,
+) -> object:
+    """Починить частые ошибки формата решения LLM без хардкодинга под задачу.
+
+    Основные случаи:
+    - LLM положила имя инструмента в decision_type вместо call_tool;
+    - LLM указала tool_name на верхнем уровне без вложенного tool_call.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    payload = dict(payload)
+    decision_type = payload.get("decision_type")
+
+    if (
+        isinstance(decision_type, str)
+        and decision_type not in _VALID_DECISION_TYPES
+        and _looks_like_tool_name(decision_type, tools_catalog)
+    ):
+        tool_call = payload.get("tool_call")
+        if not isinstance(tool_call, dict) or not tool_call.get("tool_name"):
+            payload["tool_call"] = {
+                "tool_name": decision_type,
+                "input_data": _extract_tool_input(payload),
+                "reason": (payload.get("reason") or f"Вызвать {decision_type}"),
+            }
+        payload["decision_type"] = SupervisorDecisionType.CALL_TOOL.value
+        return payload
+
+    if decision_type in {
+        SupervisorDecisionType.CALL_TOOL.value,
+        SupervisorDecisionType.CALL_ADDITIONAL_TOOL.value,
+    } and not isinstance(payload.get("tool_call"), dict):
+        tool_name = payload.get("tool_name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            payload["tool_call"] = {
+                "tool_name": tool_name,
+                "input_data": _extract_tool_input(payload),
+                "reason": (payload.get("reason") or f"Вызвать {tool_name}"),
+            }
+
+    return payload
 
 
 def _loads_json_object(content: str) -> dict:

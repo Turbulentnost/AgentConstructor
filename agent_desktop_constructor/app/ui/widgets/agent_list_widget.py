@@ -21,7 +21,13 @@ from PySide6.QtWidgets import (
 )
 
 from agent_desktop_constructor.app.core.bootstrap import ApplicationContainer
-from agent_desktop_constructor.app.ui.helpers import show_error, show_info
+from agent_desktop_constructor.app.ui.helpers import (
+    build_file_links_html,
+    collect_produced_files,
+    open_local_path,
+    show_error,
+    show_info,
+)
 from agent_desktop_constructor.app.ui.widgets.human_interaction_panel import (
     HumanInteractionPanel,
 )
@@ -123,6 +129,14 @@ class AgentListWidget(QWidget):
             "border-radius:6px; font-family:Consolas,monospace; font-size:12px; }"
         )
 
+        self.files_label = QLabel()
+        self.files_label.setTextFormat(Qt.TextFormat.RichText)
+        self.files_label.setOpenExternalLinks(False)
+        self.files_label.setWordWrap(True)
+        self.files_label.setVisible(False)
+        self.files_label.setStyleSheet("color:#8ec3ff; font-size:12px; padding:4px 0;")
+        self.files_label.linkActivated.connect(open_local_path)
+
         history_label = QLabel("История запусков")
         history_label.setStyleSheet("font-weight:600; margin-top:6px;")
         self.history_list = QListWidget()
@@ -136,6 +150,7 @@ class AgentListWidget(QWidget):
         panel_layout.addWidget(self.human_panel)
         panel_layout.addWidget(log_label)
         panel_layout.addWidget(self.live_log, 1)
+        panel_layout.addWidget(self.files_label)
         panel_layout.addWidget(history_label)
         panel_layout.addWidget(self.history_list)
         return panel
@@ -335,6 +350,7 @@ class AgentListWidget(QWidget):
             return
         self._paused_state = None
         self.human_panel.hide_panel()
+        self.files_label.setVisible(False)
         self._cancel_event.clear()
         self.live_log.clear()
         self.live_log.append(f"▶ Запуск агента «{agent.name}»…")
@@ -393,8 +409,23 @@ class AgentListWidget(QWidget):
         )
         if state.errors:
             self.live_log.append("Ошибки:\n" + "\n".join(state.errors))
+        self._show_produced_files(state)
         if self._selected_agent is not None:
             self._load_history(self._selected_agent.agent_id)
+
+    def _show_produced_files(self, state: AgentRuntimeState) -> None:
+        """Показать ссылки на файлы, созданные агентом, и на его папку."""
+        files = collect_produced_files(state)
+        folder = None
+        service = self._container.agent_service
+        if self._selected_agent is not None and hasattr(service, "agent_workspace_dir"):
+            folder = service.agent_workspace_dir(self._selected_agent.agent_id)
+        html = build_file_links_html(files, folder)
+        if html:
+            self.files_label.setText(html)
+            self.files_label.setVisible(True)
+        else:
+            self.files_label.setVisible(False)
 
     def _prompt_human(self, state: AgentRuntimeState) -> None:
         """Показать панель участия человека по приостановленному состоянию."""

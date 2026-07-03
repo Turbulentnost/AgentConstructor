@@ -10,7 +10,11 @@ from agent_desktop_constructor.app.llm.errors import (
     LLMResponseError,
 )
 from agent_desktop_constructor.app.llm.http_retry import read_with_retry
-from agent_desktop_constructor.app.llm.models import LLMRequest, LLMResponse
+from agent_desktop_constructor.app.llm.models import (
+    LLMMessage,
+    LLMRequest,
+    LLMResponse,
+)
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
 
 
@@ -95,7 +99,7 @@ class OpenAICompatibleLLMClient:
         payload = {
             "model": llm_request.model_name,
             "messages": [
-                message.model_dump(mode="json") for message in llm_request.messages
+                _openai_message(message) for message in llm_request.messages
             ],
             "temperature": llm_request.temperature,
         }
@@ -118,6 +122,25 @@ class OpenAICompatibleLLMClient:
         if not isinstance(content, str):
             raise LLMResponseError("LLM endpoint вернул content не строкой")
         return _strip_markdown_fences(content)
+
+
+def _openai_message(message: LLMMessage) -> dict:
+    """Сериализовать сообщение в OpenAI-формат с поддержкой изображений."""
+    if not message.images:
+        return {"role": message.role, "content": message.content}
+    parts: list[dict] = []
+    if message.content.strip():
+        parts.append({"type": "text", "text": message.content})
+    for image in message.images:
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{image.media_type};base64,{image.base64_data}"
+                },
+            }
+        )
+    return {"role": message.role, "content": parts}
 
 
 def _strip_markdown_fences(content: str) -> str:

@@ -13,6 +13,11 @@ hiddenimports = [
     "agent_desktop_constructor.workers.com_worker_process",
     "agent_desktop_constructor.workers.outlook_com_worker",
     "agent_desktop_constructor.workers.outlook_com_actions",
+    "agent_desktop_constructor.workers.browser_cdp_worker",
+    "agent_desktop_constructor.workers.browser_vision_worker",
+    "agent_desktop_constructor.workers.browser_detect",
+    "agent_desktop_constructor.tools.browser_vision_tools",
+    "agent_desktop_constructor.tools.web_tools",
 ]
 
 datas = [

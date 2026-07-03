@@ -31,6 +31,17 @@ CALL_DECISIONS = {
     SupervisorDecisionType.RETRY_TOOL,
 }
 
+# Vision-инструменты меняют состояние UI, поэтому повтор одного и того же действия
+# (например ещё раз прокрутить или сделать скриншот) допустим — LLM видит новый кадр.
+VISION_INTERACTION_TOOLS = {
+    "browser.navigate",
+    "browser.screenshot",
+    "browser.click",
+    "browser.type_text",
+    "browser.press_key",
+    "browser.scroll",
+}
+
 
 class LLMAgentLoopRuntime(SimpleAgentRuntime):
     """Runtime, в котором LLM сама выбирает инструменты, смотрит результат и решает дальше."""
@@ -249,7 +260,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         """Проверить, дедуплицировать и безопасно исполнить предложенный инструмент."""
         proposal = decision.tool_call
         signature = _action_signature(proposal.tool_name, proposal.input_data)
-        if signature in executed_signatures:
+        is_vision_tool = proposal.tool_name in VISION_INTERACTION_TOOLS
+        if signature in executed_signatures and not is_vision_tool:
             note = (
                 f"Действие {proposal.tool_name} с теми же параметрами уже выполнялось "
                 "— повтор пропущен."
@@ -290,7 +302,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
             return "repeat"
 
-        executed_signatures.append(signature)
+        if not is_vision_tool:
+            executed_signatures.append(signature)
         self._execute_loop_tool(
             agent_spec=agent_spec,
             state=state,
@@ -361,10 +374,10 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
 
         self._record_tool_result(state, input_data, result)
         if result.ok:
-            state.variables.setdefault("tool_outputs", {})[tool_name] = (
-                result.output_data or {}
-            )
-            output_keys = sorted((result.output_data or {}).keys())
+            output_data = result.output_data or {}
+            stored_output = self._stash_screenshot(state, output_data)
+            state.variables.setdefault("tool_outputs", {})[tool_name] = stored_output
+            output_keys = sorted(output_data.keys())
             self._add_run_event(
                 state,
                 AgentRunEventType.TOOL_CALL_COMPLETED,
@@ -392,6 +405,24 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             f"✕ Инструмент {tool_name} ошибка "
             f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}"
         )
+
+    def _stash_screenshot(self, state: AgentRuntimeState, output_data: dict) -> dict:
+        """Сохранить base64-скриншот отдельно (для image в промпте) и убрать из текста."""
+        if not isinstance(output_data, dict) or "screenshot_base64" not in output_data:
+            return output_data
+        screenshot = str(output_data.get("screenshot_base64") or "")
+        if screenshot:
+            state.variables["last_screenshot"] = {
+                "base64": screenshot,
+                "media_type": output_data.get("screenshot_media_type") or "image/png",
+                "url": output_data.get("url"),
+                "title": output_data.get("title"),
+                "viewport_width": output_data.get("viewport_width"),
+                "viewport_height": output_data.get("viewport_height"),
+            }
+        trimmed = {k: v for k, v in output_data.items() if k != "screenshot_base64"}
+        trimmed["screenshot_captured"] = bool(screenshot)
+        return trimmed
 
     def _validate_tool_call(
         self,

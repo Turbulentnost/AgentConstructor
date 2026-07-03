@@ -426,6 +426,12 @@ def register_web_tools(
             continue
         registry.register(tool)
 
+    from agent_desktop_constructor.tools.browser_vision_tools import (
+        register_browser_vision_tools,
+    )
+
+    register_browser_vision_tools(registry, skip_existing=skip_existing)
+
 
 def _execute_browser_worker(
     tool_name: str,

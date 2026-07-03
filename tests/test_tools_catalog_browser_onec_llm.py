@@ -43,13 +43,18 @@ def test_onec_tools_are_read_only() -> None:
             assert tool.side_effect_level == ToolSideEffectLevel.READ
 
 
-def test_browser_tools_are_read_only() -> None:
-    """Все browser tools имеют side_effect_level=read."""
+def test_browser_tools_are_not_write_or_dangerous() -> None:
+    """Browser tools безопасны: чтение или create_draft (vision-взаимодействие с UI).
+
+    write/dangerous среди браузерных инструментов быть не должно — они не отправляют
+    формы и не совершают необратимых действий за пользователя.
+    """
     catalog = load_tools_catalog()
 
+    safe_levels = {ToolSideEffectLevel.READ, ToolSideEffectLevel.CREATE_DRAFT}
     for tool in catalog.tools:
         if tool.category == "browser":
-            assert tool.side_effect_level == ToolSideEffectLevel.READ
+            assert tool.side_effect_level in safe_levels
 
 
 def test_llm_analytics_tools_are_not_dangerous() -> None:

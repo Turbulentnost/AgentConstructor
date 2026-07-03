@@ -551,6 +551,215 @@
       "planner_hint": "Используй, когда нужно открыть одну из ссылок, найденных на странице. Разрешены только обычные http/https ссылки; формы и кнопки отправки не используются."
     },
     {
+      "name": "browser.navigate",
+      "title": "Открыть страницу в браузере (UI)",
+      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"},
+          "viewport_width": {"type": "integer"},
+          "viewport_height": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Открыть веб-версию сервиса и посмотреть UI",
+        "Открыть страницу, где нужно взаимодействовать с элементами"
+      ],
+      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. После него смотри скриншот и решай, куда кликать (browser.click), что вводить (browser.type_text), какие клавиши нажимать (browser.press_key)."
+    },
+    {
+      "name": "browser.screenshot",
+      "title": "Скриншот страницы браузера",
+      "description": "Делает скриншот текущей вкладки браузера (base64 PNG), чтобы LLM увидела актуальное состояние UI.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {"url": {"type": "string"}}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"},
+          "viewport_width": {"type": "integer"},
+          "viewport_height": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Посмотреть текущее состояние страницы",
+        "Обновить скриншот после действия"
+      ],
+      "planner_hint": "Используй, чтобы увидеть текущее состояние UI, если после действия нужен свежий кадр. Скриншот автоматически прикладывается к твоему контексту."
+    },
+    {
+      "name": "browser.click",
+      "title": "Клик по координатам в браузере",
+      "description": "Кликает по координатам (x, y) в пикселях viewport текущей вкладки и возвращает новый скриншот.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "x": {"type": "number"},
+          "y": {"type": "number"},
+          "button": {"type": "string"}
+        },
+        "required": ["x", "y"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"},
+          "viewport_width": {"type": "integer"},
+          "viewport_height": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Кликнуть по кнопке на скриншоте",
+        "Поставить фокус в поле ввода"
+      ],
+      "planner_hint": "Определи координаты нужного элемента по приложенному скриншоту (пиксели от левого-верхнего угла, размеры viewport указаны в контексте) и передай x,y. После клика придёт новый скриншот."
+    },
+    {
+      "name": "browser.type_text",
+      "title": "Ввод текста в браузере",
+      "description": "Вводит текст в активный элемент страницы (сначала кликни в поле) и возвращает скриншот.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Ввести запрос в поле поиска",
+        "Заполнить текстовое поле формы"
+      ],
+      "planner_hint": "Перед вводом кликни в нужное поле через browser.click, затем передай text. Не вводи пароли и коды — авторизацию по номеру/паролю/2FA выполняет человек (верни ask_human)."
+    },
+    {
+      "name": "browser.press_key",
+      "title": "Нажатие клавиши в браузере",
+      "description": "Нажимает спец-клавишу (enter, tab, escape, backspace, стрелки) и возвращает скриншот.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {"key": {"type": "string"}},
+        "required": ["key"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Нажать Enter после ввода запроса",
+        "Перейти по форме через Tab"
+      ],
+      "planner_hint": "Используй для отправки формы (enter) или навигации по элементам (tab). Поддерживаются enter, tab, escape, backspace, delete и стрелки."
+    },
+    {
+      "name": "browser.scroll",
+      "title": "Прокрутка браузера (UI)",
+      "description": "Прокручивает управляемую вкладку вверх/вниз и возвращает скриншот.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "direction": {"type": "string"},
+          "pixels": {"type": "integer"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "screenshot_base64": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Прокрутить страницу вниз, чтобы увидеть остальное",
+        "Прокрутить список сообщений"
+      ],
+      "planner_hint": "Используй, чтобы увидеть части UI ниже/выше текущего кадра. direction=down|up, pixels — на сколько прокрутить."
+    },
+    {
       "name": "onec.search_documents",
       "title": "Поиск документов 1С",
       "description": "Ищет документы в 1С по номеру, дате, типу, контрагенту, теме или статусу.",

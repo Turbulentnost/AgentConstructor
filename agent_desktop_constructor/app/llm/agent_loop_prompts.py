@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from agent_desktop_constructor.app.llm.models import LLMMessage
+from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
@@ -56,14 +56,30 @@ Runtime сам безопасно исполнит инструмент чере
   НЕ используй шаблонные или выдуманные факты — только реальные собранные данные.
 - Если нужный инструмент недоступен или данных получить нельзя — finish_failed или ask_human.
 - write/dangerous действия исполняются только с подтверждением человека.
-- Outlook, 1С и браузер работают только в режиме чтения. email.send заблокирован.
-- Пароли/секреты нельзя запрашивать через LLM — для авторизации 1С верни request_credentials.
+- Outlook и 1С работают только в режиме чтения. email.send заблокирован.
+- Пароли/секреты нельзя запрашивать через LLM — для авторизации верни request_credentials.
+
+Взаимодействие с UI сайтов (vision-режим):
+- Если для задачи нужно не просто прочитать текст страницы, а взаимодействовать с
+  интерфейсом (нажать кнопку, ввести текст, перейти по элементу, открыть раздел),
+  используй vision-инструменты браузера: browser.navigate (открыть URL),
+  browser.screenshot (обновить кадр), browser.click (клик по x,y),
+  browser.type_text (ввод текста в активное поле), browser.press_key
+  (enter/tab/escape/стрелки), browser.scroll (прокрутка).
+- К твоему сообщению прикладывается АКТУАЛЬНЫЙ СКРИНШОТ текущей вкладки, если он
+  есть. Определяй координаты клика по скриншоту в пикселях от левого-верхнего угла;
+  размеры viewport указаны в screen_context.
+- Действуй пошагово: сделай одно действие, посмотри на новый скриншот, реши следующее.
+- Не вводи пароли, коды из SMS и 2FA — если сайт требует ручной вход, верни ask_human.
 Ответ верни только JSON по схеме решения.
 """.strip()
 
     allowed_tools = sorted(agent_spec.allowed_tool_names())
     tools_context = _available_tools_context(tools_catalog, allowed_tools)
-    collected_data = runtime_state.variables.get("tool_outputs", {})
+    collected_data = _sanitize_collected_data(
+        runtime_state.variables.get("tool_outputs", {})
+    )
+    last_screenshot = runtime_state.variables.get("last_screenshot")
     executed_steps = [
         {
             "tool_name": record.tool_name,
@@ -85,6 +101,18 @@ Runtime сам безопасно исполнит инструмент чере
         "repeat_notes": repeat_notes,
         "decision_schema": AGENT_LOOP_SCHEMA_DESCRIPTION,
     }
+    if isinstance(last_screenshot, dict) and last_screenshot.get("base64"):
+        user_payload["screen_context"] = {
+            "has_screenshot": True,
+            "url": last_screenshot.get("url"),
+            "title": last_screenshot.get("title"),
+            "viewport_width": last_screenshot.get("viewport_width"),
+            "viewport_height": last_screenshot.get("viewport_height"),
+            "note": (
+                "К этому сообщению приложен скриншот текущей вкладки. Координаты "
+                "для browser.click указывай в пикселях viewport по этому скриншоту."
+            ),
+        }
     user_prompt = (
         "Определи следующий безопасный шаг агента и верни JSON-решение. "
         "Инструменты выбирай сам, опираясь на их описание (description) и "
@@ -96,9 +124,17 @@ Runtime сам безопасно исполнит инструмент чере
         "в формате YYYY-MM-DD.\n"
         + json.dumps(user_payload, ensure_ascii=False, indent=2, default=str)
     )
+    user_images: list[LLMImageContent] = []
+    if isinstance(last_screenshot, dict) and last_screenshot.get("base64"):
+        user_images.append(
+            LLMImageContent(
+                base64_data=str(last_screenshot["base64"]),
+                media_type=str(last_screenshot.get("media_type") or "image/png"),
+            )
+        )
     return [
         LLMMessage(role="system", content=system_prompt),
-        LLMMessage(role="user", content=user_prompt),
+        LLMMessage(role="user", content=user_prompt, images=user_images),
     ]
 
 
@@ -126,6 +162,21 @@ def _available_tools_context(
             }
         )
     return context
+
+
+def _sanitize_collected_data(collected_data: dict) -> dict:
+    """Убрать тяжёлые base64-скриншоты из данных, отправляемых текстом в промпт."""
+    if not isinstance(collected_data, dict):
+        return collected_data
+    sanitized: dict = {}
+    for tool_name, output in collected_data.items():
+        if isinstance(output, dict) and "screenshot_base64" in output:
+            trimmed = {k: v for k, v in output.items() if k != "screenshot_base64"}
+            trimmed["screenshot_captured"] = True
+            sanitized[tool_name] = trimmed
+        else:
+            sanitized[tool_name] = output
+    return sanitized
 
 
 def _summarize_output(output_data: dict | None, max_chars: int = 600) -> str:

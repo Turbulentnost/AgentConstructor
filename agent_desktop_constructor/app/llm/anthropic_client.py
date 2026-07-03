@@ -14,10 +14,35 @@ from agent_desktop_constructor.app.llm.errors import (
     LLMResponseError,
 )
 from agent_desktop_constructor.app.llm.http_retry import read_with_retry
-from agent_desktop_constructor.app.llm.models import LLMRequest, LLMResponse
+from agent_desktop_constructor.app.llm.models import (
+    LLMMessage,
+    LLMRequest,
+    LLMResponse,
+)
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _anthropic_content(message: LLMMessage) -> object:
+    """Сериализовать сообщение в Anthropic-формат с поддержкой изображений."""
+    if not message.images:
+        return message.content
+    blocks: list[dict] = []
+    if message.content.strip():
+        blocks.append({"type": "text", "text": message.content})
+    for image in message.images:
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": image.base64_data,
+                },
+            }
+        )
+    return blocks
 
 
 class AnthropicLLMClient:
@@ -94,7 +119,7 @@ class AnthropicLLMClient:
             if message.role == "system"
         ]
         conversation = [
-            {"role": message.role, "content": message.content}
+            {"role": message.role, "content": _anthropic_content(message)}
             for message in llm_request.messages
             if message.role != "system"
         ]

@@ -99,6 +99,9 @@ class OpenAICompatibleLLMClient:
             ],
             "temperature": llm_request.temperature,
         }
+        max_tokens = llm_request.max_tokens or self._config.max_tokens
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
         if llm_request.response_format is not None:
             payload["response_format"] = {"type": llm_request.response_format}
         return payload
@@ -114,7 +117,20 @@ class OpenAICompatibleLLMClient:
 
         if not isinstance(content, str):
             raise LLMResponseError("LLM endpoint вернул content не строкой")
-        return content
+        return _strip_markdown_fences(content)
+
+
+def _strip_markdown_fences(content: str) -> str:
+    """Убрать ```json/``` обёртку, если модель вернула JSON в code block."""
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def _read_http_error_body(exc: error.HTTPError, max_chars: int = 1000) -> str:

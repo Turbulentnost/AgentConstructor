@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from urllib import error, request
 
-from agent_desktop_constructor.app.llm.client import _read_http_error_body
+from agent_desktop_constructor.app.llm.client import (
+    _read_http_error_body,
+    _strip_markdown_fences,
+)
 from agent_desktop_constructor.app.llm.errors import (
     LLMConnectionError,
     LLMResponseError,
@@ -97,7 +100,7 @@ class AnthropicLLMClient:
         ]
         payload: dict = {
             "model": llm_request.model_name,
-            "max_tokens": self._config.max_tokens,
+            "max_tokens": llm_request.max_tokens or self._config.max_tokens,
             "temperature": llm_request.temperature,
             "messages": conversation,
         }
@@ -131,16 +134,3 @@ class AnthropicLLMClient:
         if not content:
             raise LLMResponseError("Anthropic endpoint вернул content без текста")
         return _strip_markdown_fences(content)
-
-
-def _strip_markdown_fences(content: str) -> str:
-    """Убрать ```json/``` обёртку, если модель вернула JSON в code block."""
-    text = content.strip()
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()

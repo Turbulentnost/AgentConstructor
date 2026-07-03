@@ -112,6 +112,50 @@ def test_client_uses_model_name_from_request(monkeypatch: pytest.MonkeyPatch) ->
     assert captured["payload"]["model"] == "openai/gpt-oss-120b"
 
 
+def test_client_sends_max_tokens_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Клиент отправляет max_tokens из конфига, чтобы ответ не обрывался."""
+    captured: dict = {}
+
+    def fake_urlopen(http_request, timeout):
+        captured["payload"] = json.loads(http_request.data.decode("utf-8"))
+        return FakeHTTPResponse(
+            {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+        )
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.request.urlopen",
+        fake_urlopen,
+    )
+
+    OpenAICompatibleLLMClient(LLMConfig(max_tokens=8192)).complete(make_request())
+
+    assert captured["payload"]["max_tokens"] == 8192
+
+
+def test_client_strips_markdown_fences_from_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Клиент снимает ```json обёртку, если модель вернула JSON в code block."""
+
+    def fake_urlopen(http_request, timeout):
+        return FakeHTTPResponse(
+            {
+                "choices": [
+                    {"message": {"content": "```json\n{\"ok\": true}\n```"}}
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.request.urlopen",
+        fake_urlopen,
+    )
+
+    response = OpenAICompatibleLLMClient(LLMConfig()).complete(make_request())
+
+    assert response.content == "{\"ok\": true}"
+
+
 def test_client_uses_timeout_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Timeout берётся из LLMConfig."""
     captured: dict = {}

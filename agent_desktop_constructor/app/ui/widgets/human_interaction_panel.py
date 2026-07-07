@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +45,9 @@ class HumanInteractionPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
+        # Панель не должна сжиматься меньше, чем нужно её содержимому, иначе
+        # вопрос и варианты накладываются друг на друга.
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         self.title_label = QLabel("Агенту требуется ваше участие")
         self.title_label.setStyleSheet(
@@ -63,8 +68,20 @@ class HumanInteractionPanel(QFrame):
         self._options_host = QWidget()
         self._options_layout = QVBoxLayout(self._options_host)
         self._options_layout.setContentsMargins(0, 0, 0, 0)
-        self._options_layout.setSpacing(2)
-        layout.addWidget(self._options_host)
+        self._options_layout.setSpacing(4)
+        self._options_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Если вариантов много — они прокручиваются внутри панели, а не
+        # наезжают друг на друга и не растягивают экран.
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        options_scroll.setMaximumHeight(220)
+        options_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        options_scroll.setStyleSheet("QScrollArea { background:transparent; }")
+        options_scroll.setWidget(self._options_host)
+        layout.addWidget(options_scroll)
 
         self._button_group = QButtonGroup(self)
 
@@ -134,18 +151,31 @@ class HumanInteractionPanel(QFrame):
                 child.setParent(None)
 
         for index, option in enumerate(options):
-            radio = QRadioButton(option)
-            self._button_group.addButton(radio)
-            self._options_layout.addWidget(radio)
+            radio = self._add_option_row(option)
             self._radios.append((radio, option))
             if index == 0:
                 radio.setChecked(True)
 
-        custom_radio = QRadioButton("Свой вариант ответа")
-        self._button_group.addButton(custom_radio)
-        self._options_layout.addWidget(custom_radio)
+        custom_radio = self._add_option_row("Свой вариант ответа")
         self._radios.append((custom_radio, None))
         custom_radio.toggled.connect(self._on_custom_toggled)
+
+    def _add_option_row(self, option: str) -> QRadioButton:
+        """Добавить вариант: радиокнопка + переносимый по словам текст."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        radio = QRadioButton()
+        self._button_group.addButton(radio)
+        label = QLabel(option)
+        label.setWordWrap(True)
+        label.setStyleSheet("color:#f0e6cf; font-size:12px;")
+        label.mousePressEvent = lambda _event, r=radio: r.setChecked(True)
+        row_layout.addWidget(radio, 0, Qt.AlignmentFlag.AlignTop)
+        row_layout.addWidget(label, 1)
+        self._options_layout.addWidget(row)
+        return radio
 
     def _on_custom_toggled(self, checked: bool) -> None:
         """Сфокусировать поле ввода при выборе своего варианта."""

@@ -8,11 +8,40 @@ def test_catalog_contains_browser_tools() -> None:
     """В каталоге есть browser tools."""
     catalog = load_tools_catalog()
 
+    assert catalog.has_tool("browser.list_installed_browsers")
+    assert catalog.has_tool("browser.open_browser")
     assert catalog.has_tool("browser.search_web")
     assert catalog.has_tool("browser.open_page")
     assert catalog.has_tool("browser.extract_table")
     assert catalog.has_tool("browser.scroll_page")
     assert catalog.has_tool("browser.click_link")
+
+
+def test_catalog_browser_open_browser_schema_guides_yandex() -> None:
+    """Каталог подсказывает planner-у выбрать Yandex Browser по id/name."""
+    catalog = load_tools_catalog()
+
+    tool = catalog.get_tool("browser.open_browser")
+
+    assert "browser_id" in tool.input_schema["properties"]
+    assert "browser_name" in tool.input_schema["properties"]
+    assert "yandex" in tool.planner_hint.casefold()
+    assert "list_installed_browsers" in tool.planner_hint
+    assert "user-data-dir" in tool.planner_hint
+
+
+def test_catalog_browser_navigate_profile_schema_guides_sessions() -> None:
+    """Vision navigate подсказывает стабильные профили и явный default profile."""
+    catalog = load_tools_catalog()
+
+    tool = catalog.get_tool("browser.navigate")
+
+    assert "use_default_profile" in tool.input_schema["properties"]
+    assert "profile_name" in tool.input_schema["properties"]
+    assert "user_data_dir" in tool.input_schema["properties"]
+    assert "profile_mode=automation" in tool.planner_hint
+    assert "YandexBrowser\\User Data" in tool.planner_hint
+    assert "use_default_profile=true" in tool.planner_hint
 
 
 def test_catalog_contains_onec_tools() -> None:

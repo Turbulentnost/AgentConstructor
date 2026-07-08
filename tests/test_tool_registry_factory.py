@@ -16,6 +16,7 @@ def test_fake_mode_registers_fake_tools() -> None:
     assert registry.has_tool("outlook.search_mail")
     assert registry.has_tool("outlook.read_tasks")
     assert registry.has_tool("report.build_task_report")
+    assert registry.has_tool("browser.open_browser")
     assert registry.has_tool("browser.search_web")
     assert registry.has_tool("browser.open_page")
     assert registry.has_tool("browser.extract_table")
@@ -28,6 +29,7 @@ def test_outlook_readonly_mode_registers_search_mail() -> None:
     registry = build_tool_registry(AppConfig(run_mode=AppRunMode.OUTLOOK_READONLY))
 
     assert registry.has_tool("outlook.search_mail")
+    assert registry.has_tool("browser.open_browser")
     assert registry.has_tool("browser.search_web")
     assert registry.has_tool("browser.open_page")
     assert registry.has_tool("browser.extract_table")

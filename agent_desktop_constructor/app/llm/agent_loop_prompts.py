@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from agent_desktop_constructor.app.context.manager import AgentContextManager
 from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
@@ -118,9 +119,21 @@ Runtime сам безопасно исполнит инструмент чере
         }
         for record in runtime_state.tool_results
     ]
+    try:
+        agent_context = AgentContextManager().build_llm_context(
+            agent_spec=agent_spec,
+            runtime_state=runtime_state,
+        )
+    except Exception as exc:
+        agent_context = {
+            "error": f"Не удалось собрать AgentContext: {exc}",
+            "sections": {},
+            "usage": None,
+        }
 
     user_payload = {
         "temporal_context": build_temporal_context(),
+        "agent_context": agent_context,
         "user_request": runtime_state.variables.get("user_request"),
         "goal": agent_spec.goal.model_dump(mode="json"),
         "available_tools": tools_context,

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from agent_desktop_constructor.workers.browser_cdp_worker import BrowserCdpError
+from agent_desktop_constructor.workers import browser_cdp_worker as cdp
+from agent_desktop_constructor.workers import browser_vision_worker as vision_worker
+from agent_desktop_constructor.workers.browser_cdp_worker import (
+    BrowserCdpError,
+    BrowserLaunchConfig,
+)
 from agent_desktop_constructor.workers.browser_vision_worker import (
     BrowserVisionWorker,
 )
@@ -70,6 +75,46 @@ def test_screenshot_returns_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["screenshot_media_type"] == "image/png"
     assert result["url"] == "https://example.com/app"
     assert result["viewport_width"] == 1280
+    assert result["profile_mode"] == "automation"
+    assert result["used_default_profile"] is False
+
+
+def test_yandex_vision_default_profile_uses_real_user_data_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """browser.navigate с use_default_profile использует штатный профиль Yandex."""
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 4321
+
+    monkeypatch.setattr(cdp.os, "name", "nt")
+    monkeypatch.setenv("LOCALAPPDATA", "C:/Users/me/AppData/Local")
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(
+            executable_path="C:/Program Files (x86)/Yandex/YandexBrowser/Application/browser.exe",
+            browser_id="yandex",
+            use_default_profile=True,
+            timeout_seconds=1,
+        )
+    )
+    checks = iter([False, True])
+    monkeypatch.setattr(worker, "_is_cdp_available", lambda: next(checks))
+
+    def fake_popen(command, stdout, stderr):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(vision_worker.subprocess, "Popen", fake_popen)
+
+    worker._ensure_browser()
+
+    command = captured["command"]
+    expected_user_data = r"C:\Users\me\AppData\Local\Yandex\YandexBrowser\User Data"
+    assert f"--user-data-dir={expected_user_data}" in command
+    assert "--profile-directory=Default" in command
+    assert not any("browser_profiles" in arg for arg in command)
+    assert worker.profile_output()["profile_mode"] == "default"
 
 
 def test_click_dispatches_mouse_events(monkeypatch: pytest.MonkeyPatch) -> None:

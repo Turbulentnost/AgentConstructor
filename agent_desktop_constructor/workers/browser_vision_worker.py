@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -22,8 +21,13 @@ from agent_desktop_constructor.workers.browser_cdp_worker import (
     BrowserCdpError,
     BrowserLaunchConfig,
     _CdpSession,
+    _command_args_summary,
     _find_chromium_executable,
+    _planned_command_args_summary,
+    _profile_mode,
     _require_http_url,
+    _resolved_profile_name,
+    _resolve_user_data_dir,
 )
 
 DEFAULT_VISION_PORT = 9333
@@ -54,9 +58,12 @@ class BrowserVisionWorker:
         """Создать worker с ленивым запуском видимого браузера."""
         self._config = config or BrowserLaunchConfig(port=DEFAULT_VISION_PORT)
         self._process: subprocess.Popen | None = None
-        self._user_data_dir = self._config.user_data_dir or str(
-            Path(tempfile.gettempdir()) / "agent_constructor_vision_profile"
+        self._user_data_dir = _resolve_user_data_dir(
+            self._config,
+            profile_kind="vision",
         )
+        self._profile_mode = _profile_mode(self._config)
+        self._last_command_args_summary: list[str] = []
         self._page_ws_url: str | None = None
 
     def open(self, input_data: dict) -> dict:
@@ -200,6 +207,17 @@ class BrowserVisionWorker:
             "screenshot_media_type": "image/png",
             "viewport_width": int(viewport.get("w") or DEFAULT_VIEWPORT_WIDTH),
             "viewport_height": int(viewport.get("h") or DEFAULT_VIEWPORT_HEIGHT),
+            **self.profile_output(),
+        }
+
+    def profile_output(self) -> dict:
+        """Вернуть безопасную диагностику режима профиля vision worker."""
+        return {
+            "profile_mode": self._profile_mode,
+            "user_data_dir": self._user_data_dir or "",
+            "used_default_profile": self._profile_mode == "default",
+            "command_args_summary": self._last_command_args_summary
+            or _planned_command_args_summary(self._config, self._user_data_dir),
         }
 
     def _session(self) -> _CdpSession:
@@ -217,17 +235,32 @@ class BrowserVisionWorker:
             raise BrowserCdpError(
                 "Не найден Edge/Chrome/Chromium для vision browser worker."
             )
-        Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
         command = [
             executable,
             f"--remote-debugging-port={self._config.port}",
-            f"--user-data-dir={self._user_data_dir}",
             f"--window-size={DEFAULT_VIEWPORT_WIDTH},{DEFAULT_VIEWPORT_HEIGHT}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-popup-blocking",
-            "about:blank",
         ]
+        if self._user_data_dir:
+            if self._profile_mode != "default":
+                Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
+            command.append(f"--user-data-dir={self._user_data_dir}")
+        profile_name = _resolved_profile_name(self._config)
+        if profile_name and (
+            self._config.use_default_profile or self._config.user_data_dir
+        ):
+            command.append(f"--profile-directory={profile_name}")
+        command.extend(
+            [
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-popup-blocking",
+                "about:blank",
+            ]
+        )
+        self._last_command_args_summary = _command_args_summary(
+            command,
+            executable=executable,
+        )
         self._process = subprocess.Popen(  # noqa: S603 - executable найден локально
             command,
             stdout=subprocess.DEVNULL,

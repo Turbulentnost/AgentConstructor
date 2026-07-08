@@ -8,6 +8,7 @@ from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.tools.web_tools import (
     BrowserClickLinkTool,
     BrowserExtractTableTool,
+    BrowserOpenBrowserTool,
     BrowserOpenPageTool,
     BrowserScrollPageTool,
     BrowserSearchWebTool,
@@ -38,6 +39,7 @@ def test_register_web_tools_registers_browser_search_web() -> None:
     register_web_tools(registry)
 
     assert registry.has_tool("browser.list_installed_browsers")
+    assert registry.has_tool("browser.open_browser")
     assert registry.has_tool("browser.search_web")
     assert registry.has_tool("browser.open_page")
     assert registry.has_tool("browser.extract_table")
@@ -82,6 +84,73 @@ def test_browser_list_installed_browsers_returns_detected(monkeypatch) -> None:
     assert result.output_data["browsers"][0]["name"] == "edge"
 
 
+def test_browser_open_browser_launches_specific_executable(monkeypatch) -> None:
+    """browser.open_browser запускает выбранный executable, а не default browser."""
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 1234
+
+    def fake_popen(command, stdout, stderr):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.resolve_browser_executable",
+        lambda name: "C:/Users/me/AppData/Local/Yandex/YandexBrowser/Application/browser.exe"
+        if name == "yandex"
+        else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.subprocess.Popen",
+        fake_popen,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.workers.browser_detect.os.name",
+        "nt",
+    )
+    monkeypatch.setenv("LOCALAPPDATA", "C:/Users/me/AppData/Local")
+
+    result = BrowserOpenBrowserTool().execute(
+        {"browser_name": "яндекс", "url": "https://yandex.ru"}
+    )
+
+    assert result.ok is True
+    assert result.output_data["browser_id"] == "yandex"
+    assert captured["command"] == [
+        "C:/Users/me/AppData/Local/Yandex/YandexBrowser/Application/browser.exe",
+        "https://yandex.ru",
+    ]
+    assert not any(arg.startswith("--user-data-dir=") for arg in captured["command"])
+    assert "--incognito" not in captured["command"]
+    assert "--guest" not in captured["command"]
+    assert result.output_data["profile_mode"] == "default"
+    assert result.output_data["used_default_profile"] is True
+    assert result.output_data["user_data_dir"] == (
+        r"C:\Users\me\AppData\Local\Yandex\YandexBrowser\User Data"
+    )
+    assert "no --user-data-dir" in result.output_data["command_args_summary"]
+
+
+def test_browser_open_browser_reports_available_when_not_found(monkeypatch) -> None:
+    """Если браузер не найден, ошибка содержит доступные browser id."""
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.resolve_browser_executable",
+        lambda name: None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.list_installed_browsers",
+        lambda: [{"id": "edge", "name": "edge", "path": "C:/edge/msedge.exe"}],
+    )
+
+    result = BrowserOpenBrowserTool().execute({"browser_id": "yandex"})
+
+    assert result.ok is False
+    assert result.error_type == "BROWSER_NOT_FOUND"
+    assert "edge" in result.error_message
+    assert result.output_data["available_browsers"][0]["id"] == "edge"
+
+
 def test_browser_open_page_routes_to_specific_browser() -> None:
     """browser=... направляет вызов в worker конкретного браузера."""
     default_worker = FakeBrowserWorker()
@@ -103,6 +172,78 @@ def test_browser_open_page_rejects_non_cdp_browser() -> None:
     assert result.ok is False
     assert result.error_type == "BROWSER_CDP_ERROR"
     assert "firefox" in result.error_message.lower()
+
+
+def test_browser_open_page_accepts_browser_id(monkeypatch) -> None:
+    """browser_id=... тоже направляет CDP-вызов в выбранный браузер."""
+    created: dict = {}
+
+    class ProviderWorker(FakeBrowserWorker):
+        pass
+
+    def fake_worker(config):
+        created["config"] = config
+        return ProviderWorker()
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.find_readable_browser",
+        lambda name: object() if name == "yandex" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.resolve_browser_executable",
+        lambda name: "C:/Yandex/browser.exe" if name == "yandex" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.BrowserCdpWorker",
+        fake_worker,
+    )
+
+    result = BrowserOpenPageTool(FakeBrowserWorker()).execute(
+        {"url": "https://example.com", "browser_id": "яндекс"}
+    )
+
+    assert result.ok is True
+    assert created["config"].executable_path == "C:/Yandex/browser.exe"
+    assert created["config"].browser_id == "yandex"
+
+
+def test_browser_open_page_accepts_explicit_default_profile(monkeypatch) -> None:
+    """Параметры профиля передаются в CDP worker только явно."""
+    created: dict = {}
+
+    class ProviderWorker(FakeBrowserWorker):
+        pass
+
+    def fake_worker(config):
+        created["config"] = config
+        return ProviderWorker()
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.find_readable_browser",
+        lambda name: object() if name == "chrome" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.resolve_browser_executable",
+        lambda name: "C:/Chrome/chrome.exe" if name == "chrome" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.BrowserCdpWorker",
+        fake_worker,
+    )
+
+    result = BrowserOpenPageTool(FakeBrowserWorker()).execute(
+        {
+            "url": "https://example.com",
+            "browser_id": "chrome",
+            "use_default_profile": True,
+            "profile_name": "Profile 1",
+        }
+    )
+
+    assert result.ok is True
+    assert created["config"].use_default_profile is True
+    assert created["config"].profile_name == "Profile 1"
+    assert created["config"].user_data_dir is None
 
 
 def test_browser_search_web_weather_uses_wttr(monkeypatch) -> None:

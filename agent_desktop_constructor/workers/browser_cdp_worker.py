@@ -16,12 +16,13 @@ import shutil
 import socket
 import struct
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
+
+from agent_desktop_constructor.workers.browser_detect import resolve_default_user_data_dir
 
 DEFAULT_CDP_PORT = 9223
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -33,6 +34,7 @@ MAX_TABLE_ROWS = 80
 MAX_TABLE_COLUMNS = 20
 
 BLOCKED_URL_SCHEMES = {"javascript", "mailto", "file", "data", "ftp"}
+DEFAULT_AUTOMATION_PROFILE_NAME = "automation"
 
 
 class BrowserCdpError(RuntimeError):
@@ -47,6 +49,9 @@ class BrowserLaunchConfig:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     user_data_dir: str | None = None
     executable_path: str | None = None
+    browser_id: str | None = None
+    profile_name: str | None = None
+    use_default_profile: bool = False
 
 
 class BrowserCdpWorker:
@@ -56,9 +61,9 @@ class BrowserCdpWorker:
         """Создать worker с ленивым запуском браузера."""
         self._config = config or BrowserLaunchConfig()
         self._process: subprocess.Popen | None = None
-        self._user_data_dir = self._config.user_data_dir or str(
-            Path(tempfile.gettempdir()) / "agent_constructor_cdp_profile"
-        )
+        self._user_data_dir = _resolve_user_data_dir(self._config, profile_kind="cdp")
+        self._profile_mode = _profile_mode(self._config)
+        self._last_command_args_summary: list[str] = []
 
     def open_page(self, input_data: dict) -> dict:
         """Открыть страницу и извлечь title/text/links."""
@@ -125,6 +130,7 @@ class BrowserCdpWorker:
                 "url": session.evaluate("location.href"),
                 "title": session.evaluate("document.title"),
                 "tables": tables[:MAX_TABLES] if isinstance(tables, list) else [],
+                **self.profile_output(),
             }
 
     def _session_for_url(self, url: str) -> "_CdpSession":
@@ -142,16 +148,31 @@ class BrowserCdpWorker:
             raise BrowserCdpError(
                 "Не найден Edge/Chrome/Chromium для browser CDP worker."
             )
-        Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
         command = [
             executable,
             f"--remote-debugging-port={self._config.port}",
-            f"--user-data-dir={self._user_data_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-popup-blocking",
-            "about:blank",
         ]
+        if self._user_data_dir:
+            if self._profile_mode != "default":
+                Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
+            command.append(f"--user-data-dir={self._user_data_dir}")
+        profile_name = _resolved_profile_name(self._config)
+        if profile_name and (
+            self._config.use_default_profile or self._config.user_data_dir
+        ):
+            command.append(f"--profile-directory={profile_name}")
+        command.extend(
+            [
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-popup-blocking",
+                "about:blank",
+            ]
+        )
+        self._last_command_args_summary = _command_args_summary(
+            command,
+            executable=executable,
+        )
         self._process = subprocess.Popen(  # noqa: S603 - executable найден локально
             command,
             stdout=subprocess.DEVNULL,
@@ -220,7 +241,20 @@ class BrowserCdpWorker:
 
     def _page_snapshot(self, session: "_CdpSession", max_chars: int) -> dict:
         """Вернуть title/text/links текущей страницы."""
-        return session.evaluate(_snapshot_script(max_chars, MAX_LINKS)) or {}
+        snapshot = session.evaluate(_snapshot_script(max_chars, MAX_LINKS)) or {}
+        if isinstance(snapshot, dict):
+            snapshot.update(self.profile_output())
+        return snapshot
+
+    def profile_output(self) -> dict:
+        """Вернуть безопасную диагностику режима профиля browser worker."""
+        return {
+            "profile_mode": self._profile_mode,
+            "user_data_dir": self._user_data_dir or "",
+            "used_default_profile": self._profile_mode == "default",
+            "command_args_summary": self._last_command_args_summary
+            or _planned_command_args_summary(self._config, self._user_data_dir),
+        }
 
     def _find_link_url(self, session: "_CdpSession", *, href: str, link_text: str) -> str:
         """Найти безопасный href по href или тексту ссылки."""
@@ -413,6 +447,86 @@ def _find_chromium_executable() -> str | None:
         if candidate.exists():
             return str(candidate)
     return None
+
+
+def _resolve_user_data_dir(config: BrowserLaunchConfig, *, profile_kind: str) -> str | None:
+    """Вернуть каталог профиля для CDP launch без временных одноразовых профилей."""
+    if config.user_data_dir:
+        return config.user_data_dir
+    if config.use_default_profile:
+        return resolve_default_user_data_dir(config.browser_id or "")
+    browser_id = _safe_profile_segment(config.browser_id or "default")
+    profile_name = _safe_profile_segment(
+        config.profile_name or DEFAULT_AUTOMATION_PROFILE_NAME
+    )
+    return str(_browser_profiles_root() / profile_kind / browser_id / profile_name)
+
+
+def _profile_mode(config: BrowserLaunchConfig) -> str:
+    """Определить режим профиля для user-facing диагностики."""
+    if config.user_data_dir:
+        return "custom"
+    if config.use_default_profile:
+        return "default"
+    return "automation"
+
+
+def _resolved_profile_name(config: BrowserLaunchConfig) -> str | None:
+    """Вернуть profile-directory, если его нужно явно передать Chromium."""
+    if config.profile_name:
+        return config.profile_name
+    if config.use_default_profile and config.browser_id:
+        return "Default"
+    return None
+
+
+def _planned_command_args_summary(
+    config: BrowserLaunchConfig,
+    user_data_dir: str | None,
+) -> list[str]:
+    """Собрать краткое описание будущих аргументов запуска без запуска процесса."""
+    summary = [f"--remote-debugging-port={config.port}"]
+    if user_data_dir:
+        summary.append(f"--user-data-dir={user_data_dir}")
+    profile_name = _resolved_profile_name(config)
+    if profile_name:
+        summary.append(f"--profile-directory={profile_name}")
+    summary.extend(
+        [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-popup-blocking",
+            "about:blank",
+        ]
+    )
+    return summary
+
+
+def _command_args_summary(command: list[str], *, executable: str) -> list[str]:
+    """Убрать полный путь exe из summary, оставив важные флаги запуска."""
+    return ["<browser_executable>", *command[1:]] if command and command[0] == executable else command
+
+
+def _browser_profiles_root() -> Path:
+    """Стабильный per-user root для automation-профилей браузера."""
+    configured = os.environ.get("AGENT_CONSTRUCTOR_BROWSER_PROFILE_ROOT")
+    if configured:
+        return Path(configured)
+    base_dir = (
+        os.environ.get("LOCALAPPDATA")
+        or os.environ.get("XDG_DATA_HOME")
+        or str(Path.home() / ".agent_constructor")
+    )
+    return Path(base_dir) / "AgentConstructor" / "browser_profiles"
+
+
+def _safe_profile_segment(value: str) -> str:
+    """Сделать имя сегмента пути стабильным и безопасным для ФС."""
+    cleaned = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "_"
+        for char in value.strip().casefold()
+    ).strip("._")
+    return cleaned or DEFAULT_AUTOMATION_PROFILE_NAME
 
 
 def _require_http_url(value: object) -> str:

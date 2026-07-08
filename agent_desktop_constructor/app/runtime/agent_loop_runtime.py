@@ -6,6 +6,7 @@ import json
 from typing import Callable
 from uuid import uuid4
 
+from agent_desktop_constructor.app.context.manager import AgentContextManager
 from agent_desktop_constructor.app.core.models.human_approval import (
     HumanApprovalStatus,
 )
@@ -62,6 +63,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         human_approval_repository: object | None = None,
         max_repeat_attempts: int = 2,
         max_decision_retries: int = 3,
+        context_manager: AgentContextManager | None = None,
     ) -> None:
         """Создать LLM-управляемый runtime без прямого доступа LLM к инструментам."""
         super().__init__(
@@ -76,6 +78,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._tool_registry = tool_registry
         self._max_repeat_attempts = max_repeat_attempts
         self._max_decision_retries = max_decision_retries
+        self._context_manager = context_manager or AgentContextManager()
         self._progress_callback: Callable[[str], None] | None = None
         self._cancel_callback: Callable[[], bool] | None = None
 
@@ -143,6 +146,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             variables=initial_variables or {},
         )
         state.variables.setdefault("tool_outputs", {})
+        self._refresh_context(state, agent_spec)
         self._create_run(agent_spec, state)
         self._add_run_event(
             state,
@@ -191,6 +195,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._emit_progress(
             f"👤 Человек ответил: {answer or default_answer}. Продолжаю работу…"
         )
+        self._refresh_context(state, agent_spec)
 
         pending_tool = state.variables.pop("pending_loop_tool", None)
 
@@ -217,6 +222,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             "Получен ответ человека — агент продолжает работу",
             details={"approved": approved, "answer": answer or default_answer},
         )
+        self._refresh_context(state, agent_spec)
 
         if pending_tool is not None and approved:
             signature = _action_signature(
@@ -253,6 +259,17 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         state.variables["loop_executed_signatures"] = list(executed_signatures)
         state.variables["loop_repeat_notes"] = list(repeat_notes)
         state.variables["loop_repeat_count"] = repeat_count
+
+    def _refresh_context(
+        self,
+        state: AgentRuntimeState,
+        agent_spec: AgentSpec | None = None,
+    ) -> None:
+        """Обновить context_snapshot в state.variables без влияния на выполнение."""
+        try:
+            self._context_manager.update_state_context(state, agent_spec=agent_spec)
+        except Exception as exc:
+            state.variables["context_snapshot_error"] = str(exc)
 
     def _drive_loop(
         self,
@@ -322,6 +339,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 decision.model_dump(mode="json")
             )
             self._emit_decision_progress(decision)
+            self._refresh_context(state, agent_spec)
 
             stop = self._apply_loop_decision(
                 agent_spec=agent_spec,
@@ -350,7 +368,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._persist_loop_progress(
             state, executed_signatures, repeat_notes, repeat_count
         )
+        self._refresh_context(state, agent_spec)
         self._add_terminal_event(state)
+        self._refresh_context(state, agent_spec)
         self._save_checkpoint(state)
         return state
 
@@ -390,6 +410,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 state,
                 details={"source": "llm_agent_loop"},
             )
+            self._refresh_context(state, agent_spec)
             return True
 
         if decision_type == SupervisorDecisionType.REQUEST_CREDENTIALS:
@@ -401,6 +422,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 "Агент ожидает credentials вне LLM-контекста",
                 details={"reason": decision.reason},
             )
+            self._refresh_context(state, agent_spec)
             return True
 
         if decision_type in CALL_DECISIONS:
@@ -578,6 +600,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 state,
                 details={"source": "llm_agent_loop", "error_type": result.error_type},
             )
+            self._refresh_context(state, agent_spec)
             return
 
         self._record_tool_result(state, input_data, result)
@@ -587,6 +610,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 self._track_vision_progress(state, tool_name, proposed_input, output_data)
             stored_output = self._stash_screenshot(state, output_data)
             state.variables.setdefault("tool_outputs", {})[tool_name] = stored_output
+            self._refresh_context(state, agent_spec)
             output_keys = sorted(output_data.keys())
             self._add_run_event(
                 state,
@@ -626,6 +650,23 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             f"✕ Инструмент {tool_name} ошибка "
             f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}"
         )
+        self._refresh_context(state, agent_spec)
+
+    def _record_tool_result(
+        self,
+        state: AgentRuntimeState,
+        input_data: dict,
+        result: ToolCallResult,
+    ) -> None:
+        """Сохранить результат инструмента и отразить его в контексте."""
+        super()._record_tool_result(state, input_data, result)
+        try:
+            snapshot = self._context_manager.restore_from_state(state)
+            if state.tool_results:
+                self._context_manager.record_tool_result(snapshot, state.tool_results[-1])
+            self._context_manager.save_to_state(state, snapshot)
+        except Exception as exc:
+            state.variables["context_snapshot_error"] = str(exc)
 
     def _track_vision_progress(
         self,

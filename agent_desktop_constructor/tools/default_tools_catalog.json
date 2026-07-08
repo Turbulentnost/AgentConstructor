@@ -332,7 +332,7 @@
     {
       "name": "browser.list_installed_browsers",
       "title": "Список браузеров на устройстве",
-      "description": "Определяет установленные на компьютере браузеры (Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, Firefox): имя, путь, версию и поддержку чтения страниц через CDP.",
+      "description": "Определяет установленные на компьютере браузеры (Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, Firefox): id/name, путь, версию и поддержку чтения страниц через CDP.",
       "category": "browser",
       "side_effect_level": "read",
       "execution_mode": "local",
@@ -357,9 +357,54 @@
       ],
       "examples": [
         "Какие браузеры установлены на компьютере",
-        "Проверить, установлен ли Edge/Chrome"
+        "Проверить, установлен ли Edge/Chrome/Yandex"
       ],
-      "planner_hint": "Используй, когда нужно узнать, какие браузеры есть на устройстве, или в каком браузере можно читать страницы. Верни поле browser в browser.open_page/click_link/scroll_page/extract_table, чтобы работать в конкретном браузере (например edge или chrome). Для чтения подходят только Chromium-браузеры (supports_cdp=true)."
+      "planner_hint": "Используй, когда нужно узнать, какие браузеры есть на устройстве, или пользователь явно назвал браузер (например Яндекс/Yandex, Chrome, Edge). Сначала получи список id/name/path, затем передай выбранный id в browser.open_browser или поле browser/browser_id в browser.navigate/open_page/click_link/scroll_page/extract_table. Для запроса 'открой Яндекс' выбери Yandex Browser (id=yandex), если он есть; если нет — сообщи доступные браузеры."
+    },
+    {
+      "name": "browser.open_browser",
+      "title": "Открыть конкретный браузер",
+      "description": "Открывает установленный браузер по browser_id/browser_name (например yandex, edge, chrome), а не системный браузер по умолчанию. Может сразу открыть URL. Запускает обычный профиль браузера без --user-data-dir, чтобы сохранить пользовательские логины и сессии.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "browser": {"type": "string"},
+          "url": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "path": {"type": "string"},
+          "url": {"type": "string"},
+          "pid": {"type": "integer"},
+          "available_browsers": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Открыть Яндекс браузер",
+        "Открыть yandex.ru в Yandex Browser",
+        "Открыть Chrome"
+      ],
+      "planner_hint": "Используй, когда пользователь просит открыть конкретный браузер по названию: 'Яндекс', 'Yandex Browser', 'Chrome', 'Edge'. Если браузер явно назван, сначала вызови browser.list_installed_browsers и выбери matching id; для 'Яндекс' используй browser_id='yandex'. browser.open_browser не передаёт --user-data-dir/--remote-debugging-port и открывает штатный профиль браузера, поэтому существующая авторизация сохраняется. В output проверяй profile_mode=default и command_args_summary. Если пользователь просит открыть сайт без названия браузера, можно использовать browser.navigate/open_page без browser_id."
     },
     {
       "name": "browser.search_web",
@@ -413,7 +458,12 @@
         "properties": {
           "url": {"type": "string"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -423,7 +473,11 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "links": {"type": "array"}
+          "links": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -435,7 +489,7 @@
       "examples": [
         "Прочитать указанную web-страницу"
       ],
-      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
+      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы. Если пользователь явно назвал браузер, сначала получи browser.list_installed_browsers и передай browser/browser_id (например yandex). По умолчанию CDP использует profile_mode=automation; для существующей пользовательской сессии штатного профиля передай use_default_profile=true. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
     },
     {
       "name": "browser.extract_table",
@@ -450,14 +504,25 @@
         "properties": {
           "url": {"type": "string"},
           "table_hint": {"type": "string"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "tables": {"type": "array"}
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "tables": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -486,7 +551,12 @@
           "direction": {"type": "string"},
           "pixels": {"type": "integer"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -496,7 +566,11 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "scroll_y": {"type": "integer"}
+          "scroll_y": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -525,7 +599,12 @@
           "link_text": {"type": "string"},
           "href": {"type": "string"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -535,7 +614,11 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "links": {"type": "array"}
+          "links": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -553,14 +636,22 @@
     {
       "name": "browser.navigate",
       "title": "Открыть страницу в браузере (UI)",
-      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам.",
+      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам. По умолчанию использует стабильный automation-профиль; для пользовательских сессий штатного профиля передай use_default_profile=true.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"url": {"type": "string"}},
+        "properties": {
+          "url": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["url"]
       },
       "output_schema": {
@@ -570,7 +661,11 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -583,7 +678,7 @@
         "Открыть веб-версию сервиса и посмотреть UI",
         "Открыть страницу, где нужно взаимодействовать с элементами"
       ],
-      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. После него смотри скриншот и решай, куда кликать (browser.click), что вводить (browser.type_text), какие клавиши нажимать (browser.press_key)."
+      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. Если пользователь явно назвал браузер (например Яндекс/Yandex), сначала вызови browser.list_installed_browsers и передай browser_id='yandex' или выбранный id, чтобы открыть именно этот браузер, а не Edge/default. По умолчанию используется profile_mode=automation — это отдельный стабильный профиль без пользовательских логинов. Если нужна существующая сессия штатного профиля, явно передай use_default_profile=true, а при необходимости profile_name; для Yandex это использует %LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data. Не используй временный user-data-dir. После него смотри скриншот и решай, куда кликать (browser.click), что вводить (browser.type_text), какие клавиши нажимать (browser.press_key)."
     },
     {
       "name": "browser.screenshot",
@@ -595,7 +690,15 @@
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"url": {"type": "string"}}
+        "properties": {
+          "url": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        }
       },
       "output_schema": {
         "type": "object",
@@ -604,7 +707,11 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -632,7 +739,13 @@
         "properties": {
           "x": {"type": "number"},
           "y": {"type": "number"},
-          "button": {"type": "string"}
+          "button": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["x", "y"]
       },
@@ -643,7 +756,11 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -668,7 +785,15 @@
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"text": {"type": "string"}},
+        "properties": {
+          "text": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["text"]
       },
       "output_schema": {
@@ -676,7 +801,11 @@
         "properties": {
           "url": {"type": "string"},
           "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"}
+          "screenshot_base64": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -701,7 +830,15 @@
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"key": {"type": "string"}},
+        "properties": {
+          "key": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["key"]
       },
       "output_schema": {
@@ -709,7 +846,11 @@
         "properties": {
           "url": {"type": "string"},
           "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"}
+          "screenshot_base64": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -738,7 +879,13 @@
           "direction": {"type": "string", "enum": ["down", "up", "left", "right"]},
           "pixels": {"type": "integer"},
           "x": {"type": "integer"},
-          "y": {"type": "integer"}
+          "y": {"type": "integer"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         }
       },
       "output_schema": {
@@ -753,7 +900,11 @@
           "client_height": {"type": "integer"},
           "at_bottom": {"type": "boolean"},
           "at_top": {"type": "boolean"},
-          "scroll_target": {"type": "string"}
+          "scroll_target": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [

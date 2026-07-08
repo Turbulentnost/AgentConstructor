@@ -74,6 +74,7 @@ def test_ui_modules_import() -> None:
         "agent_desktop_constructor.app.ui.widgets.run_events_widget",
         "agent_desktop_constructor.app.ui.widgets.approval_queue_widget",
         "agent_desktop_constructor.app.ui.widgets.log_panel_widget",
+        "agent_desktop_constructor.app.ui.widgets.context_indicator",
     ]
 
     for module_name in module_names:
@@ -118,6 +119,7 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     assert widget.request_edit is not None
     assert isinstance(widget.model_combo, BadgeSelect)
     assert isinstance(widget.reason_combo, BadgeSelect)
+    assert widget.context_indicator is not None
     assert "border-radius: 9px" in MODEL_BADGE_STYLE
     assert widget.model_combo.isEnabled()
     assert widget.model_combo.count() >= 2
@@ -157,6 +159,80 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     qt_app.processEvents()
     assert changed_index is not None
     widget.model_combo.hidePopup()
+
+
+def test_context_indicator_accepts_usage(qt_app) -> None:
+    """ContextIndicator принимает usage payload и обновляет tooltip."""
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        ContextIndicator,
+    )
+
+    indicator = ContextIndicator()
+    indicator.set_usage(
+        {
+            "total_chars": 120,
+            "total_limit": 1000,
+            "total_percent": 12.0,
+            "section_chars": {"creation": 40, "tool_results": 80},
+            "section_percent": {"creation": 5.0, "tool_results": 10.0},
+        }
+    )
+    indicator.show()
+    qt_app.processEvents()
+
+    assert "12.0%" in indicator.toolTip()
+    assert "разбивку по секциям" in indicator.toolTip()
+    assert indicator.width() == 34
+
+
+def test_context_indicator_popover_position_prefers_above() -> None:
+    """Popover открывается над индикатором, если сверху достаточно места."""
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        POPOVER_MARGIN,
+        _popover_position,
+    )
+
+    position = _popover_position(
+        QPoint(400, 300),
+        QSize(34, 34),
+        QSize(180, 120),
+        QRect(0, 0, 1000, 800),
+    )
+
+    assert position.y() == 300 - 120 - POPOVER_MARGIN
+    assert position.x() == 400 + (34 - 180) // 2
+
+
+def test_context_indicator_popover_position_falls_back_below() -> None:
+    """Popover открывается снизу, если над индикатором нет места."""
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        POPOVER_MARGIN,
+        _popover_position,
+    )
+
+    position = _popover_position(
+        QPoint(400, 20),
+        QSize(34, 34),
+        QSize(180, 120),
+        QRect(0, 0, 1000, 800),
+    )
+
+    assert position.y() == 20 + 34 + POPOVER_MARGIN
+
+
+def test_context_indicator_usage_color_thresholds() -> None:
+    """Цвет индикатора меняется по уровню заполнения."""
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import _usage_color
+
+    assert _usage_color(0) == "#64748b"
+    assert _usage_color(10) == "#38bdf8"
+    assert _usage_color(50) == "#22c55e"
+    assert _usage_color(80) == "#f59e0b"
+    assert _usage_color(95) == "#ef4444"
 
 
 def test_agent_create_widget_keeps_proxy_claude_models(monkeypatch) -> None:
@@ -249,6 +325,37 @@ def test_agent_create_widget_keeps_proxy_claude_models(monkeypatch) -> None:
     sonnet = next(option for option in options if option.model_id == "claude-sonnet-4.6")
     assert sonnet.supports_reasoning is True
     assert sonnet.modes == ("reason",)
+
+
+def test_agent_create_widget_persists_selected_model_id(
+    qt_app,
+    fake_container,
+    monkeypatch,
+) -> None:
+    """Смена модели/reason сохраняет полный model id."""
+    from agent_desktop_constructor.app.ui.widgets import agent_create_widget
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+    )
+
+    saved_models: list[str] = []
+    monkeypatch.setattr(agent_create_widget, "save_llm_model_name", saved_models.append)
+    widget = AgentCreateWidget(fake_container)
+
+    reason_index = widget.reason_combo.findData("reason")
+    widget.reason_combo.setCurrentIndex(reason_index)
+    qt_app.processEvents()
+
+    lmstudio_index = widget.model_combo.findData("lmstudio")
+    widget.model_combo.setCurrentIndex(lmstudio_index)
+    qt_app.processEvents()
+
+    assert saved_models[-2:] == ["chatgpt:reason", "lmstudio"]
+
+    widget._ensure_selected_model_container()
+
+    assert widget._container.config.llm_model_name == "lmstudio"
+    assert saved_models[-1] == "lmstudio"
 
 
 def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:

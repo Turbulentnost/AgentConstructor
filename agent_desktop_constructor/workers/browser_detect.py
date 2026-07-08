@@ -17,6 +17,41 @@ from pathlib import Path
 
 _VERSION_DIR_RE = re.compile(r"^\d+\.\d+[\d.]*$")
 
+_BROWSER_ALIASES = {
+    "microsoft edge": "edge",
+    "ms edge": "edge",
+    "msedge": "edge",
+    "edge browser": "edge",
+    "эдж": "edge",
+    "браузер edge": "edge",
+    "google chrome": "chrome",
+    "chrome browser": "chrome",
+    "хром": "chrome",
+    "гугл хром": "chrome",
+    "яндекс": "yandex",
+    "яндекс браузер": "yandex",
+    "яндекс.браузер": "yandex",
+    "yandex": "yandex",
+    "yandex browser": "yandex",
+    "yandex.browser": "yandex",
+    "brave browser": "brave",
+    "opera browser": "opera",
+    "vivaldi browser": "vivaldi",
+    "firefox browser": "firefox",
+    "mozilla firefox": "firefox",
+    "фаерфокс": "firefox",
+}
+
+_WINDOWS_DEFAULT_USER_DATA_RELATIVE_PATHS = {
+    "edge": "Microsoft/Edge/User Data",
+    "chrome": "Google/Chrome/User Data",
+    "brave": "BraveSoftware/Brave-Browser/User Data",
+    "yandex": "Yandex/YandexBrowser/User Data",
+    "opera": "Opera Software/Opera Stable",
+    "vivaldi": "Vivaldi/User Data",
+    "chromium": "Chromium/User Data",
+}
+
 
 @dataclass(frozen=True)
 class KnownBrowser:
@@ -32,6 +67,13 @@ class KnownBrowser:
     def supports_cdp(self) -> bool:
         """CDP-чтение доступно только для Chromium-семейства."""
         return self.family == "chromium"
+
+
+def normalize_browser_id(name: str) -> str:
+    """Нормализовать русское/английское имя браузера до стабильного id."""
+    normalized = (name or "").strip().casefold()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return _BROWSER_ALIASES.get(normalized, normalized)
 
 
 KNOWN_BROWSERS: tuple[KnownBrowser, ...] = (
@@ -170,8 +212,10 @@ def list_installed_browsers() -> list[dict]:
         )
         browsers.append(
             {
+                "id": browser.name,
                 "name": browser.name,
                 "family": browser.family,
+                "path": executable_path,
                 "executable_path": executable_path,
                 "version": version,
                 "supports_cdp": browser.supports_cdp,
@@ -183,30 +227,31 @@ def list_installed_browsers() -> list[dict]:
 
 def resolve_browser_executable(name: str) -> str | None:
     """Найти исполняемый файл браузера по дружественному имени (edge/chrome/...)."""
-    normalized = (name or "").strip().casefold()
+    normalized = normalize_browser_id(name)
     if not normalized:
         return None
-    aliases = {
-        "microsoft edge": "edge",
-        "google chrome": "chrome",
-        "brave browser": "brave",
-        "yandex browser": "yandex",
-        "яндекс": "yandex",
-        "яндекс браузер": "yandex",
-        "хром": "chrome",
-        "гугл хром": "chrome",
-        "эдж": "edge",
-    }
-    normalized = aliases.get(normalized, normalized)
     for browser in KNOWN_BROWSERS:
         if browser.name == normalized:
             return _find_browser_executable(browser)
     return None
 
 
+def resolve_default_user_data_dir(name: str) -> str | None:
+    """Вернуть штатный каталог User Data браузера текущего пользователя."""
+    normalized = normalize_browser_id(name)
+    if not normalized:
+        return None
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        relative = _WINDOWS_DEFAULT_USER_DATA_RELATIVE_PATHS.get(normalized)
+        if local_app_data and relative:
+            return str(Path(local_app_data) / relative)
+    return None
+
+
 def find_readable_browser(name: str) -> KnownBrowser | None:
     """Найти известный CDP-совместимый браузер по имени."""
-    normalized = (name or "").strip().casefold()
+    normalized = normalize_browser_id(name)
     for browser in KNOWN_BROWSERS:
         if browser.name == normalized and browser.supports_cdp:
             return browser

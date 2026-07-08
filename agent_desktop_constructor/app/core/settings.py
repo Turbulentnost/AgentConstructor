@@ -48,3 +48,28 @@ def save_settings(config: AppConfig, path: str | None = None) -> None:
         encoding="utf-8",
     )
 
+
+def save_llm_model_name(model_name: str, path: str | None = None) -> None:
+    """Обновить только llm_model_name в settings.json."""
+    clean_model_name = model_name.strip()
+    if not clean_model_name:
+        raise ValueError("llm_model_name не должен быть пустым")
+
+    settings_path = Path(path or DEFAULT_SETTINGS_PATH)
+    if settings_path.exists():
+        try:
+            payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Некорректный JSON настроек: {exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Файл настроек должен содержать JSON-объект")
+    else:
+        payload = {}
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    payload["llm_model_name"] = clean_model_name
+    settings_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+

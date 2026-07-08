@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from threading import Event
+from time import monotonic
 from typing import Callable
 from urllib import error, request
 
@@ -54,6 +55,8 @@ from agent_desktop_constructor.app.core.bootstrap import (
     ApplicationContainer,
     build_application_container,
 )
+from agent_desktop_constructor.app.core.settings import save_llm_model_name
+from agent_desktop_constructor.app.ui.widgets.context_indicator import ContextIndicator
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
     collect_produced_files,
@@ -253,6 +256,14 @@ def _short(text: object, max_len: int = 90) -> str:
     if len(value) <= max_len:
         return value
     return value[: max_len - 1] + "…"
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    """Отформатировать elapsed time как HH:MM:SS."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 class NeonStepIndicator(QWidget):
@@ -1411,6 +1422,13 @@ class AgentCreateWidget(QWidget):
         self._human_radios: list[tuple[QRadioButton, str | None]] = []
         self._attachment_paths: list[str] = []
         self._model_options: list[UiModelOption] = []
+        self.context_indicator: ContextIndicator | None = None
+        self.elapsed_value_label: QLabel | None = None
+        self._elapsed_base_seconds = 0.0
+        self._elapsed_started_at: float | None = None
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(500)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed_label)
 
         self._build_ui()
         self._connect_signals()
@@ -1461,7 +1479,8 @@ class AgentCreateWidget(QWidget):
         summary = QHBoxLayout()
         summary.setContentsMargins(0, 0, 0, 0)
         summary.setSpacing(18)
-        summary.addWidget(self._metric_chip("⏱", "00:01:42", "Прошло"))
+        self.elapsed_value_label = QLabel(_format_elapsed_seconds(0))
+        summary.addWidget(self._metric_chip("⏱", self.elapsed_value_label, "Прошло"))
         summary.addWidget(self._metric_chip("↱", "Шаг 2 из 6", "Найти поручения в 1С"))
         self.run_progress = QProgressBar()
         self.run_progress.setRange(0, 100)
@@ -1524,7 +1543,7 @@ class AgentCreateWidget(QWidget):
         )
         return container
 
-    def _metric_chip(self, icon: str, value: str, label: str) -> QWidget:
+    def _metric_chip(self, icon: str, value: str | QLabel, label: str) -> QWidget:
         chip = QWidget()
         chip.setObjectName("metricChip")
         row = QHBoxLayout(chip)
@@ -1535,7 +1554,7 @@ class AgentCreateWidget(QWidget):
         texts = QVBoxLayout()
         texts.setContentsMargins(0, 0, 0, 0)
         texts.setSpacing(1)
-        value_label = QLabel(value)
+        value_label = value if isinstance(value, QLabel) else QLabel(value)
         value_label.setObjectName("metricValue")
         label_widget = QLabel(label)
         label_widget.setObjectName("metricLabel")
@@ -1579,6 +1598,8 @@ class AgentCreateWidget(QWidget):
         toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.context_indicator = ContextIndicator()
+        toolbar.addWidget(self.context_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.attach_clear_button = QPushButton("Очистить вложения")
         self.attach_clear_button.clicked.connect(self.clear_attachments)
@@ -1945,9 +1966,7 @@ class AgentCreateWidget(QWidget):
         self.dev_toggle.toggled.connect(self._toggle_dev)
         self.refresh_models_button.clicked.connect(self._reload_model_options)
         self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
-        self.reason_combo.currentIndexChanged.connect(
-            lambda _index: self._fit_combo_to_contents(self.reason_combo)
-        )
+        self.reason_combo.currentIndexChanged.connect(self._on_reason_combo_changed)
 
     def _toggle_dev(self, checked: bool) -> None:
         """Показать или скрыть раздел разработчика."""
@@ -1962,6 +1981,7 @@ class AgentCreateWidget(QWidget):
         options = _merge_default_model_options(self._load_proxy_model_options())
         self._model_options = options
         self.model_combo.blockSignals(True)
+        self.reason_combo.blockSignals(True)
         self.model_combo.clear()
         for option in options:
             self.model_combo.addItem(option.label, option.model_id)
@@ -1974,12 +1994,14 @@ class AgentCreateWidget(QWidget):
         self.model_combo.setCurrentIndex(selected_index)
         self.model_combo.blockSignals(False)
         self._sync_reason_combo()
-        self._fit_combo_to_contents(self.model_combo)
-        self._fit_combo_to_contents(self.reason_combo)
         if mode:
             reason_index = self.reason_combo.findData(mode)
             if reason_index >= 0:
                 self.reason_combo.setCurrentIndex(reason_index)
+        self.reason_combo.blockSignals(False)
+        self._sync_reason_combo()
+        self._fit_combo_to_contents(self.model_combo)
+        self._fit_combo_to_contents(self.reason_combo)
 
     def _load_proxy_model_options(self) -> list[UiModelOption]:
         """Получить модели через /v1/models, если настроен LLM proxy URL."""
@@ -2049,6 +2071,12 @@ class AgentCreateWidget(QWidget):
         """Обновить reason-селект и ширину pill-комбобоксов после смены модели."""
         self._sync_reason_combo()
         self._fit_combo_to_contents(self.model_combo)
+        self._persist_selected_model_choice()
+
+    def _on_reason_combo_changed(self, _index: int) -> None:
+        """Сохранить смену reasoning-режима."""
+        self._fit_combo_to_contents(self.reason_combo)
+        self._persist_selected_model_choice()
 
     def _sync_reason_combo(self) -> None:
         """Включить/выключить селект reason в зависимости от выбранной модели."""
@@ -2063,7 +2091,10 @@ class AgentCreateWidget(QWidget):
         mode = self.reason_combo.currentData()
         allowed = set(option.modes or ("internal", "reason"))
         if mode not in allowed:
-            self.reason_combo.setCurrentIndex(0)
+            for index in range(self.reason_combo.count()):
+                if self.reason_combo.itemData(index) in allowed:
+                    self.reason_combo.setCurrentIndex(index)
+                    break
         self._fit_combo_to_contents(self.reason_combo)
 
     def _selected_model_id(self) -> str:
@@ -2083,6 +2114,7 @@ class AgentCreateWidget(QWidget):
         if config is None:
             return
         selected_model = self._selected_model_id()
+        self._persist_selected_model_choice(selected_model)
         if selected_model == config.llm_model_name:
             return
         self._append_log(f"⚙ Переключаю LLM-модель на {selected_model}…")
@@ -2091,6 +2123,55 @@ class AgentCreateWidget(QWidget):
         )
         self._container = build_application_container(new_config)
         self._preview_agent = None
+
+    def _persist_selected_model_choice(self, model_name: str | None = None) -> None:
+        """Запомнить выбранный model id в локальных настройках."""
+        selected_model = model_name or self._selected_model_id()
+        try:
+            save_llm_model_name(selected_model)
+        except (OSError, ValueError) as exc:
+            self._append_log(f"⚠ Не удалось сохранить выбранную LLM-модель: {exc}")
+
+    # --------------------------------------------------------- elapsed time
+
+    def _current_elapsed_seconds(self) -> float:
+        """Вернуть накопленное время текущего foreground flow."""
+        if self._elapsed_started_at is None:
+            return self._elapsed_base_seconds
+        return self._elapsed_base_seconds + (monotonic() - self._elapsed_started_at)
+
+    def _refresh_elapsed_label(self) -> None:
+        """Обновить label elapsed-time в summary."""
+        if self.elapsed_value_label is not None:
+            self.elapsed_value_label.setText(
+                _format_elapsed_seconds(self._current_elapsed_seconds())
+            )
+
+    def _start_elapsed_timer(self, *, reset: bool) -> None:
+        """Запустить или продолжить таймер текущего UI flow."""
+        if reset:
+            self._elapsed_base_seconds = 0.0
+        elif self._elapsed_started_at is not None:
+            self._refresh_elapsed_label()
+            return
+        self._elapsed_started_at = monotonic()
+        self._refresh_elapsed_label()
+        self._elapsed_timer.start()
+
+    def _pause_elapsed_timer(self) -> None:
+        """Остановить обновление, сохранив накопленное время."""
+        if self._elapsed_started_at is not None:
+            self._elapsed_base_seconds = self._current_elapsed_seconds()
+            self._elapsed_started_at = None
+        self._elapsed_timer.stop()
+        self._refresh_elapsed_label()
+
+    def _reset_elapsed_timer(self) -> None:
+        """Сбросить elapsed-time для нового запуска или очистки."""
+        self._elapsed_timer.stop()
+        self._elapsed_base_seconds = 0.0
+        self._elapsed_started_at = None
+        self._refresh_elapsed_label()
 
     # ---------------------------------------------------- background flow
 
@@ -2179,6 +2260,7 @@ class AgentCreateWidget(QWidget):
             return
 
         self._reset_stages()
+        self._start_elapsed_timer(reset=True)
         self.live_log.clear()
         self._ensure_selected_model_container()
         self._last_request = user_request
@@ -2203,11 +2285,13 @@ class AgentCreateWidget(QWidget):
         self._render_preview(spec)
         self._render_plan_stages(spec)
         self.select_stage(STAGE_PLAN)
+        self._pause_elapsed_timer()
 
     def _on_preview_failed(self, message: str) -> None:
         """Показать ошибку построения плана."""
         self._set_stage(STAGE_PLAN, "failed", "Не удалось построить план", message)
         self._append_log(f"⚠ Ошибка предпросмотра: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка предпросмотра", message)
 
     def check_tools(self) -> None:
@@ -2272,7 +2356,12 @@ class AgentCreateWidget(QWidget):
         existing_spec = self._preview_agent
         if existing_spec is None:
             self._reset_stages()
+            self._start_elapsed_timer(reset=True)
             self._set_stage(STAGE_REQUEST, "passed", _short(request), request)
+        elif self._elapsed_started_at is None and self._elapsed_base_seconds == 0.0:
+            self._start_elapsed_timer(reset=True)
+        else:
+            self._start_elapsed_timer(reset=False)
         self.live_log.clear()
         self._ensure_selected_model_container()
         existing_spec = self._preview_agent
@@ -2308,12 +2397,14 @@ class AgentCreateWidget(QWidget):
         self._render_plan_stages(spec)
         self._apply_validation(validation)
         self.select_stage(STAGE_RESULT)
+        self._pause_elapsed_timer()
         show_info(self, "Проверка агента", validation.summary)
 
     def _on_validate_failed(self, message: str) -> None:
         """Показать ошибку пробного запуска."""
         self._set_stage(STAGE_TRIAL, "failed", "Ошибка пробного запуска", message)
         self._append_log(f"⚠ Ошибка проверки агента: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка проверки агента", message)
 
     def create_validate_and_run(self) -> None:
@@ -2326,6 +2417,7 @@ class AgentCreateWidget(QWidget):
             return
 
         self._reset_stages()
+        self._start_elapsed_timer(reset=True)
         self.live_log.clear()
         self._ensure_selected_model_container()
         self.files_label.setVisible(False)
@@ -2363,13 +2455,16 @@ class AgentCreateWidget(QWidget):
         self.select_stage(STAGE_RESULT)
         if state is None:
             self._hide_human_panel()
+            self._pause_elapsed_timer()
             show_info(self, "Агент не запущен", validation.summary)
             return
+        self._update_context_indicator(state)
         if self._is_awaiting_human(state):
             self._prompt_human(agent_spec, state)
             return
         self._hide_human_panel()
         self._show_produced_files(agent_spec, state)
+        self._pause_elapsed_timer()
         show_info(
             self,
             "Агент запущен",
@@ -2389,6 +2484,15 @@ class AgentCreateWidget(QWidget):
             self.files_label.setVisible(True)
         else:
             self.files_label.setVisible(False)
+
+    def _update_context_indicator(self, state: object | None) -> None:
+        """Обновить круговой индикатор из context_snapshot runtime state."""
+        if self.context_indicator is None:
+            return
+        variables = getattr(state, "variables", {}) or {}
+        snapshot = variables.get("context_snapshot") if isinstance(variables, dict) else None
+        usage = snapshot.get("usage") if isinstance(snapshot, dict) else None
+        self.context_indicator.set_usage(usage)
 
     @staticmethod
     def _is_awaiting_human(state: object) -> bool:
@@ -2424,6 +2528,7 @@ class AgentCreateWidget(QWidget):
         self.human_custom_edit.clear()
         self.human_continue_button.setEnabled(True)
         self._human_panel.setVisible(True)
+        self._pause_elapsed_timer()
         self._append_log("⏸ Агент ожидает вашего ответа/действия. Ответьте и нажмите «Продолжить».")
 
     def _populate_human_options(self, options: list[str]) -> None:
@@ -2508,6 +2613,7 @@ class AgentCreateWidget(QWidget):
         state = self._paused_state
         self._human_panel.setVisible(False)
         self._cancel_event.clear()
+        self._start_elapsed_timer(reset=False)
         self._set_running(STAGE_TRIAL)
         self.select_stage(STAGE_TRIAL)
         self._append_log(f"▶ Продолжаю после ответа человека: {answer}")
@@ -2535,6 +2641,7 @@ class AgentCreateWidget(QWidget):
         """Показать ошибку сборки/проверки/запуска."""
         self._set_stage(STAGE_PLAN, "failed", "Не удалось собрать агента", message)
         self._append_log(f"⚠ Ошибка проверки и запуска: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка проверки и запуска", message)
 
     def save_agent(self) -> None:
@@ -2616,6 +2723,8 @@ class AgentCreateWidget(QWidget):
         self.request_edit.clear()
         self.live_log.clear()
         self.files_label.setVisible(False)
+        self._update_context_indicator(None)
+        self._reset_elapsed_timer()
         self.general_output.clear()
         self.json_output.clear()
         set_table_rows(self.data_table, [], self._data_headers())

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import tempfile
+import subprocess
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
@@ -22,11 +21,14 @@ from agent_desktop_constructor.workers.browser_cdp_worker import (
     BrowserCdpError,
     BrowserCdpWorker,
     BrowserLaunchConfig,
+    _require_http_url,
 )
 from agent_desktop_constructor.workers.browser_detect import (
     find_readable_browser,
     list_installed_browsers,
+    normalize_browser_id,
     resolve_browser_executable,
+    resolve_default_user_data_dir,
 )
 
 DEFAULT_MAX_RESULTS = 5
@@ -53,23 +55,25 @@ class BrowserWorkerProvider:
         self._default_worker = default_worker
         self._by_browser: dict[str, BrowserCdpWorker] = {}
 
-    def get(self, browser: object) -> BrowserCdpWorker:
-        """Вернуть worker: дефолтный (авто) или под конкретный браузер."""
-        name = str(browser or "").strip()
-        if not name:
+    def get(self, input_data: dict) -> BrowserCdpWorker:
+        """Вернуть worker: дефолтный (авто) или под конкретный browser/profile."""
+        name = _requested_browser_name(input_data)
+        profile_options = _profile_options(input_data)
+        if not name and not _has_explicit_profile(input_data):
             return self._default_worker
-        key = name.casefold()
-        cached = self._by_browser.get(key)
+        key = normalize_browser_id(name) if name else "default"
+        cache_key = _worker_cache_key(key, profile_options)
+        cached = self._by_browser.get(cache_key)
         if cached is not None:
             return cached
-        if find_readable_browser(key) is None:
+        if name and find_readable_browser(key) is None:
             raise BrowserCdpError(
                 f"Браузер {name!r} не поддерживает чтение через CDP. Доступны "
                 "Chromium-браузеры: edge, chrome, brave, yandex, opera, vivaldi, "
                 "chromium. Проверь список через browser.list_installed_browsers."
             )
-        executable = resolve_browser_executable(key)
-        if executable is None:
+        executable = resolve_browser_executable(key) if name else None
+        if name and executable is None:
             raise BrowserCdpError(
                 f"Браузер {name!r} не найден на устройстве. Посмотри доступные "
                 "через browser.list_installed_browsers."
@@ -78,13 +82,74 @@ class BrowserWorkerProvider:
             BrowserLaunchConfig(
                 port=DEFAULT_CDP_PORT + 1 + len(self._by_browser),
                 executable_path=executable,
-                user_data_dir=str(
-                    Path(tempfile.gettempdir()) / f"agent_constructor_cdp_{key}"
-                ),
+                browser_id=key,
+                **profile_options,
             )
         )
-        self._by_browser[key] = worker
+        self._by_browser[cache_key] = worker
         return worker
+
+
+def _requested_browser_name(input_data: dict) -> str:
+    """Достать browser_id/browser_name/browser из входных данных."""
+    return str(
+        input_data.get("browser_id")
+        or input_data.get("browser_name")
+        or input_data.get("browser")
+        or ""
+    ).strip()
+
+
+def _bool_input(value: object) -> bool:
+    """Разобрать bool-флаг из JSON-like input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "да", "истина"}
+    return bool(value)
+
+
+def _profile_options(input_data: dict) -> dict[str, object]:
+    """Вытащить явные настройки профиля для CDP/vision worker."""
+    return {
+        "use_default_profile": _bool_input(input_data.get("use_default_profile")),
+        "profile_name": str(input_data.get("profile_name") or "").strip() or None,
+        "user_data_dir": str(input_data.get("user_data_dir") or "").strip() or None,
+    }
+
+
+def _has_explicit_profile(input_data: dict) -> bool:
+    """Проверить, просил ли caller не дефолтный automation worker."""
+    return any(
+        key in input_data and input_data.get(key) not in {None, "", False}
+        for key in ("use_default_profile", "profile_name", "user_data_dir")
+    )
+
+
+def _worker_cache_key(browser_id: str, profile_options: dict[str, object]) -> str:
+    """Стабильный cache key для browser/profile worker."""
+    return "|".join(
+        [
+            browser_id,
+            f"default={bool(profile_options.get('use_default_profile'))}",
+            f"profile={profile_options.get('profile_name') or ''}",
+            f"data={profile_options.get('user_data_dir') or ''}",
+        ]
+    )
+
+
+_BROWSER_PROFILE_INPUT_PROPERTIES = {
+    "use_default_profile": {"type": "boolean"},
+    "profile_name": {"type": "string"},
+    "user_data_dir": {"type": "string"},
+}
+
+_BROWSER_PROFILE_OUTPUT_PROPERTIES = {
+    "profile_mode": {"type": "string"},
+    "user_data_dir": {"type": "string"},
+    "used_default_profile": {"type": "boolean"},
+    "command_args_summary": {"type": "array"},
+}
 
 
 class BrowserListInstalledBrowsersTool(BaseTool):
@@ -139,6 +204,121 @@ class BrowserListInstalledBrowsersTool(BaseTool):
                 "browsers": browsers,
                 "count": len(browsers),
                 "default_readable_browser": default_readable,
+            },
+        )
+
+
+class BrowserOpenBrowserTool(BaseTool):
+    """Открывает конкретный установленный браузер по id/name, а не default app."""
+
+    def __init__(self) -> None:
+        """Создать инструмент browser.open_browser."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.open_browser",
+                title="Открыть конкретный браузер",
+                description=(
+                    "Открывает установленный браузер по browser_id/browser_name "
+                    "(например yandex, edge, chrome) и опционально URL. Запускает "
+                    "обычный профиль браузера без --user-data-dir, чтобы сохранить "
+                    "пользовательские логины и сессии."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                timeout_seconds=15,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        "browser": {"type": "string"},
+                        "url": {"type": "string"},
+                    },
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        "path": {"type": "string"},
+                        "url": {"type": "string"},
+                        "pid": {"type": "integer"},
+                        "available_browsers": {"type": "array"},
+                        "profile_mode": {"type": "string"},
+                        "user_data_dir": {"type": "string"},
+                        "used_default_profile": {"type": "boolean"},
+                        "command_args_summary": {"type": "array"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Запустить выбранный браузер напрямую по найденному executable path."""
+        requested = _requested_browser_name(input_data)
+        if not requested:
+            return _browser_not_found_result(
+                self.definition.name,
+                requested,
+                "Для browser.open_browser нужен browser_id или browser_name.",
+            )
+
+        browser_id = normalize_browser_id(requested)
+        executable = resolve_browser_executable(browser_id)
+        if executable is None:
+            return _browser_not_found_result(
+                self.definition.name,
+                requested,
+                f"Браузер {requested!r} не найден на устройстве.",
+            )
+
+        url = str(input_data.get("url") or "").strip()
+        if url:
+            try:
+                url = _require_http_url(url)
+            except BrowserCdpError as exc:
+                return ToolCallResult(
+                    ok=False,
+                    tool_name=self.definition.name,
+                    error_type="INVALID_INPUT",
+                    error_message=str(exc),
+                )
+
+        command = [executable, *([url] if url else [])]
+        try:
+            process = subprocess.Popen(  # noqa: S603 - executable найден локально
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="BROWSER_OPEN_ERROR",
+                error_message=f"Не удалось открыть браузер {requested!r}: {exc}",
+            )
+
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "browser_id": browser_id,
+                "browser_name": browser_id,
+                "path": executable,
+                "url": url,
+                "pid": process.pid,
+                "profile_mode": "default",
+                "user_data_dir": resolve_default_user_data_dir(browser_id) or "",
+                "used_default_profile": True,
+                "command_args_summary": [
+                    "<browser_executable>",
+                    *([url] if url else []),
+                    "no --remote-debugging-port",
+                    "no --user-data-dir",
+                    "no --profile-directory",
+                ],
             },
         )
 
@@ -238,6 +418,9 @@ class BrowserOpenPageTool(BaseTool):
                         "url": {"type": "string"},
                         "max_chars": {"type": "integer"},
                         "browser": {"type": "string"},
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        **_BROWSER_PROFILE_INPUT_PROPERTIES,
                     },
                     "required": ["url"],
                 },
@@ -248,6 +431,7 @@ class BrowserOpenPageTool(BaseTool):
                         "title": {"type": "string"},
                         "text": {"type": "string"},
                         "links": {"type": "array"},
+                        **_BROWSER_PROFILE_OUTPUT_PROPERTIES,
                     },
                 },
             )
@@ -284,6 +468,9 @@ class BrowserExtractTableTool(BaseTool):
                         "url": {"type": "string"},
                         "table_hint": {"type": "string"},
                         "browser": {"type": "string"},
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        **_BROWSER_PROFILE_INPUT_PROPERTIES,
                     },
                     "required": ["url"],
                 },
@@ -293,6 +480,7 @@ class BrowserExtractTableTool(BaseTool):
                         "url": {"type": "string"},
                         "title": {"type": "string"},
                         "tables": {"type": "array"},
+                        **_BROWSER_PROFILE_OUTPUT_PROPERTIES,
                     },
                 },
             )
@@ -331,6 +519,9 @@ class BrowserScrollPageTool(BaseTool):
                         "pixels": {"type": "integer"},
                         "max_chars": {"type": "integer"},
                         "browser": {"type": "string"},
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        **_BROWSER_PROFILE_INPUT_PROPERTIES,
                     },
                     "required": ["url"],
                 },
@@ -341,6 +532,7 @@ class BrowserScrollPageTool(BaseTool):
                         "title": {"type": "string"},
                         "text": {"type": "string"},
                         "scroll_y": {"type": "integer"},
+                        **_BROWSER_PROFILE_OUTPUT_PROPERTIES,
                     },
                 },
             )
@@ -379,6 +571,9 @@ class BrowserClickLinkTool(BaseTool):
                         "href": {"type": "string"},
                         "max_chars": {"type": "integer"},
                         "browser": {"type": "string"},
+                        "browser_id": {"type": "string"},
+                        "browser_name": {"type": "string"},
+                        **_BROWSER_PROFILE_INPUT_PROPERTIES,
                     },
                     "required": ["url"],
                 },
@@ -389,6 +584,7 @@ class BrowserClickLinkTool(BaseTool):
                         "title": {"type": "string"},
                         "text": {"type": "string"},
                         "links": {"type": "array"},
+                        **_BROWSER_PROFILE_OUTPUT_PROPERTIES,
                     },
                 },
             )
@@ -415,6 +611,7 @@ def register_web_tools(
     browser_worker = worker or BrowserCdpWorker()
     tools = [
         BrowserListInstalledBrowsersTool(),
+        BrowserOpenBrowserTool(),
         BrowserSearchWebTool(),
         BrowserOpenPageTool(browser_worker),
         BrowserExtractTableTool(browser_worker),
@@ -441,7 +638,7 @@ def _execute_browser_worker(
 ) -> ToolCallResult:
     """Выбрать worker нужного браузера и выполнить его action безопасно."""
     try:
-        worker = provider.get(input_data.get("browser"))
+        worker = provider.get(input_data)
         action = getattr(worker, method_name)
         output_data = action(input_data)
     except BrowserCdpError as exc:
@@ -459,6 +656,38 @@ def _execute_browser_worker(
             error_message=str(exc),
         )
     return ToolCallResult(ok=True, tool_name=tool_name, output_data=output_data)
+
+
+def _browser_not_found_result(
+    tool_name: str,
+    requested: str,
+    message: str,
+) -> ToolCallResult:
+    """Вернуть понятную ошибку выбора браузера и список доступных id."""
+    browsers = list_installed_browsers()
+    available = [
+        {
+            "id": item.get("id") or item.get("name"),
+            "name": item.get("name"),
+            "path": item.get("path") or item.get("executable_path"),
+            "supports_cdp": item.get("supports_cdp"),
+        }
+        for item in browsers
+    ]
+    suffix = ""
+    if available:
+        ids = ", ".join(str(item["id"]) for item in available if item.get("id"))
+        suffix = f" Доступные браузеры: {ids}."
+    return ToolCallResult(
+        ok=False,
+        tool_name=tool_name,
+        error_type="BROWSER_NOT_FOUND",
+        error_message=message + suffix,
+        output_data={
+            "requested_browser": requested,
+            "available_browsers": available,
+        },
+    )
 
 
 

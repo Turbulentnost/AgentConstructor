@@ -12,6 +12,8 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRuntimeState,
 )
 from agent_desktop_constructor.tools.browser_vision_tools import (
+    BrowserNavigateTool,
+    BrowserVisionWorkerProvider,
     register_browser_vision_tools,
 )
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
@@ -62,6 +64,46 @@ def test_vision_tool_normalizes_error() -> None:
 
     assert result.ok is False
     assert result.error_type == "BROWSER_CDP_ERROR"
+
+
+def test_vision_navigate_passes_explicit_profile_options(monkeypatch) -> None:
+    """browser.navigate передаёт профиль в worker только при явном указании."""
+    created: dict = {}
+
+    class ProviderWorker(FakeVisionWorker):
+        pass
+
+    def fake_worker(config):
+        created["config"] = config
+        return ProviderWorker()
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.find_readable_browser",
+        lambda name: object() if name == "chrome" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.resolve_browser_executable",
+        lambda name: "C:/Chrome/chrome.exe" if name == "chrome" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.BrowserVisionWorker",
+        fake_worker,
+    )
+    provider = BrowserVisionWorkerProvider(FakeVisionWorker())
+
+    result = BrowserNavigateTool(provider).execute(
+        {
+            "url": "https://example.com",
+            "browser_id": "chrome",
+            "use_default_profile": True,
+            "profile_name": "Profile 1",
+        }
+    )
+
+    assert result.ok is True
+    assert created["config"].use_default_profile is True
+    assert created["config"].profile_name == "Profile 1"
+    assert created["config"].user_data_dir is None
 
 
 def test_sanitize_collected_data_strips_base64() -> None:

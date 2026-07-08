@@ -18,17 +18,87 @@ from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.workers.browser_vision_worker import (
     BrowserVisionWorker,
+    DEFAULT_VISION_PORT,
 )
-from agent_desktop_constructor.workers.browser_cdp_worker import BrowserCdpError
+from agent_desktop_constructor.workers.browser_cdp_worker import (
+    BrowserCdpError,
+    BrowserLaunchConfig,
+)
+from agent_desktop_constructor.workers.browser_detect import (
+    find_readable_browser,
+    normalize_browser_id,
+    resolve_browser_executable,
+)
+
+
+def _requested_browser_name(input_data: dict) -> str:
+    """Достать browser_id/browser_name/browser из входных данных."""
+    return str(
+        input_data.get("browser_id")
+        or input_data.get("browser_name")
+        or input_data.get("browser")
+        or ""
+    ).strip()
+
+
+class BrowserVisionWorkerProvider:
+    """Выдаёт vision worker для выбранного Chromium-браузера."""
+
+    def __init__(self, default_worker: BrowserVisionWorker) -> None:
+        """Сохранить дефолтный worker и per-browser cache."""
+        self._default_worker = default_worker
+        self._by_browser: dict[str, BrowserVisionWorker] = {}
+        self._active_key: str | None = None
+
+    def get(self, input_data: dict) -> BrowserVisionWorker:
+        """Вернуть worker для browser_id/name или последний активный."""
+        name = _requested_browser_name(input_data)
+        profile_options = _profile_options(input_data)
+        if not name and not _has_explicit_profile(input_data):
+            if self._active_key:
+                return self._by_browser[self._active_key]
+            return self._default_worker
+
+        key = normalize_browser_id(name) if name else "default"
+        if name and find_readable_browser(key) is None:
+            raise BrowserCdpError(
+                f"Браузер {name!r} не поддерживает vision/CDP. Проверь доступные "
+                "Chromium-браузеры через browser.list_installed_browsers."
+            )
+        executable = resolve_browser_executable(key) if name else None
+        if name and executable is None:
+            raise BrowserCdpError(
+                f"Браузер {name!r} не найден на устройстве. Сначала вызови "
+                "browser.list_installed_browsers и выбери id из списка."
+            )
+
+        cache_key = _worker_cache_key(key, profile_options)
+        worker = self._by_browser.get(cache_key)
+        if worker is None:
+            worker = BrowserVisionWorker(
+                BrowserLaunchConfig(
+                    port=DEFAULT_VISION_PORT + 1 + len(self._by_browser),
+                    executable_path=executable,
+                    browser_id=key,
+                    **profile_options,
+                )
+            )
+            self._by_browser[cache_key] = worker
+        self._active_key = cache_key
+        return worker
 
 
 class _BaseVisionTool(BaseTool):
     """Общая логика vision-инструментов: вызвать worker и нормализовать ошибку."""
 
-    def __init__(self, definition: ToolDefinition, worker: BrowserVisionWorker) -> None:
+    def __init__(
+        self,
+        definition: ToolDefinition,
+        provider: BrowserVisionWorkerProvider,
+    ) -> None:
         """Сохранить общий vision worker."""
         super().__init__(definition)
-        self._worker = worker
+        self._provider = provider
 
     def _method_name(self) -> str:
         """Имя метода worker для этого инструмента."""
@@ -36,8 +106,9 @@ class _BaseVisionTool(BaseTool):
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Выполнить действие vision worker и вернуть скриншот/состояние."""
-        action = getattr(self._worker, self._method_name())
         try:
+            worker = self._provider.get(input_data)
+            action = getattr(worker, self._method_name())
             output_data = action(input_data)
         except BrowserCdpError as exc:
             return ToolCallResult(
@@ -68,32 +139,91 @@ _SCREENSHOT_OUTPUT = {
         "screenshot_base64": {"type": "string"},
         "viewport_width": {"type": "integer"},
         "viewport_height": {"type": "integer"},
+        "profile_mode": {"type": "string"},
+        "user_data_dir": {"type": "string"},
+        "used_default_profile": {"type": "boolean"},
+        "command_args_summary": {"type": "array"},
     },
 }
+
+_BROWSER_INPUT_PROPERTIES = {
+    "browser_id": {"type": "string"},
+    "browser_name": {"type": "string"},
+    "browser": {"type": "string"},
+    "use_default_profile": {"type": "boolean"},
+    "profile_name": {"type": "string"},
+    "user_data_dir": {"type": "string"},
+}
+
+
+def _bool_input(value: object) -> bool:
+    """Разобрать bool-флаг из JSON-like input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "да", "истина"}
+    return bool(value)
+
+
+def _profile_options(input_data: dict) -> dict[str, object]:
+    """Вытащить явные настройки профиля для vision worker."""
+    return {
+        "use_default_profile": _bool_input(input_data.get("use_default_profile")),
+        "profile_name": str(input_data.get("profile_name") or "").strip() or None,
+        "user_data_dir": str(input_data.get("user_data_dir") or "").strip() or None,
+    }
+
+
+def _has_explicit_profile(input_data: dict) -> bool:
+    """Проверить, просил ли caller не дефолтный automation worker."""
+    return any(
+        key in input_data and input_data.get(key) not in {None, "", False}
+        for key in ("use_default_profile", "profile_name", "user_data_dir")
+    )
+
+
+def _worker_cache_key(browser_id: str, profile_options: dict[str, object]) -> str:
+    """Стабильный cache key для browser/profile worker."""
+    return "|".join(
+        [
+            browser_id,
+            f"default={bool(profile_options.get('use_default_profile'))}",
+            f"profile={profile_options.get('profile_name') or ''}",
+            f"data={profile_options.get('user_data_dir') or ''}",
+        ]
+    )
 
 
 class BrowserNavigateTool(_BaseVisionTool):
     """Открыть URL в управляемой вкладке и вернуть скриншот."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.navigate."""
         super().__init__(
             ToolDefinition(
                 name="browser.navigate",
                 title="Открыть страницу в браузере (UI)",
-                description="Открывает URL в управляемой вкладке браузера и возвращает скриншот страницы.",
+                description=(
+                    "Открывает URL в управляемой вкладке браузера и возвращает "
+                    "скриншот страницы. По умолчанию использует стабильный "
+                    "automation-профиль; use_default_profile/profile_name/"
+                    "user_data_dir применяются только при явном указании."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
                 timeout_seconds=40,
                 input_schema={
                     "type": "object",
-                    "properties": {"url": {"type": "string"}},
+                    "properties": {
+                        "url": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
                     "required": ["url"],
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -103,7 +233,7 @@ class BrowserNavigateTool(_BaseVisionTool):
 class BrowserScreenshotTool(_BaseVisionTool):
     """Сделать скриншот текущей вкладки для анализа LLM."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.screenshot."""
         super().__init__(
             ToolDefinition(
@@ -116,11 +246,14 @@ class BrowserScreenshotTool(_BaseVisionTool):
                 timeout_seconds=40,
                 input_schema={
                     "type": "object",
-                    "properties": {"url": {"type": "string"}},
+                    "properties": {
+                        "url": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -130,7 +263,7 @@ class BrowserScreenshotTool(_BaseVisionTool):
 class BrowserClickTool(_BaseVisionTool):
     """Кликнуть по координатам на странице (координаты определяет LLM по скриншоту)."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.click."""
         super().__init__(
             ToolDefinition(
@@ -147,12 +280,13 @@ class BrowserClickTool(_BaseVisionTool):
                         "x": {"type": "number"},
                         "y": {"type": "number"},
                         "button": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
                     },
                     "required": ["x", "y"],
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -162,7 +296,7 @@ class BrowserClickTool(_BaseVisionTool):
 class BrowserTypeTextTool(_BaseVisionTool):
     """Ввести текст в активный элемент страницы и вернуть скриншот."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.type_text."""
         super().__init__(
             ToolDefinition(
@@ -175,12 +309,15 @@ class BrowserTypeTextTool(_BaseVisionTool):
                 timeout_seconds=40,
                 input_schema={
                     "type": "object",
-                    "properties": {"text": {"type": "string"}},
+                    "properties": {
+                        "text": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
                     "required": ["text"],
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -190,7 +327,7 @@ class BrowserTypeTextTool(_BaseVisionTool):
 class BrowserPressKeyTool(_BaseVisionTool):
     """Нажать спец-клавишу (Enter/Tab/Escape/стрелки) и вернуть скриншот."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.press_key."""
         super().__init__(
             ToolDefinition(
@@ -203,12 +340,15 @@ class BrowserPressKeyTool(_BaseVisionTool):
                 timeout_seconds=40,
                 input_schema={
                     "type": "object",
-                    "properties": {"key": {"type": "string"}},
+                    "properties": {
+                        "key": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
                     "required": ["key"],
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -218,7 +358,7 @@ class BrowserPressKeyTool(_BaseVisionTool):
 class BrowserScrollTool(_BaseVisionTool):
     """Прокрутить управляемую вкладку и вернуть скриншот."""
 
-    def __init__(self, worker: BrowserVisionWorker) -> None:
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
         """Создать инструмент browser.scroll."""
         super().__init__(
             ToolDefinition(
@@ -234,11 +374,12 @@ class BrowserScrollTool(_BaseVisionTool):
                     "properties": {
                         "direction": {"type": "string"},
                         "pixels": {"type": "integer"},
+                        **_BROWSER_INPUT_PROPERTIES,
                     },
                 },
                 output_schema=_SCREENSHOT_OUTPUT,
             ),
-            worker,
+            provider,
         )
 
     def _method_name(self) -> str:
@@ -252,14 +393,14 @@ def register_browser_vision_tools(
     worker: BrowserVisionWorker | None = None,
 ) -> None:
     """Зарегистрировать vision-инструменты браузера с общим worker."""
-    vision_worker = worker or BrowserVisionWorker()
+    provider = BrowserVisionWorkerProvider(worker or BrowserVisionWorker())
     tools = [
-        BrowserNavigateTool(vision_worker),
-        BrowserScreenshotTool(vision_worker),
-        BrowserClickTool(vision_worker),
-        BrowserTypeTextTool(vision_worker),
-        BrowserPressKeyTool(vision_worker),
-        BrowserScrollTool(vision_worker),
+        BrowserNavigateTool(provider),
+        BrowserScreenshotTool(provider),
+        BrowserClickTool(provider),
+        BrowserTypeTextTool(provider),
+        BrowserPressKeyTool(provider),
+        BrowserScrollTool(provider),
     ]
     for tool in tools:
         if skip_existing and registry.has_tool(tool.definition.name):

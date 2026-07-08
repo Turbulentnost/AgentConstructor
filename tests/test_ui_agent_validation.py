@@ -128,6 +128,58 @@ def test_agent_create_widget_has_validation_buttons(qt_app) -> None:
     assert not hasattr(widget, "preview_button")
 
 
+def test_elapsed_time_formatting() -> None:
+    """Elapsed-time helper форматирует секунды как HH:MM:SS."""
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        _format_elapsed_seconds,
+    )
+
+    assert _format_elapsed_seconds(0) == "00:00:00"
+    assert _format_elapsed_seconds(62.9) == "00:01:02"
+    assert _format_elapsed_seconds(3661) == "01:01:01"
+    assert _format_elapsed_seconds(-5) == "00:00:00"
+
+
+def test_agent_create_elapsed_timer_preserves_pause(qt_app, monkeypatch) -> None:
+    """Таймер создания сбрасывается, останавливается и продолжает накопленное время."""
+    from agent_desktop_constructor.app.ui.widgets import agent_create_widget
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+    )
+
+    current_time = {"value": 10.0}
+    monkeypatch.setattr(
+        agent_create_widget,
+        "monotonic",
+        lambda: current_time["value"],
+    )
+    widget = AgentCreateWidget(SimpleNamespace(agent_service=FakeValidationUiService()))
+
+    assert widget.elapsed_value_label is not None
+    assert widget.elapsed_value_label.text() == "00:00:00"
+
+    widget._start_elapsed_timer(reset=True)
+    current_time["value"] = 72.4
+    widget._refresh_elapsed_label()
+    assert widget.elapsed_value_label.text() == "00:01:02"
+
+    widget._pause_elapsed_timer()
+    assert not widget._elapsed_timer.isActive()
+    current_time["value"] = 100.0
+    widget._refresh_elapsed_label()
+    assert widget.elapsed_value_label.text() == "00:01:02"
+
+    widget._start_elapsed_timer(reset=False)
+    current_time["value"] = 140.0
+    widget._refresh_elapsed_label()
+    assert widget.elapsed_value_label.text() == "00:01:42"
+
+    widget._reset_elapsed_timer()
+    assert widget.elapsed_value_label.text() == "00:00:00"
+    widget.deleteLater()
+    qt_app.processEvents()
+
+
 def test_agent_create_widget_calls_validation_service(qt_app, monkeypatch) -> None:
     """Кнопка проверки вызывает только AgentApplicationService."""
     from agent_desktop_constructor.app.ui import widgets

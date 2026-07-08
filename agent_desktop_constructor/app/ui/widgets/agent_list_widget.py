@@ -239,11 +239,14 @@ class AgentListWidget(QWidget):
         self.run_button.setEnabled(False)
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setEnabled(False)
+        self.open_workspace_button = QPushButton("Открыть папку")
+        self.open_workspace_button.setEnabled(False)
         self.delete_button = QPushButton("Удалить")
         self.delete_button.setEnabled(False)
         actions = QHBoxLayout()
         actions.addWidget(self.run_button)
         actions.addWidget(self.stop_button)
+        actions.addWidget(self.open_workspace_button)
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
 
@@ -295,6 +298,7 @@ class AgentListWidget(QWidget):
         """Подключить обработчики кнопок и панели человека."""
         self.run_button.clicked.connect(self.run_current_agent)
         self.stop_button.clicked.connect(self.request_stop)
+        self.open_workspace_button.clicked.connect(self.open_selected_agent_workspace)
         self.delete_button.clicked.connect(self.delete_current_agent)
         self.human_panel.continue_requested.connect(self.continue_after_human)
         self.history_list.itemSelectionChanged.connect(self._show_selected_run_events)
@@ -361,6 +365,7 @@ class AgentListWidget(QWidget):
             agent.short_description or agent.description or agent.goal.main_goal
         )
         self.run_button.setEnabled(True)
+        self.open_workspace_button.setEnabled(True)
         self.delete_button.setEnabled(True)
         self.live_log.clear()
         self.live_log.append(
@@ -393,11 +398,27 @@ class AgentListWidget(QWidget):
             self.panel_title.setText("Выберите агента слева")
             self.panel_subtitle.clear()
             self.run_button.setEnabled(False)
+            self.open_workspace_button.setEnabled(False)
             self.delete_button.setEnabled(False)
             self.live_log.clear()
             self.history_list.clear()
             self._highlight_card(None)
         self.refresh()
+
+    def open_selected_agent_workspace(self) -> None:
+        """Открыть папку документов выбранного агента."""
+        if self._selected_agent is None:
+            show_info(self, "Агент не выбран", "Сначала выберите агента.")
+            return
+        service = self._container.agent_service
+        if not hasattr(service, "agent_workspace_dir"):
+            show_error(self, "Папка недоступна", "Сервис не поддерживает workspace агента.")
+            return
+        folder = service.agent_workspace_dir(self._selected_agent.agent_id)
+        if not folder:
+            show_error(self, "Папка недоступна", "Не удалось определить папку агента.")
+            return
+        open_local_path(folder)
 
     # ------------------------------------------------------------- history
     def _load_history(self, agent_id: str) -> None:

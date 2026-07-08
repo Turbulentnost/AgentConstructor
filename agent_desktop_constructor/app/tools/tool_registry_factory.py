@@ -14,6 +14,7 @@ from agent_desktop_constructor.tools.fake_task_control_tools import (
     register_fake_task_control_tools,
 )
 from agent_desktop_constructor.tools.onec_tools import register_onec_readonly_tools
+from agent_desktop_constructor.tools.powershell_tools import register_powershell_tools
 from agent_desktop_constructor.tools.report_tools import register_report_tools
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.tools.wait_tool import register_wait_tool
@@ -25,7 +26,7 @@ from agent_desktop_constructor.workers.subprocess_com_worker import SubprocessCo
 def build_tool_registry(config: AppConfig) -> ToolRegistry:
     """Собрать ToolRegistry без вызова инструментов и COM."""
     registry = ToolRegistry()
-    excel_resolver = AgentWorkspaceResolver(config.resolve_agent_workspaces_root())
+    workspace_resolver = AgentWorkspaceResolver(config.resolve_agent_workspaces_root())
 
     if config.run_mode == AppRunMode.FAKE:
         register_fake_task_control_tools(registry)
@@ -36,7 +37,8 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             skip_existing=True,
         )
         register_web_tools(registry, skip_existing=True)
-        register_excel_tools(registry, excel_resolver, skip_existing=True)
+        register_excel_tools(registry, workspace_resolver, skip_existing=True)
+        register_powershell_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 
@@ -53,7 +55,8 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
                 skip_existing=True,
             )
         _apply_com_timeout(registry, config)
-        register_excel_tools(registry, excel_resolver, skip_existing=True)
+        register_excel_tools(registry, workspace_resolver, skip_existing=True)
+        register_powershell_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 
@@ -66,7 +69,8 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             skip_existing=True,
         )
         register_web_tools(registry, skip_existing=True)
-        register_excel_tools(registry, excel_resolver, skip_existing=True)
+        register_excel_tools(registry, workspace_resolver, skip_existing=True)
+        register_powershell_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 

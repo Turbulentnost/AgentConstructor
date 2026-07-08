@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-NAV_WIDTH = 188
+NAV_WIDTH = 270
 SETTINGS_PAGE_INDEX = 4
 
 

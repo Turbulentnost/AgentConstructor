@@ -1304,6 +1304,59 @@
       "planner_hint": "Редактирует существующий .xlsx в папке агента. operations — список: append_row (values), set_cell (cell='B2', value), add_sheet (name), delete_sheet (name). Файл должен уже существовать (создай через excel.create_workbook)."
     },
     {
+      "name": "workspace.powershell_run",
+      "title": "PowerShell в папке агента",
+      "description": "Запускает PowerShell-команду только в личной рабочей папке агента и возвращает stdout/stderr.",
+      "category": "workspace",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Команда PowerShell для выполнения внутри workspace агента"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Таймаут выполнения, максимум 300 секунд"
+          },
+          "working_subdir": {
+            "type": "string",
+            "description": "Необязательная подпапка внутри workspace агента"
+          }
+        },
+        "required": ["command"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {"type": "boolean"},
+          "exit_code": {"type": "integer"},
+          "stdout": {"type": "string"},
+          "stderr": {"type": "string"},
+          "stdout_summary": {"type": "string"},
+          "stderr_summary": {"type": "string"},
+          "cwd": {"type": "string"},
+          "command": {"type": "string"},
+          "timed_out": {"type": "boolean"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Посмотреть список файлов в папке агента",
+        "Запустить python --version в workspace агента",
+        "Выполнить скрипт анализа файла из папки агента"
+      ],
+      "planner_hint": "Используй, когда нужно выполнить локальную PowerShell-команду над файлами в рабочей папке агента: посмотреть файлы (Get-ChildItem), прочитать небольшой текстовый файл, проверить версию утилиты или запустить скрипт. Команда всегда выполняется только в sandbox папке агента; working_subdir не может выйти наружу. Команды удаления или разрушительной перезаписи (Remove-Item/rm/del/rmdir/Clear-Content/Set-Content и aliases) требуют отдельного подтверждения человека."
+    },
+    {
       "name": "agent.wait",
       "title": "Пауза агента",
       "description": "Откладывает работу агента на заданное число секунд.",

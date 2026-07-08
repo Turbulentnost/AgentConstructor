@@ -16,10 +16,17 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
 )
 from agent_desktop_constructor.app.runtime.agent_loop_runtime import LLMAgentLoopRuntime
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
+from agent_desktop_constructor.core.models.tooling import (
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionMode,
+    ToolSideEffectLevel,
+)
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
 )
+from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
 from agent_desktop_constructor.tools.fake_task_control_tools import (
     register_fake_task_control_tools,
@@ -50,6 +57,63 @@ class OneToolPlanner:
             decision_type=SupervisorDecisionType.FINISH_SUCCESS,
             reason="Данных достаточно",
             final_message="Готово",
+        )
+
+
+class OnePowerShellFailurePlanner:
+    """Fake planner: один PowerShell tool call с ошибкой, затем завершение."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decide(self, agent_spec, runtime_state, executed_signatures=None, repeat_notes=None):
+        self.calls += 1
+        if self.calls == 1:
+            return SupervisorDecision(
+                decision_type=SupervisorDecisionType.CALL_TOOL,
+                reason="Нужно выполнить команду",
+                tool_call={
+                    "tool_name": "workspace.powershell_run",
+                    "input_data": {"command": "bad-command"},
+                    "reason": "получить stdout/stderr команды",
+                },
+            )
+        return SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="Данные команды видны",
+            final_message="Готово",
+        )
+
+
+class FailingPowerShellTool(BaseTool):
+    """Fake workspace.powershell_run, возвращающий ok=False с stdout/stderr."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="workspace.powershell_run",
+                title="PowerShell",
+                description="Fake PowerShell",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.LOCAL,
+                requires_human_approval=False,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        return ToolCallResult(
+            ok=False,
+            tool_name=self.definition.name,
+            output_data={
+                "stdout": "partial output",
+                "stderr": "command failed",
+                "stdout_summary": "partial output",
+                "stderr_summary": "command failed",
+            },
+            error_type="COMMAND_FAILED",
+            error_message="Команда завершилась с ошибкой",
         )
 
 
@@ -138,3 +202,26 @@ def test_runtime_persists_context_snapshot_after_tool_call() -> None:
     snapshot = state.variables["context_snapshot"]
     assert snapshot["usage"]["total_chars"] > 0
     assert snapshot["sections"]["tool_results"]
+
+
+def test_runtime_persists_failed_command_output_for_next_prompt() -> None:
+    """LLM runtime сохраняет stdout/stderr даже для failed PowerShell command."""
+    registry = ToolRegistry()
+    registry.register(FailingPowerShellTool())
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=ToolGateway(registry),
+        agent_loop_planner=OnePowerShellFailurePlanner(),
+        tools_catalog=load_tools_catalog(),
+        tool_registry=registry,
+    )
+    agent_spec = AgentBuilder().build_from_request("помоги структурировать информацию")
+
+    state = runtime.run(agent_spec, {"user_request": "запусти команду"})
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert "partial output" in json.dumps(
+        state.variables["tool_outputs"], ensure_ascii=False
+    )
+    assert "command failed" in json.dumps(
+        state.variables["context_snapshot"], ensure_ascii=False
+    )

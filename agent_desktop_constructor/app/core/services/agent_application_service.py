@@ -90,6 +90,7 @@ class AgentApplicationService:
         else:
             self._memory_agents[agent_spec.agent_id] = agent_spec
 
+        self._ensure_agent_workspace(agent_spec.agent_id)
         self._add_audit(
             action="agent.saved",
             details={"agent_id": agent_spec.agent_id, "name": agent_spec.name},
@@ -139,6 +140,11 @@ class AgentApplicationService:
         if self._workspace_resolver is None:
             return None
         return str(self._workspace_resolver.for_agent(agent_id).directory)
+
+    def _ensure_agent_workspace(self, agent_id: str) -> None:
+        """Создать рабочую папку агента, если workspace resolver доступен."""
+        if self._workspace_resolver is not None:
+            self._workspace_resolver.for_agent(agent_id)
 
     def delete_agent(self, agent_id: str) -> None:
         """Удалить сохранённого агента по agent_id."""

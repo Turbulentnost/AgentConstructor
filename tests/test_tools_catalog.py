@@ -49,6 +49,17 @@ def test_catalog_contains_email_send() -> None:
     assert catalog.has_tool("email.send")
 
 
+def test_catalog_contains_workspace_powershell_run() -> None:
+    """Каталог содержит workspace.powershell_run для команд в папке агента."""
+    catalog = load_tools_catalog()
+
+    tool = catalog.get_tool("workspace.powershell_run")
+
+    assert tool.side_effect_level == ToolSideEffectLevel.CREATE_DRAFT
+    assert tool.requires_human_approval is False
+    assert "command" in tool.input_schema["properties"]
+
+
 def test_catalog_contains_all_agent_builder_tools() -> None:
     """Все инструменты, которые использует AgentBuilder, есть в каталоге."""
     catalog = load_tools_catalog()

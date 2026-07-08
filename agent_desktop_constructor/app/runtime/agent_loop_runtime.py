@@ -636,6 +636,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
             return
 
+        self._record_tool_result(state, input_data, result)
+        if result.output_data is not None:
+            state.variables.setdefault("tool_outputs", {})[tool_name] = result.output_data
         self._add_run_event(
             state,
             AgentRunEventType.TOOL_CALL_FAILED,

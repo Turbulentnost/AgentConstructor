@@ -11,9 +11,8 @@
 
 Порядок fallback (по умолчанию):
 
-1. **Codex** (OpenAI)
-2. **ChatGPT** (OpenAI)
-3. **LM Studio** (локальный сервер)
+1. **Chat-GPT 5.5** (OpenAI, через ваш `OPENAI_API_KEY`)
+2. **LM Studio** (`openai/gpt-oss-120b`)
 
 Порядок и параметры backend-ов настраиваются через переменные окружения — код менять не нужно.
 
@@ -29,11 +28,14 @@ pip install -r llm_proxy_service/requirements.txt
 ключи и модели. Ключевые переменные:
 
 - `LLM_PROXY_HOST` / `LLM_PROXY_PORT` — где слушать (по умолчанию `0.0.0.0:8080`).
-- `LLM_PROXY_CHAIN` — порядок backend-ов, по умолчанию `codex,chatgpt,lmstudio`.
+- `LLM_PROXY_CHAIN` — порядок backend-ов, по умолчанию `chatgpt,lmstudio`.
 - `LLM_PROXY_<NAME>_BASE_URL` / `_MODEL` / `_API_KEY` / `_API_KEY_ENV` / `_STYLE` / `_TIMEOUT_SECONDS`.
   - `_STYLE`: `openai` (chat/completions) или `anthropic` (messages).
+- `LLM_PROXY_<NAME>_DISPLAY_NAME` — человекочитаемое имя модели для UI.
+- `LLM_PROXY_<NAME>_SUPPORTS_REASONING=true` — добавить в `/v1/models`
+  selectable-варианты `<name>:internal` и `<name>:reason`.
 
-> Модели `codex`/`chatgpt` по умолчанию (`gpt-5-codex`, `gpt-4o`) нужно привести
+> Модель `chatgpt` по умолчанию (`gpt-5.5`) нужно привести
 > к реально доступным в вашем OpenAI-аккаунте.
 
 ## Запуск (на машине с VPN, IP 192.168.2.135)
@@ -52,6 +54,9 @@ curl http://192.168.2.135:8080/health
 
 - `POST /v1/chat/completions` — OpenAI-compatible chat completions. Ответ всегда в
   OpenAI-формате (`choices[0].message.content`), независимо от сработавшего backend-а.
+- `GET /v1/models` — список моделей для селекта в OpenAI-compatible чате.
+  По умолчанию возвращает `chatgpt`, `lmstudio`; для reasoning-моделей
+  дополнительно возвращает `<name>:internal` и `<name>:reason`.
 - `GET /health` — статус и текущая цепочка backend-ов.
 
 ## Подключение приложения

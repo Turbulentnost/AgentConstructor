@@ -15,26 +15,24 @@ def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(key, raising=False)
 
 
-def test_default_chain_order_is_codex_chatgpt_lmstudio(
+def test_default_chain_order_is_chatgpt_lmstudio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """По умолчанию цепочка идёт Codex(Sonnet) -> ChatGPT -> LM Studio."""
+    """По умолчанию цепочка идёт Chat-GPT 5.5 -> LM Studio."""
     _clear_proxy_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_API_KEY_CLAUDE", "sk-ant-test")
 
     config = load_proxy_config()
 
     names = [backend.name for backend in config.chain]
-    assert names == ["codex", "chatgpt", "lmstudio"]
-    # Слот codex настроен на Claude Sonnet (anthropic style).
-    assert config.chain[0].style == "anthropic"
-    assert config.chain[0].base_url == "https://api.anthropic.com"
-    assert config.chain[0].model == "claude-sonnet-4-6"
-    assert config.chain[0].api_key == "sk-ant-test"
-    assert config.chain[1].api_key == "sk-test"
-    assert config.chain[2].api_key is None
-    assert config.chain[2].base_url == "http://192.168.1.157:1234"
+    assert names == ["chatgpt", "lmstudio"]
+    assert config.chain[0].style == "openai"
+    assert config.chain[0].base_url == "https://api.openai.com"
+    assert config.chain[0].model == "gpt-5.5"
+    assert config.chain[0].api_key == "sk-test"
+    assert config.chain[0].supports_reasoning is True
+    assert config.chain[1].api_key is None
+    assert config.chain[1].base_url == "http://192.168.1.157:1234"
 
 
 def test_chain_order_and_models_are_configurable(
@@ -58,9 +56,9 @@ def test_chain_order_and_models_are_configurable(
 def test_app_config_routes_through_proxy_when_set() -> None:
     """При заданном llm_proxy_url to_llm_config уводит запросы на прокси."""
     config = AppConfig(
-        llm_provider="anthropic",
-        llm_base_url="https://api.anthropic.com",
-        llm_model_name="claude-sonnet-4-6",
+        llm_provider="openai_compatible",
+        llm_base_url="https://api.openai.com",
+        llm_model_name="chatgpt:internal",
         llm_api_key="sk-secret",
         llm_proxy_url="http://192.168.2.135:8080",
     )
@@ -70,20 +68,20 @@ def test_app_config_routes_through_proxy_when_set() -> None:
     assert llm_config.provider == "openai_compatible"
     assert llm_config.base_url == "http://192.168.2.135:8080"
     assert llm_config.api_key is None
-    assert llm_config.model_name == "claude-sonnet-4-6"
+    assert llm_config.model_name == "chatgpt:internal"
 
 
 def test_app_config_direct_when_proxy_absent() -> None:
     """Без llm_proxy_url поведение прежнее: напрямую к провайдеру."""
     config = AppConfig(
-        llm_provider="anthropic",
-        llm_base_url="https://api.anthropic.com",
-        llm_model_name="claude-sonnet-4-6",
+        llm_provider="openai_compatible",
+        llm_base_url="https://api.openai.com",
+        llm_model_name="gpt-5.5",
         llm_api_key="sk-secret",
     )
 
     llm_config = config.to_llm_config()
 
-    assert llm_config.provider == "anthropic"
-    assert llm_config.base_url == "https://api.anthropic.com"
+    assert llm_config.provider == "openai_compatible"
+    assert llm_config.base_url == "https://api.openai.com"
     assert llm_config.api_key == "sk-secret"

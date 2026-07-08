@@ -49,6 +49,8 @@ async def _call_openai(
     url = backend.base_url.rstrip("/") + "/v1/chat/completions"
     payload = dict(body)
     payload["model"] = backend.model
+    _adapt_response_format(payload, backend)
+    _apply_reasoning_mode(payload, backend)
 
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if backend.api_key:
@@ -82,11 +84,11 @@ async def _call_openai_responses(
 ) -> dict[str, Any]:
     """Проксировать запрос в OpenAI Responses API (/v1/responses).
 
-    Нужно для моделей (например gpt-5-codex), которые не поддерживаются
+    Нужно для reasoning-моделей, которые не поддерживаются
     endpoint-ом chat/completions. Ответ приводится к OpenAI chat-формату.
     """
     url = backend.base_url.rstrip("/") + "/v1/responses"
-    payload = _openai_to_responses_payload(body, backend.model)
+    payload = _openai_to_responses_payload(body, backend)
 
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if backend.api_key:
@@ -120,7 +122,7 @@ async def _call_anthropic(
 ) -> dict[str, Any]:
     """Проксировать запрос в Anthropic Messages API и вернуть OpenAI-формат."""
     url = backend.base_url.rstrip("/") + "/v1/messages"
-    payload = _openai_to_anthropic_payload(body, backend.model)
+    payload = _openai_to_anthropic_payload(body, backend)
 
     headers = {
         "Content-Type": "application/json",
@@ -180,7 +182,34 @@ def _ensure_openai_content(data: dict[str, Any]) -> None:
         raise UpstreamError("upstream вернул content не строкой")
 
 
-def _openai_to_responses_payload(body: dict[str, Any], model: str) -> dict[str, Any]:
+def _adapt_response_format(payload: dict[str, Any], backend: BackendConfig) -> None:
+    """Адаптировать OpenAI response_format под особенности upstream backend-а.
+
+    LM Studio отклоняет OpenAI-формат {"type": "json_object"} и принимает только
+    "json_schema" или "text". Для JSON-планов сохраняем структурный режим,
+    преобразуя json_object в минимальную object-схему.
+    """
+    response_format = payload.get("response_format")
+    if not isinstance(response_format, dict):
+        return
+    if response_format.get("type") != "json_object":
+        return
+    if backend.name != "lmstudio":
+        return
+    payload["response_format"] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agent_constructor_json_object",
+            "schema": {"type": "object"},
+            "strict": False,
+        },
+    }
+
+
+def _openai_to_responses_payload(
+    body: dict[str, Any],
+    backend: BackendConfig,
+) -> dict[str, Any]:
     """Преобразовать OpenAI chat-запрос в payload OpenAI Responses API."""
     messages = body.get("messages") or []
     input_items: list[dict[str, Any]] = []
@@ -191,16 +220,24 @@ def _openai_to_responses_payload(body: dict[str, Any], model: str) -> dict[str, 
             {"role": role, "content": _openai_content_to_responses(role, content)}
         )
 
-    # temperature намеренно не отправляем: reasoning-модели (gpt-5-codex, o-серия)
+    # temperature намеренно не отправляем: reasoning-модели
     # отклоняют её с HTTP 400 "Unsupported parameter: 'temperature'".
     payload: dict[str, Any] = {
-        "model": model,
+        "model": backend.model,
         "input": input_items,
     }
+    _apply_reasoning_mode(payload, backend)
     max_tokens = body.get("max_tokens")
     if max_tokens:
         payload["max_output_tokens"] = max_tokens
     return payload
+
+
+def _apply_reasoning_mode(payload: dict[str, Any], backend: BackendConfig) -> None:
+    """Добавить reasoning-режим, если пользователь выбрал его в селекте модели."""
+    if backend.reasoning_mode is None:
+        return
+    payload["reasoning"] = {"mode": backend.reasoning_mode}
 
 
 def _openai_content_to_responses(role: Any, content: Any) -> Any:
@@ -253,7 +290,10 @@ def _extract_responses_text(data: dict[str, Any]) -> str:
     return text
 
 
-def _openai_to_anthropic_payload(body: dict[str, Any], model: str) -> dict[str, Any]:
+def _openai_to_anthropic_payload(
+    body: dict[str, Any],
+    backend: BackendConfig,
+) -> dict[str, Any]:
     """Преобразовать OpenAI chat-запрос в Anthropic Messages payload."""
     messages = body.get("messages") or []
     system_parts: list[str] = []
@@ -270,11 +310,20 @@ def _openai_to_anthropic_payload(body: dict[str, Any], model: str) -> dict[str, 
         )
 
     payload: dict[str, Any] = {
-        "model": model,
+        "model": backend.model,
         "max_tokens": body.get("max_tokens") or 4096,
         "temperature": body.get("temperature", 0.2),
         "messages": conversation,
     }
+    if backend.reasoning_mode == "reason":
+        # Anthropic extended thinking: включаем только для явного selectable
+        # варианта `:reason`. Для `:internal` оставляем обычный скрытый режим.
+        max_tokens = int(payload["max_tokens"])
+        payload["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": max(1024, min(2048, max_tokens // 2)),
+        }
+        payload.pop("temperature", None)
     if system_parts:
         system_prompt = "\n\n".join(part for part in system_parts if part)
         response_format = body.get("response_format")

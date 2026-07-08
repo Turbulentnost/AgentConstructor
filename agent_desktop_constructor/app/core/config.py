@@ -18,7 +18,7 @@ TRUE_ENV_VALUES = {"1", "true", "yes", "да"}
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com"
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.5"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -78,7 +78,7 @@ class AppConfig(BaseModel):
 
         Если задан ``llm_proxy_url``, все запросы идут не напрямую к LLM, а на
         наш прокси-сервис (OpenAI-compatible). Прокси сам держит VPN и ключи и
-        сам делает fallback по цепочке Codex -> ChatGPT -> LM Studio, поэтому
+        сам делает fallback по цепочке Chat-GPT 5.5 -> LM Studio, поэтому
         провайдер принудительно становится ``openai_compatible`` без api_key.
         """
         proxy_url = (self.llm_proxy_url or "").strip()
@@ -155,26 +155,19 @@ def load_app_config_from_env() -> AppConfig:
 
 
 def _apply_llm_provider_defaults(values: dict[str, Any]) -> None:
-    """Выбрать LLM-провайдера по ключам из окружения: Claude -> OpenAI -> LM Studio.
+    """Выбрать LLM-провайдера по ключам из окружения: OpenAI -> LM Studio.
 
     Явные AGENT_APP_LLM_* переменные имеют приоритет. Если провайдер не задан
-    явно, но есть ключ Claude или OpenAI, он используется автоматически, а
-    LLM-планировщик включается. При отсутствии ключей остаётся локальный
+    явно, но есть ключ OpenAI, он используется автоматически, а
+    LLM-планировщик включается. При отсутствии ключа остаётся локальный
     LM Studio (значения по умолчанию AppConfig).
     """
     if "llm_provider" in values:
         return
 
-    claude_key = os.environ.get("OPENAI_API_KEY_CLAUDE")
     openai_key = os.environ.get("OPENAI_API_KEY")
 
-    if claude_key:
-        values.setdefault("llm_provider", "anthropic")
-        values.setdefault("llm_base_url", DEFAULT_ANTHROPIC_BASE_URL)
-        values.setdefault("llm_model_name", DEFAULT_ANTHROPIC_MODEL)
-        values.setdefault("llm_api_key", claude_key)
-        values.setdefault("use_llm_planner", True)
-    elif openai_key:
+    if openai_key:
         values.setdefault("llm_provider", "openai_compatible")
         values.setdefault("llm_base_url", DEFAULT_OPENAI_BASE_URL)
         values.setdefault("llm_model_name", DEFAULT_OPENAI_MODEL)

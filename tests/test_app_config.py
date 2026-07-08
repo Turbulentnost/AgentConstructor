@@ -75,22 +75,22 @@ def test_invalid_run_mode_raises_clear_error(monkeypatch: pytest.MonkeyPatch) ->
         load_app_config_from_env()
 
 
-def test_claude_key_selects_anthropic_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """При наличии ключа Claude выбирается anthropic и включается planner."""
+def test_claude_key_alone_keeps_lm_studio_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Claude-ключ больше не выбирается автоматически."""
     _clear_llm_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY_CLAUDE", "sk-ant-test")
 
     config = load_app_config_from_env()
 
-    assert config.llm_provider == "anthropic"
-    assert config.llm_base_url == "https://api.anthropic.com"
-    assert config.llm_model_name == "claude-sonnet-4-6"
-    assert config.llm_api_key == "sk-ant-test"
-    assert config.use_llm_planner is True
+    assert config.llm_provider == "openai_compatible"
+    assert config.llm_base_url == "http://192.168.1.157:1234"
+    assert config.llm_model_name == "openai/gpt-oss-120b"
+    assert config.llm_api_key is None
+    assert config.use_llm_planner is False
 
 
 def test_openai_key_selects_openai_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Без Claude, но с OpenAI-ключом выбирается openai_compatible."""
+    """С OpenAI-ключом выбирается openai_compatible."""
     _clear_llm_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
 
@@ -98,7 +98,7 @@ def test_openai_key_selects_openai_provider(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert config.llm_provider == "openai_compatible"
     assert config.llm_base_url == "https://api.openai.com"
-    assert config.llm_model_name == "gpt-4o-mini"
+    assert config.llm_model_name == "gpt-5.5"
     assert config.llm_api_key == "sk-openai-test"
     assert config.use_llm_planner is True
 

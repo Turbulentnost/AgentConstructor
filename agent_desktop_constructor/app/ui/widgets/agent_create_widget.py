@@ -1,4 +1,4 @@
-"""Страница создания агента в стиле пошагового workflow (Cursor/Codex).
+"""Страница создания агента в стиле пошагового workflow.
 
 UI-слой не меняет внутреннюю логику конструктора: используются те же вызовы
 ``agent_service`` (build_preview / validate_agent / create_validate_and_run_once /
@@ -8,8 +8,11 @@ save_agent / create_agent_from_request). Экран лишь показывае�
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from threading import Event
 from typing import Callable
+from urllib import error, request
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -24,6 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -43,7 +47,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent_desktop_constructor.app.core.bootstrap import ApplicationContainer
+from agent_desktop_constructor.app.core.bootstrap import (
+    ApplicationContainer,
+    build_application_container,
+)
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
     collect_produced_files,
@@ -61,6 +68,46 @@ EXAMPLE_REQUEST = (
     "Собери мои поручения из почты Outlook и из 1С "
     "и подготовь отчёт с рисками просрочки"
 )
+
+
+@dataclass(frozen=True)
+class UiModelOption:
+    """Модель для селекта UI."""
+
+    model_id: str
+    label: str
+    supports_reasoning: bool = False
+    modes: tuple[str, ...] = ()
+
+
+DEFAULT_UI_MODEL_OPTIONS: tuple[UiModelOption, ...] = (
+    UiModelOption(
+        "chatgpt",
+        "Chat-GPT 5.5",
+        supports_reasoning=True,
+        modes=("internal", "reason"),
+    ),
+    UiModelOption("lmstudio", "LM Studio (gpt-oss-120b)"),
+)
+
+
+def _split_model_mode(model_id: str) -> tuple[str, str | None]:
+    """Разобрать selectable id вида model:internal/model:reason."""
+    base, sep, mode = model_id.partition(":")
+    if sep and mode in {"internal", "reason"}:
+        return base, mode
+    return model_id, None
+
+
+def _merge_default_model_options(options: list[UiModelOption]) -> list[UiModelOption]:
+    """Гарантировать, что в селекте всегда есть Chat-GPT 5.5 и LM Studio."""
+    merged: dict[str, UiModelOption] = {
+        option.model_id: option for option in DEFAULT_UI_MODEL_OPTIONS
+    }
+    for option in options:
+        if option.model_id in merged:
+            merged[option.model_id] = option
+    return [merged["chatgpt"], merged["lmstudio"]]
 
 # Порядок стадий пошаговой ленты выполнения.
 STAGE_REQUEST = "request"
@@ -682,6 +729,7 @@ class AgentCreateWidget(QWidget):
         self._paused_state: object | None = None
         self._human_radios: list[tuple[QRadioButton, str | None]] = []
         self._attachment_paths: list[str] = []
+        self._model_options: list[UiModelOption] = []
 
         self._build_ui()
         self._connect_signals()
@@ -728,6 +776,41 @@ class AgentCreateWidget(QWidget):
             "selection-background-color:#2f6bff;"
         )
         layout.addWidget(self.request_edit)
+
+        model_row = QHBoxLayout()
+        model_row.setSpacing(10)
+        model_label = QLabel("Модель")
+        model_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumWidth(240)
+        self.model_combo.setStyleSheet(
+            "QComboBox { background:#161f31; color:#e8eefb; border:1px solid #263247;"
+            "border-radius:8px; padding:7px 10px; font-size:12px; }"
+            "QComboBox:disabled { color:#6f7788; background:#121825; }"
+            "QComboBox QAbstractItemView { background:#121825; color:#e8eefb;"
+            "selection-background-color:#263b66; border:1px solid #263247; }"
+        )
+        reason_label = QLabel("Reason")
+        reason_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
+        self.reason_combo = QComboBox()
+        self.reason_combo.setMinimumWidth(130)
+        self.reason_combo.setStyleSheet(self.model_combo.styleSheet())
+        self.reason_combo.addItem("internal", "internal")
+        self.reason_combo.addItem("reason", "reason")
+        self.refresh_models_button = QPushButton("Обновить")
+        self.refresh_models_button.setStyleSheet(
+            "QPushButton { background:#232733; color:#d9e2f2; border:1px solid #333846;"
+            "border-radius:8px; padding:7px 12px; font-size:12px; }"
+            "QPushButton:hover { border:1px solid #3d6fd6; }"
+        )
+        self.refresh_models_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        model_row.addWidget(model_label)
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(reason_label)
+        model_row.addWidget(self.reason_combo)
+        model_row.addWidget(self.refresh_models_button)
+        layout.addLayout(model_row)
+        self._reload_model_options()
 
         attach_row = QHBoxLayout()
         self.attach_button = QPushButton("📎 Прикрепить файл")
@@ -1039,12 +1122,140 @@ class AgentCreateWidget(QWidget):
         self.reset_button.clicked.connect(self.clear)
         self.stop_button.clicked.connect(self.request_stop)
         self.dev_toggle.toggled.connect(self._toggle_dev)
+        self.refresh_models_button.clicked.connect(self._reload_model_options)
+        self.model_combo.currentIndexChanged.connect(self._sync_reason_combo)
 
     def _toggle_dev(self, checked: bool) -> None:
         """Показать или скрыть раздел разработчика."""
         self._dev_container.setVisible(checked)
         arrow = "▾" if checked else "▸"
         self.dev_toggle.setText(f"{arrow} Для разработчика (JSON и таблицы)")
+
+    def _reload_model_options(self) -> None:
+        """Загрузить модели для селекта из LLM-прокси или из текущих настроек."""
+        config = getattr(self._container, "config", None)
+        current_model = getattr(config, "llm_model_name", "chatgpt:internal")
+        options = _merge_default_model_options(self._load_proxy_model_options())
+        self._model_options = options
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        for option in options:
+            self.model_combo.addItem(option.label, option.model_id)
+        base_model, mode = _split_model_mode(current_model)
+        selected_index = 0
+        for index, option in enumerate(options):
+            if option.model_id == base_model or option.model_id == current_model:
+                selected_index = index
+                break
+        self.model_combo.setCurrentIndex(selected_index)
+        self.model_combo.blockSignals(False)
+        self._sync_reason_combo()
+        if mode:
+            reason_index = self.reason_combo.findData(mode)
+            if reason_index >= 0:
+                self.reason_combo.setCurrentIndex(reason_index)
+
+    def _load_proxy_model_options(self) -> list[UiModelOption]:
+        """Получить модели через /v1/models, если настроен LLM proxy URL."""
+        config = getattr(self._container, "config", None)
+        proxy_url = (getattr(config, "llm_proxy_url", None) or "").strip()
+        if not proxy_url:
+            return []
+        url = proxy_url.rstrip("/") + "/v1/models"
+        try:
+            with request.urlopen(url, timeout=3) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, ValueError, error.URLError):
+            return []
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+
+        by_base: dict[str, dict] = {}
+        order: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id:
+                continue
+            base_model, mode = _split_model_mode(model_id)
+            if base_model not in {"chatgpt", "lmstudio"}:
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            entry = by_base.setdefault(
+                base_model,
+                {
+                    "label": metadata.get("display_name") or base_model,
+                    "supports_reasoning": bool(metadata.get("supports_reasoning")),
+                    "modes": set(),
+                },
+            )
+            if base_model not in order:
+                order.append(base_model)
+            if mode:
+                entry["modes"].add(mode)
+
+        options: list[UiModelOption] = []
+        for base_model in order:
+            entry = by_base[base_model]
+            modes = tuple(mode for mode in ("internal", "reason") if mode in entry["modes"])
+            options.append(
+                UiModelOption(
+                    model_id=base_model,
+                    label=str(entry["label"]),
+                    supports_reasoning=bool(entry["supports_reasoning"]) or bool(modes),
+                    modes=modes,
+                )
+            )
+        return options
+
+    def _current_model_option(self) -> UiModelOption | None:
+        """Вернуть выбранную base-модель."""
+        index = self.model_combo.currentIndex()
+        if index < 0 or index >= len(self._model_options):
+            return None
+        return self._model_options[index]
+
+    def _sync_reason_combo(self) -> None:
+        """Включить/выключить селект reason в зависимости от выбранной модели."""
+        option = self._current_model_option()
+        supports = bool(option and option.supports_reasoning)
+        self.reason_combo.setEnabled(supports)
+        if not supports:
+            self.reason_combo.setToolTip("Эта модель не объявила поддержку reason.")
+            return
+        self.reason_combo.setToolTip("Режим reasoning для выбранной модели.")
+        mode = self.reason_combo.currentData()
+        allowed = set(option.modes or ("internal", "reason"))
+        if mode not in allowed:
+            self.reason_combo.setCurrentIndex(0)
+
+    def _selected_model_id(self) -> str:
+        """Сформировать model id для LLM config из селектов UI."""
+        option = self._current_model_option()
+        if option is None:
+            config = getattr(self._container, "config", None)
+            return getattr(config, "llm_model_name", "chatgpt:internal")
+        if option.supports_reasoning:
+            mode = str(self.reason_combo.currentData() or "internal")
+            return f"{option.model_id}:{mode}"
+        return option.model_id
+
+    def _ensure_selected_model_container(self) -> None:
+        """Пересобрать container, если в UI выбрана другая LLM-модель."""
+        config = getattr(self._container, "config", None)
+        if config is None:
+            return
+        selected_model = self._selected_model_id()
+        if selected_model == config.llm_model_name:
+            return
+        self._append_log(f"⚙ Переключаю LLM-модель на {selected_model}…")
+        new_config = config.model_copy(
+            update={"llm_model_name": selected_model}
+        )
+        self._container = build_application_container(new_config)
+        self._preview_agent = None
 
     # ---------------------------------------------------- background flow
 
@@ -1128,6 +1339,7 @@ class AgentCreateWidget(QWidget):
 
         self._reset_stages()
         self.live_log.clear()
+        self._ensure_selected_model_container()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
@@ -1221,6 +1433,8 @@ class AgentCreateWidget(QWidget):
             self._reset_stages()
             self._set_stage(STAGE_REQUEST, "passed", _short(request), request)
         self.live_log.clear()
+        self._ensure_selected_model_container()
+        existing_spec = self._preview_agent
         self._set_running(STAGE_TRIAL)
         self.select_stage(STAGE_TRIAL)
 
@@ -1272,6 +1486,7 @@ class AgentCreateWidget(QWidget):
 
         self._reset_stages()
         self.live_log.clear()
+        self._ensure_selected_model_container()
         self.files_label.setVisible(False)
         self._cancel_event.clear()
         self._last_request = user_request
@@ -1488,6 +1703,7 @@ class AgentCreateWidget(QWidget):
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
 
+        self._ensure_selected_model_container()
         service = self._container.agent_service
         try:
             if self._preview_agent is not None:

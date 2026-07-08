@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -31,6 +33,7 @@ def _backend(name: str) -> BackendConfig:
         model=name,
         api_key=None,
         timeout_seconds=5.0,
+        display_name=name,
     )
 
 
@@ -39,7 +42,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, behaviour: dict[str, object]):
     config = ProxyConfig(
         host="127.0.0.1",
         port=8080,
-        chain=[_backend("codex"), _backend("chatgpt"), _backend("lmstudio")],
+        chain=[_backend("chatgpt"), _backend("lmstudio")],
     )
 
     async def fake_call_backend(client, backend, body):
@@ -61,12 +64,11 @@ def _payload() -> dict:
 
 
 def test_uses_first_backend_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Если Codex доступен, ответ приходит от него без обращения к остальным."""
+    """Если ChatGPT доступен, ответ приходит от него без обращения к остальным."""
     client = _make_client(
         monkeypatch,
         {
-            "codex": "ответ codex",
-            "chatgpt": UpstreamError("не должно вызываться"),
+            "chatgpt": "ответ chatgpt",
             "lmstudio": UpstreamError("не должно вызываться"),
         },
     )
@@ -76,18 +78,17 @@ def test_uses_first_backend_when_available(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert response.status_code == 200
     body = response.json()
-    assert body["choices"][0]["message"]["content"] == "ответ codex"
-    assert body["model"] == "codex"
+    assert body["choices"][0]["message"]["content"] == "ответ chatgpt"
+    assert body["model"] == "chatgpt"
 
 
 def test_falls_back_to_lmstudio_when_openai_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex и ChatGPT недоступны -> ответ берётся из LM Studio."""
+    """ChatGPT недоступен -> ответ берётся из LM Studio."""
     client = _make_client(
         monkeypatch,
         {
-            "codex": UpstreamError("codex 500"),
             "chatgpt": UpstreamError("chatgpt timeout"),
             "lmstudio": "локальный ответ",
         },
@@ -100,6 +101,55 @@ def test_falls_back_to_lmstudio_when_openai_down(
     assert response.json()["choices"][0]["message"]["content"] == "локальный ответ"
 
 
+def test_models_endpoint_returns_selectable_models() -> None:
+    """Селект в OpenAI-compatible чате получает актуальные модели прокси."""
+    config = ProxyConfig(
+        host="127.0.0.1",
+        port=8080,
+        chain=[
+            BackendConfig(
+                name="chatgpt",
+                style="openai",
+                base_url="https://api.openai.com",
+                model="gpt-5.5",
+                api_key="sk-test",
+                timeout_seconds=5.0,
+                display_name="Chat-GPT 5.5",
+                supports_reasoning=True,
+            ),
+            _backend("lmstudio"),
+        ],
+    )
+
+    with TestClient(proxy_app.create_app(config)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    assert ids == ["chatgpt", "chatgpt:internal", "chatgpt:reason", "lmstudio"]
+
+
+def test_selected_model_routes_to_that_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если в чате выбрали модель, прокси использует именно её backend."""
+    client = _make_client(
+        monkeypatch,
+        {
+            "chatgpt": "ответ chatgpt",
+            "lmstudio": UpstreamError("не должен вызываться"),
+        },
+    )
+    payload = _payload()
+    payload["model"] = "chatgpt"
+
+    with client:
+        response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ответ chatgpt"
+
+
 def test_returns_502_when_all_backends_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -107,7 +157,6 @@ def test_returns_502_when_all_backends_fail(
     client = _make_client(
         monkeypatch,
         {
-            "codex": UpstreamError("codex down"),
             "chatgpt": UpstreamError("chatgpt down"),
             "lmstudio": UpstreamError("lmstudio down"),
         },
@@ -118,12 +167,12 @@ def test_returns_502_when_all_backends_fail(
 
     assert response.status_code == 502
     message = response.json()["error"]["message"]
-    assert "codex down" in message
+    assert "chatgpt down" in message
     assert "lmstudio down" in message
 
 
 def test_responses_style_calls_v1_responses_and_parses_output() -> None:
-    """codex-стиль обращается к /v1/responses и приводит ответ к OpenAI-формату."""
+    """responses-стиль обращается к /v1/responses и приводит ответ к OpenAI-формату."""
     import asyncio
 
     captured: dict = {}
@@ -136,19 +185,20 @@ def test_responses_style_calls_v1_responses_and_parses_output() -> None:
                 "output": [
                     {
                         "type": "message",
-                        "content": [{"type": "output_text", "text": "ответ codex"}],
+                        "content": [{"type": "output_text", "text": "ответ responses"}],
                     }
                 ]
             },
         )
 
     backend = BackendConfig(
-        name="codex",
+        name="openai_reasoning",
         style=STYLE_OPENAI_RESPONSES,
         base_url="https://api.openai.com",
-        model="gpt-5-codex",
+        model="gpt-5.5",
         api_key="sk-test",
         timeout_seconds=5.0,
+        display_name="GPT 5.5",
     )
 
     async def run() -> dict:
@@ -163,4 +213,91 @@ def test_responses_style_calls_v1_responses_and_parses_output() -> None:
     result = asyncio.run(run())
 
     assert captured["url"].endswith("/v1/responses")
-    assert result["choices"][0]["message"]["content"] == "ответ codex"
+    assert result["choices"][0]["message"]["content"] == "ответ responses"
+
+
+def test_openai_reasoning_variant_adds_reasoning_payload() -> None:
+    """Выбранный режим :reason уходит в OpenAI-compatible payload."""
+    import asyncio
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json = request.read().decode("utf-8")
+        assert '"reasoning":{"mode":"reason"}' in json.replace(" ", "")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}}
+                ]
+            },
+        )
+
+    backend = BackendConfig(
+        name="chatgpt",
+        style="openai",
+        base_url="https://api.openai.com",
+        model="gpt-5.5",
+        api_key="sk-test",
+        timeout_seconds=5.0,
+        display_name="GPT 5.5",
+        supports_reasoning=True,
+    ).with_reasoning("reason")
+
+    async def run() -> dict:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await call_backend(client, backend, _payload())
+
+    result = asyncio.run(run())
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+
+
+def test_lmstudio_json_object_response_format_converts_to_json_schema() -> None:
+    """LM Studio не принимает json_object, поэтому прокси шлёт json_schema."""
+    import asyncio
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.read().decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "{\"ok\": true}"}}
+                ]
+            },
+        )
+
+    backend = BackendConfig(
+        name="lmstudio",
+        style="openai",
+        base_url="http://127.0.0.1:1234",
+        model="openai/gpt-oss-120b",
+        api_key=None,
+        timeout_seconds=5.0,
+        display_name="LM Studio (gpt-oss-120b)",
+    )
+
+    async def run() -> dict:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await call_backend(
+                client,
+                backend,
+                {
+                    "messages": [{"role": "user", "content": "верни json"}],
+                    "response_format": {"type": "json_object"},
+                },
+            )
+
+    result = asyncio.run(run())
+
+    response_format = captured["payload"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["schema"] == {"type": "object"}
+    assert result["choices"][0]["message"]["content"] == "{\"ok\": true}"
+

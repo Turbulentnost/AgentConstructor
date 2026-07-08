@@ -1,4 +1,4 @@
-"""Асинхронный LLM-прокси (FastAPI) с цепочкой fallback: Codex -> ChatGPT -> LM Studio.
+"""Асинхронный LLM-прокси (FastAPI) с цепочкой fallback: Chat-GPT 5.5 -> LM Studio.
 
 Сервис разворачивается на машине с VPN-доступом к LLM и предоставляет
 OpenAI-compatible endpoint ``/v1/chat/completions``. Остальные ПК (без VPN)

@@ -407,6 +407,17 @@ class AgentApplicationService:
     def _suggest_planning_fixes(exc: Exception) -> list[str]:
         """Подсказки по устранению именно этой причины сбоя планирования."""
         text = f"{type(exc).__name__}: {exc}".lower()
+        if "response_format" in text and "lmstudio" in text:
+            return [
+                "LM Studio отклонила формат response_format. Обновите/перезапустите "
+                "LLM proxy: он должен преобразовывать json_object в json_schema для LM Studio.",
+            ]
+        if "подключ" in text or "connection" in text or "timeout" in text or "http" in text:
+            return [
+                "Проблема связи с LLM endpoint или upstream-моделью: проверьте, что "
+                "прокси/LM Studio запущены и выбранная модель загружена.",
+                "Если ошибка от LM Studio повторяется, перезапустите LLM proxy после обновления.",
+            ]
         if "невалидный" in text or "json" in text or "unterminated" in text:
             return [
                 "LLM вернула неполный/некорректный JSON плана (часто из-за "
@@ -417,11 +428,6 @@ class AgentApplicationService:
             return [
                 "LLM выбрала инструмент, которого нет в каталоге. Переформулируйте "
                 "запрос под доступные инструменты (браузер, Outlook, Excel, отчёты).",
-            ]
-        if "подключ" in text or "connection" in text or "timeout" in text or "http" in text:
-            return [
-                "Проблема связи с LLM: проверьте, что endpoint запущен и доступен.",
-                "Увеличьте timeout LLM в настройках или повторите попытку.",
             ]
         return [
             "Проверьте, что LLM endpoint запущен и модель загружена.",

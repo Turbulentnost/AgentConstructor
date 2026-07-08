@@ -1,51 +1,50 @@
 """Конфигурация цепочки upstream-LLM для прокси.
 
 Порядок backend-ов задаётся переменной ``LLM_PROXY_CHAIN`` (по умолчанию
-``codex,chatgpt,lmstudio``). Каждый backend настраивается своими переменными
+``chatgpt,lmstudio``). Каждый backend настраивается своими переменными
 окружения с префиксом по имени, что позволяет менять модели/ключи без правки кода.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-DEFAULT_CHAIN = "codex,chatgpt,lmstudio"
+DEFAULT_CHAIN = "chatgpt,lmstudio"
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 
 # Стиль общения с upstream:
 #   "openai"           -> /v1/chat/completions
-#   "openai_responses" -> /v1/responses (нужно для codex-моделей, напр. gpt-5-codex)
+#   "openai_responses" -> /v1/responses (нужно для reasoning-моделей OpenAI)
 #   "anthropic"        -> /v1/messages
 STYLE_OPENAI = "openai"
 STYLE_OPENAI_RESPONSES = "openai_responses"
 STYLE_ANTHROPIC = "anthropic"
 
 # Значения по умолчанию для каждого известного backend-а.
-# ВНИМАНИЕ: model_name у Codex/ChatGPT нужно привести к реально доступным моделям
-# вашего OpenAI-аккаунта через переменные окружения (см. .env.example).
+# ВНИМАНИЕ: model_name у ChatGPT нужно привести к реально доступным моделям
+# вашего аккаунта через переменные окружения (см. .env.example).
 _BUILTIN_DEFAULTS: dict[str, dict[str, str]] = {
-    "codex": {
-        "style": STYLE_ANTHROPIC,
-        "base_url": "https://api.anthropic.com",
-        "model": "claude-sonnet-4-6",
-        "api_key_env": "OPENAI_API_KEY_CLAUDE",
-    },
     "chatgpt": {
         "style": STYLE_OPENAI,
         "base_url": "https://api.openai.com",
-        "model": "gpt-4o",
+        "model": "gpt-5.5",
         "api_key_env": "OPENAI_API_KEY",
+        "display_name": "Chat-GPT 5.5",
+        "supports_reasoning": "true",
     },
     "lmstudio": {
         "style": STYLE_OPENAI,
         "base_url": "http://192.168.1.157:1234",
         "model": "openai/gpt-oss-120b",
         "api_key_env": "",
+        "display_name": "LM Studio (gpt-oss-120b)",
     },
 }
+
+REASONING_MODES = ("internal", "reason")
 
 
 @dataclass(frozen=True)
@@ -58,6 +57,25 @@ class BackendConfig:
     model: str
     api_key: str | None
     timeout_seconds: float
+    display_name: str
+    supports_reasoning: bool = False
+    reasoning_mode: str | None = None
+
+    def model_ids(self) -> list[str]:
+        """Вернуть selectable id модели для OpenAI-compatible /v1/models."""
+        ids = [self.name]
+        if self.supports_reasoning:
+            ids.extend(f"{self.name}:{mode}" for mode in REASONING_MODES)
+        return ids
+
+    def with_reasoning(self, mode: str | None) -> BackendConfig:
+        """Вернуть backend с выбранным режимом reasoning."""
+        if mode is None:
+            return self
+        normalized = mode.strip().casefold()
+        if normalized not in REASONING_MODES or not self.supports_reasoning:
+            return self
+        return replace(self, reasoning_mode=normalized)
 
 
 @dataclass(frozen=True)
@@ -74,6 +92,12 @@ def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
+def _env_bool(name: str, default: str = "") -> bool:
+    """Прочитать boolean из окружения."""
+    value = _env(name, default).casefold()
+    return value in {"1", "true", "yes", "on", "да"}
+
+
 def _backend_from_env(name: str, default_timeout: float) -> BackendConfig:
     """Собрать BackendConfig из env, опираясь на встроенные дефолты по имени."""
     key = name.strip().casefold()
@@ -83,6 +107,11 @@ def _backend_from_env(name: str, default_timeout: float) -> BackendConfig:
     style = _env(f"{prefix}STYLE", defaults.get("style", STYLE_OPENAI)) or STYLE_OPENAI
     base_url = _env(f"{prefix}BASE_URL", defaults.get("base_url", ""))
     model = _env(f"{prefix}MODEL", defaults.get("model", ""))
+    display_name = _env(f"{prefix}DISPLAY_NAME", defaults.get("display_name", key))
+    supports_reasoning = _env_bool(
+        f"{prefix}SUPPORTS_REASONING",
+        defaults.get("supports_reasoning", "false"),
+    )
 
     # API-ключ: сначала прямой LLM_PROXY_<NAME>_API_KEY, иначе из указанной env.
     api_key = _env(f"{prefix}API_KEY")
@@ -101,6 +130,8 @@ def _backend_from_env(name: str, default_timeout: float) -> BackendConfig:
         model=model,
         api_key=api_key or None,
         timeout_seconds=timeout_seconds,
+        display_name=display_name,
+        supports_reasoning=supports_reasoning,
     )
 
 

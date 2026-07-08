@@ -182,14 +182,16 @@ def _split_model_mode(model_id: str) -> tuple[str, str | None]:
 
 
 def _merge_default_model_options(options: list[UiModelOption]) -> list[UiModelOption]:
-    """Гарантировать, что в селекте всегда есть Chat-GPT 5.5 и LM Studio."""
+    """Гарантировать базовые модели и добавить discovery-модели из прокси."""
     merged: dict[str, UiModelOption] = {
         option.model_id: option for option in DEFAULT_UI_MODEL_OPTIONS
     }
+    order = ["chatgpt", "lmstudio"]
     for option in options:
-        if option.model_id in merged:
-            merged[option.model_id] = option
-    return [merged["chatgpt"], merged["lmstudio"]]
+        if option.model_id not in merged:
+            order.append(option.model_id)
+        merged[option.model_id] = option
+    return [merged[model_id] for model_id in order if model_id in merged]
 
 # Порядок стадий пошаговой ленты выполнения.
 STAGE_REQUEST = "request"
@@ -2004,7 +2006,9 @@ class AgentCreateWidget(QWidget):
             if not model_id:
                 continue
             base_model, mode = _split_model_mode(model_id)
-            if base_model not in {"chatgpt", "lmstudio"}:
+            if base_model == "claude":
+                # Старый прокси мог отдавать общий пункт "Claude"; в селекте
+                # должны быть только конкретные Claude-модели (`claude-...`).
                 continue
             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             entry = by_base.setdefault(

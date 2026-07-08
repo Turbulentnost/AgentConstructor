@@ -47,9 +47,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "name": backend.name,
                     "style": backend.style,
                     "base_url": backend.base_url,
-                    "model": backend.model,
+                    "model": backend.upstream_model,
                     "display_name": backend.display_name,
                     "supports_reasoning": backend.supports_reasoning,
+                    "discover_models": backend.discover_models,
                     "has_api_key": bool(backend.api_key),
                 }
                 for backend in proxy_config.chain
@@ -61,8 +62,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         """Вернуть список selectable-моделей для OpenAI-compatible клиентов."""
         data: list[dict[str, Any]] = []
         seen: set[str] = set()
+        client: httpx.AsyncClient = app.state.http_client
         for backend in proxy_config.chain:
-            for model_id in backend.model_ids():
+            model_items = await _models_for_backend(client, backend)
+            for item in model_items:
+                model_id = item["id"]
                 if model_id in seen:
                     continue
                 seen.add(model_id)
@@ -74,9 +78,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                         "created": 0,
                         "owned_by": backend.name,
                         "metadata": {
-                            "display_name": backend.display_name,
-                            "upstream_model": backend.model,
-                            "supports_reasoning": backend.supports_reasoning,
+                            "display_name": item.get("display_name") or backend.display_name,
+                            "upstream_model": item.get("upstream_model") or backend.upstream_model,
+                            "supports_reasoning": item.get(
+                                "supports_reasoning", backend.supports_reasoning
+                            ),
                             "reasoning_mode": reasoning_mode or None,
                         },
                     }
@@ -153,7 +159,163 @@ def _chain_for_requested_model(
         for mode in ("internal", "reason"):
             if model_id == f"{base_id}:{mode}":
                 return [backend.with_reasoning(mode)]
+        if backend.name == "claude" and (
+            model_id.startswith("claude-") or model_id.startswith("claude:")
+        ):
+            base_model, mode = _split_model_mode(requested_model.strip())
+            selected = backend.with_model(base_model)
+            return [selected.with_reasoning(mode)]
     return proxy_config.chain
+
+
+async def _models_for_backend(
+    client: httpx.AsyncClient,
+    backend,
+) -> list[dict[str, Any]]:
+    """Вернуть selectable-модели backend-а, включая discovery для Claude."""
+    if backend.name == "claude" and backend.discover_models:
+        if not backend.api_key:
+            return _configured_models_for_backend(backend)
+        discovered = await _discover_anthropic_models(client, backend)
+        if discovered:
+            return discovered
+        # Если Anthropic запретил /v1/models (403 Request not allowed), всё равно
+        # показываем конкретные модели из конфигурации, а не общий пункт "Claude".
+        return _configured_models_for_backend(backend)
+    items: list[dict[str, Any]] = []
+    for model_id in backend.model_ids():
+        _, _, mode = model_id.partition(":")
+        items.append(
+            {
+                "id": model_id,
+                "display_name": backend.display_name,
+                "upstream_model": backend.upstream_model,
+                "supports_reasoning": backend.supports_reasoning,
+                "reasoning_mode": mode or None,
+            }
+        )
+    return items
+
+
+def _configured_models_for_backend(backend) -> list[dict[str, Any]]:
+    """Собрать selectable-модели из явной конфигурации backend-а."""
+    items: list[dict[str, Any]] = []
+    for model_id in backend.configured_model_ids():
+        display_name = _display_name_for_model(backend, model_id)
+        items.append(
+            {
+                "id": model_id,
+                "display_name": display_name,
+                "upstream_model": model_id,
+                "supports_reasoning": backend.supports_reasoning,
+                "reasoning_mode": None,
+            }
+        )
+        if backend.supports_reasoning:
+            for mode in ("internal", "reason"):
+                items.append(
+                    {
+                        "id": f"{model_id}:{mode}",
+                        "display_name": display_name,
+                        "upstream_model": model_id,
+                        "supports_reasoning": True,
+                        "reasoning_mode": mode,
+                    }
+                )
+    return items
+
+
+def _display_name_for_model(backend, model_id: str) -> str:
+    """Сделать человекочитаемую подпись для модели."""
+    if backend.name != "claude":
+        return backend.display_name
+    text = model_id.removeprefix("claude-").replace("-", " ")
+    return "Claude " + " ".join(part.capitalize() for part in text.split())
+
+
+async def _discover_anthropic_models(
+    client: httpx.AsyncClient,
+    backend,
+) -> list[dict[str, Any]]:
+    """Получить список моделей Claude через Anthropic /v1/models."""
+    url = backend.base_url.rstrip("/") + "/v1/models"
+    headers = {
+        "Accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": backend.api_key,
+    }
+    raw_models: list[dict[str, Any]] = []
+    after_id: str | None = None
+    for _ in range(20):
+        params = {"after_id": after_id} if after_id else None
+        try:
+            response = await client.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=backend.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Не удалось получить модели Claude: %s", exc)
+            return []
+        if response.status_code >= 400:
+            logger.warning(
+                "Claude /v1/models вернул HTTP %s: %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return []
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning("Claude /v1/models вернул невалидный JSON")
+            return []
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+        raw_models.extend(item for item in data if isinstance(item, dict))
+        if not payload.get("has_more"):
+            break
+        next_after_id = payload.get("last_id")
+        if not isinstance(next_after_id, str) or not next_after_id:
+            break
+        after_id = next_after_id
+
+    items: list[dict[str, Any]] = []
+    for raw in raw_models:
+        model_id = str(raw.get("id") or "").strip()
+        if not model_id:
+            continue
+        display_name = str(raw.get("display_name") or raw.get("name") or model_id)
+        items.append(
+            {
+                "id": model_id,
+                "display_name": display_name,
+                "upstream_model": model_id,
+                "supports_reasoning": backend.supports_reasoning,
+                "reasoning_mode": None,
+            }
+        )
+        if backend.supports_reasoning:
+            for mode in ("internal", "reason"):
+                items.append(
+                    {
+                        "id": f"{model_id}:{mode}",
+                        "display_name": display_name,
+                        "upstream_model": model_id,
+                        "supports_reasoning": True,
+                        "reasoning_mode": mode,
+                    }
+                )
+    return items
+
+
+def _split_model_mode(model_id: str) -> tuple[str, str | None]:
+    """Разобрать id вида model:internal/model:reason."""
+    base, sep, mode = model_id.partition(":")
+    if sep and mode in {"internal", "reason"}:
+        return base, mode
+    return model_id, None
 
 
 app = create_app()

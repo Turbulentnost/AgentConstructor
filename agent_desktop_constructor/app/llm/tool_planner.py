@@ -229,6 +229,7 @@ def _parse_agent_plan(content: str) -> LLMAgentPlan:
             f"LLM вернула невалидный AgentPlan JSON: {exc.msg}"
         ) from exc
 
+    payload = _normalize_agent_plan_payload(payload)
     try:
         return LLMAgentPlan.model_validate(payload)
     except ValidationError as exc:
@@ -238,22 +239,132 @@ def _parse_agent_plan(content: str) -> LLMAgentPlan:
 
 
 def _loads_json_object(content: str) -> dict:
-    """Распарсить JSON-объект, игнорируя пояснения/текст вокруг него."""
+    """Распарсить JSON-объект AgentPlan, игнорируя reasoning/prose вокруг."""
     text = (content or "").strip()
     try:
-        return json.loads(text)
+        payload = json.loads(text)
+        if isinstance(payload, dict) and _agent_plan_score(payload) > 0:
+            return payload
     except json.JSONDecodeError:
-        candidate = _extract_first_json_object(text)
-        if candidate is None:
-            raise
-        return json.loads(candidate)
+        pass
+
+    best_payload: dict | None = None
+    best_score = -1
+    for candidate in _extract_json_objects(text):
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        score = _agent_plan_score(payload)
+        if score > best_score:
+            best_score = score
+            best_payload = payload
+        if score >= 4:
+            break
+    if best_payload is not None and best_score > 0:
+        return best_payload
+
+    # Сохраняем прежнее поведение/текст ошибки для полностью битого JSON.
+    return json.loads(text)
+
+
+def _agent_plan_score(payload: dict) -> int:
+    """Оценить, похож ли объект на LLMAgentPlan."""
+    normalized = _normalize_agent_plan_payload(payload)
+    return sum(
+        1
+        for key in ("agent_name", "goal", "selected_tools", "steps")
+        if key in normalized
+    )
+
+
+def _normalize_agent_plan_payload(payload: object) -> object:
+    """Нормализовать частые варианты JSON-схемы, которые возвращают LLM.
+
+    Это не подмена смысла плана: только приведение распространённых имён полей
+    к нашей Pydantic-схеме.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    _rename_key(normalized, "name", "agent_name")
+    _rename_key(normalized, "agentName", "agent_name")
+    _rename_key(normalized, "tools", "selected_tools")
+    _rename_key(normalized, "selectedTools", "selected_tools")
+    _rename_key(normalized, "plan_steps", "steps")
+    _rename_key(normalized, "actions", "steps")
+
+    tools = normalized.get("selected_tools")
+    if isinstance(tools, list):
+        normalized["selected_tools"] = [
+            _normalize_planned_tool(item) for item in tools
+        ]
+
+    steps = normalized.get("steps")
+    if isinstance(steps, list):
+        normalized["steps"] = [_normalize_planned_step(item) for item in steps]
+
+    return normalized
+
+
+def _normalize_planned_tool(value: object) -> object:
+    """Нормализовать объект выбранного инструмента."""
+    if not isinstance(value, dict):
+        return value
+    item = dict(value)
+    _rename_key(item, "name", "tool_name")
+    _rename_key(item, "tool", "tool_name")
+    _rename_key(item, "toolName", "tool_name")
+    if "reason" not in item and "description" in item:
+        item["reason"] = item["description"]
+    return item
+
+
+def _normalize_planned_step(value: object) -> object:
+    """Нормализовать объект шага плана."""
+    if not isinstance(value, dict):
+        return value
+    item = dict(value)
+    _rename_key(item, "id", "step_id")
+    _rename_key(item, "type", "step_type")
+    _rename_key(item, "stepType", "step_type")
+    _rename_key(item, "tool", "tool_name")
+    _rename_key(item, "toolName", "tool_name")
+    _rename_key(item, "depends", "depends_on")
+    _rename_key(item, "dependencies", "depends_on")
+    if "description" not in item and "title" in item:
+        item["description"] = item["title"]
+    if "title" not in item and "description" in item:
+        item["title"] = item["description"]
+    return item
+
+
+def _rename_key(payload: dict, old: str, new: str) -> None:
+    """Переименовать ключ, если новый ещё не задан."""
+    if new not in payload and old in payload:
+        payload[new] = payload.pop(old)
 
 
 def _extract_first_json_object(text: str) -> str | None:
     """Найти первый сбалансированный JSON-объект, игнорируя скобки в строках."""
-    start = text.find("{")
-    if start == -1:
-        return None
+    objects = _extract_json_objects(text)
+    return objects[0] if objects else None
+
+
+def _extract_json_objects(text: str) -> list[str]:
+    """Найти сбалансированные JSON-объекты, игнорируя скобки в строках."""
+    objects: list[str] = []
+    for start in [index for index, char in enumerate(text) if char == "{"]:
+        candidate = _extract_json_object_from(text, start)
+        if candidate is not None:
+            objects.append(candidate)
+    return objects
+
+
+def _extract_json_object_from(text: str, start: int) -> str | None:
+    """Найти сбалансированный JSON-объект с конкретной позиции."""
     depth = 0
     in_string = False
     escaped = False

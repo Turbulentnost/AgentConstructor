@@ -3,7 +3,10 @@
 import pytest
 
 from agent_desktop_constructor.app.llm.models import LLMRequest, LLMResponse
-from agent_desktop_constructor.app.llm.tool_planner import LLMToolPlanner
+from agent_desktop_constructor.app.llm.tool_planner import (
+    LLMToolPlanner,
+    _parse_agent_plan,
+)
 from agent_desktop_constructor.core.models.llm_config import LLMConfig
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
 
@@ -108,4 +111,42 @@ def test_llm_tool_planner_prompt_contains_temporal_context() -> None:
     assert "Текущая дата выполнения:" in prompt_text
     assert "Текущая неделя:" in prompt_text
     assert "YYYY-MM-DD" in prompt_text
+
+
+def test_parse_agent_plan_skips_reasoning_wrapper_object() -> None:
+    """Парсер выбирает объект AgentPlan, а не служебную reasoning-обёртку."""
+    content = (
+        '{"analysis<|message|>User asked": "thinking object"}\n'
+        'final<|message|>{"agent_name":"WeatherInfoAgent",'
+        '"goal":"Проверить сегодняшнюю погоду",'
+        '"selected_tools":[{"tool_name":"browser.search_web",'
+        '"reason":"Нужна актуальная погода","required":true}],'
+        '"steps":[{"step_id":"step_1","step_type":"tool_call",'
+        '"title":"Найти погоду","description":"Получить актуальную погоду",'
+        '"tool_name":"browser.search_web","depends_on":[]}],'
+        '"missing_data":[],"needs_human":false,"warnings":[]}'
+    )
+
+    plan = _parse_agent_plan(content)
+
+    assert plan.agent_name == "WeatherInfoAgent"
+    assert plan.selected_tools[0].tool_name == "browser.search_web"
+
+
+def test_parse_agent_plan_accepts_type_alias_for_step_type() -> None:
+    """LM Studio иногда возвращает type вместо step_type — принимаем алиас."""
+    content = (
+        '{"agent_name":"WeatherInfoAgent",'
+        '"goal":"Проверить сегодняшнюю погоду",'
+        '"selected_tools":[{"tool_name":"browser.search_web",'
+        '"reason":"Нужна актуальная погода","required":true}],'
+        '"steps":[{"step_id":"step_1","type":"tool_call",'
+        '"title":"Найти погоду","description":"Получить актуальную погоду",'
+        '"tool_name":"browser.search_web","depends_on":[]}],'
+        '"missing_data":[],"needs_human":false,"warnings":[]}'
+    )
+
+    plan = _parse_agent_plan(content)
+
+    assert plan.steps[0].step_type == "tool_call"
 

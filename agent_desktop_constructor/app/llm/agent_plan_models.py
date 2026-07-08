@@ -31,6 +31,21 @@ class LLMPlannedStep(BaseModel):
     tool_name: str | None = None
     depends_on: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_step_payload(cls, value: object) -> object:
+        """Принять частые LLM-синонимы полей шага."""
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "step_type" not in normalized and "type" in normalized:
+            normalized["step_type"] = normalized.pop("type")
+        if "step_id" not in normalized and "id" in normalized:
+            normalized["step_id"] = normalized.pop("id")
+        if "tool_name" not in normalized and "tool" in normalized:
+            normalized["tool_name"] = normalized.pop("tool")
+        return normalized
+
     @field_validator("step_id", "step_type", "title", "description")
     @classmethod
     def validate_required_text(cls, value: str) -> str:

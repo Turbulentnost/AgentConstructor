@@ -9,6 +9,7 @@ save_agent / create_agent_from_request). Экран лишь показывае�
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from threading import Event
 from typing import Callable
@@ -16,6 +17,7 @@ from urllib import error, request
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     QPointF,
     Property,
@@ -26,7 +28,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -224,6 +226,11 @@ WORKFLOW_TABS: list[tuple[str, str, str]] = [
     (STAGE_QUALITY, "Качество", "quality"),
     (STAGE_RESULT, "Итог", "result"),
 ]
+
+TRACKED_STAGE_IDS: tuple[str, ...] = tuple(stage_id for stage_id, _, _ in WORKFLOW_TABS)
+WORKFLOW_STAGE_LABELS: dict[str, str] = {
+    stage_id: label for stage_id, label, _ in WORKFLOW_TABS
+}
 
 # status -> (подпись бейджа, цвет фона, цвет текста, значок)
 STATUS_STYLE: dict[str, tuple[str, str, str, str]] = {
@@ -819,17 +826,21 @@ class PlanNumberCircle(QWidget):
         super().__init__(parent)
         self._number = number
         self._visual = "pending"
-        self.setFixedSize(28, 28)
+        self.setFixedSize(36, 36)
 
     def set_visual(self, visual: str) -> None:
         self._visual = visual
+        self.update()
+
+    def set_number(self, number: int) -> None:
+        self._number = number
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(1.5, 1.5, 25, 25)
+        rect = QRectF(2, 2, 32, 32)
         if self._visual == "active":
             border = QColor("#3b82f6")
             text = QColor("#eef5ff")
@@ -839,11 +850,13 @@ class PlanNumberCircle(QWidget):
         else:
             border = QColor("#334155")
             text = QColor("#64748b")
-        pen = QPen(border, 1.4)
+        pen = QPen(border, 1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(rect)
+        number_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
+        painter.setFont(number_font)
         painter.setPen(text)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(self._number))
 
@@ -886,8 +899,108 @@ class PlanStatusIcon(QWidget):
             painter.drawEllipse(QRectF(6, 6, 6, 6))
 
 
+class CurrentStepCard(QFrame):
+    """Карточка текущего шага в правом сайдбаре."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("currentStepCard")
+
+        self._number = PlanNumberCircle(1)
+
+        self._title = QLabel("Запрос пользователя")
+        self._title.setObjectName("currentStepCardTitle")
+        self._title.setWordWrap(True)
+
+        self._detail = QLabel("Ожидает начала")
+        self._detail.setObjectName("currentStepCardDetail")
+        self._detail.setWordWrap(True)
+
+        self._status_dot = PlanStatusIcon()
+
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(4)
+        texts.addWidget(self._title)
+        texts.addWidget(self._detail)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(12)
+        row.addWidget(self._number, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addLayout(texts, 1)
+        row.addWidget(self._status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.set_content(1, "Запрос пользователя", "Ожидает начала", "pending")
+
+    def set_content(
+        self,
+        index: int,
+        title: str,
+        detail: str,
+        status: str,
+    ) -> None:
+        self._number.set_number(index)
+        self._title.setText(title)
+        self._detail.setText(detail)
+        is_running = status == "running"
+        is_passed = status == "passed"
+        is_pending = status == "pending"
+        is_problem = status in {
+            "failed",
+            "warning",
+            "needs_human",
+            "needs_credentials",
+        }
+
+        if is_running:
+            card_bg = "#0f2340"
+            card_border = "#3b82f6"
+            number_visual = "active"
+            title_color = "#eef5ff"
+            detail_color = "#7f8ea5"
+            self._status_dot.set_mode("dot")
+        elif is_passed:
+            card_bg = "rgba(21, 26, 35, 0.72)"
+            card_border = "#334155"
+            number_visual = "passed"
+            title_color = "#dbe4f2"
+            detail_color = "#7f8ea5"
+            self._status_dot.set_mode("check")
+        elif is_problem:
+            card_bg = "rgba(21, 26, 35, 0.72)"
+            card_border = "#334155"
+            number_visual = "pending"
+            title_color = "#f87171" if status == "failed" else "#fbbf24"
+            detail_color = "#7f8ea5"
+            self._status_dot.set_mode("none")
+        elif is_pending:
+            card_bg = "#0f2340"
+            card_border = "#3b82f6"
+            number_visual = "active"
+            title_color = "#eef5ff"
+            detail_color = "#7f8ea5"
+            self._status_dot.set_mode("none")
+        else:
+            card_bg = "rgba(21, 26, 35, 0.55)"
+            card_border = "#1e3a5f"
+            number_visual = "pending"
+            title_color = "#cbd5e1"
+            detail_color = "#7f8ea5"
+            self._status_dot.set_mode("none")
+
+        self._number.set_visual(number_visual)
+        self.setStyleSheet(
+            "#currentStepCard {"
+            f"background:{card_bg}; border:1px solid {card_border};"
+            "border-radius:14px;"
+            "}"
+            f"#currentStepCardTitle {{ color:{title_color}; font-size:14px; font-weight:700; }}"
+            f"#currentStepCardDetail {{ color:{detail_color}; font-size:11px; }}"
+        )
+
+
 class PlanStepRow(QFrame):
-    """Строка шага в блоке «План» с левой accent-полосой и статусом справа."""
+    """Строка шага в блоке «План» с рамкой у активного этапа."""
 
     def __init__(
         self,
@@ -902,12 +1015,8 @@ class PlanStepRow(QFrame):
         self._active = False
         self.setObjectName("planStepRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(46)
-        self.setMaximumHeight(52)
-
-        self._accent = QFrame()
-        self._accent.setFixedWidth(3)
-        self._accent.setObjectName("planStepAccent")
+        self.setMinimumHeight(54)
+        self.setMaximumHeight(58)
 
         self._number = PlanNumberCircle(index)
         self._title = QLabel(title)
@@ -916,9 +1025,8 @@ class PlanStepRow(QFrame):
         self._status_icon = PlanStatusIcon()
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 10, 0)
-        row.setSpacing(10)
-        row.addWidget(self._accent)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(12)
         row.addWidget(self._number, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self._title, 1, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self._status_icon, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -951,45 +1059,44 @@ class PlanStepRow(QFrame):
         }
 
         if is_running:
-            row_bg = "#131d2f"
-            title_color = "#3b82f6"
+            row_bg = "#0f2340"
+            title_color = "#eef5ff"
             number_visual = "active"
             status_mode = "dot"
-            accent = "#3b82f6"
+            border = "1px solid #3b82f6"
         elif is_passed:
             row_bg = "rgba(21, 26, 35, 0.72)"
             title_color = "#b8c5d6"
             number_visual = "passed"
             status_mode = "check"
-            accent = "transparent"
+            border = "1px solid transparent"
         elif is_problem:
             row_bg = "rgba(21, 26, 35, 0.72)"
             title_color = "#fbbf24" if self._status != "failed" else "#f87171"
             number_visual = "pending"
             status_mode = "none"
-            accent = "transparent"
+            border = "1px solid transparent"
         elif self._active:
-            row_bg = "#131d2f"
-            title_color = "#3b82f6"
+            row_bg = "#0f2340"
+            title_color = "#eef5ff"
             number_visual = "active"
             status_mode = "none"
-            accent = "#3b82f6"
+            border = "1px solid #3b82f6"
         else:
-            row_bg = "rgba(21, 26, 35, 0.55)"
+            row_bg = "transparent"
             title_color = "#64748b"
             number_visual = "pending"
             status_mode = "none"
-            accent = "transparent"
+            border = "1px solid transparent"
 
         self._number.set_visual(number_visual)
         self._status_icon.set_mode(status_mode)
-        self._accent.setStyleSheet(f"background:{accent}; border-radius:2px;")
         self.setStyleSheet(
             "#planStepRow {"
-            f"background:{row_bg}; border:none; border-radius:8px;"
+            f"background:{row_bg}; border:{border}; border-radius:10px;"
             "}"
             "#planStepRow:hover { background:#172338; }"
-            f"#planStepTitle {{ color:{title_color}; font-size:12px; font-weight:600; }}"
+            f"#planStepTitle {{ color:{title_color}; font-size:14px; font-weight:600; }}"
         )
 
 
@@ -1003,11 +1110,16 @@ class PlanStepsList(QWidget):
         self.setStyleSheet("background: transparent;")
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 2, 0, 2)
-        self._layout.setSpacing(6)
+        self._layout.setSpacing(8)
 
     def add_step(self, row: PlanStepRow) -> None:
         self._rows.append(row)
         self._layout.addWidget(row)
+        self.update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -1015,25 +1127,50 @@ class PlanStepsList(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        first = self._rows[0]
-        last = self._rows[-1]
-        start_center = first._number.mapTo(
-            self,
-            QPointF(first._number.width() / 2, first._number.height() / 2),
-        )
-        end_center = last._number.mapTo(
-            self,
-            QPointF(last._number.width() / 2, last._number.height() / 2),
-        )
-        x = start_center.x()
-        start_y = start_center.y()
-        end_y = end_center.y()
-        pen = QPen(QColor("#334155"), 1.2)
+        pen = QPen(QColor("#2563eb"), 1.2)
         pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([3, 4])
+        pen.setDashPattern([2.5, 3.5])
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
-        painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
+        for index in range(len(self._rows) - 1):
+            top_row = self._rows[index]
+            bottom_row = self._rows[index + 1]
+            top_center = top_row._number.mapTo(
+                self,
+                QPointF(top_row._number.width() / 2, top_row._number.height() / 2),
+            )
+            bottom_center = bottom_row._number.mapTo(
+                self,
+                QPointF(bottom_row._number.width() / 2, bottom_row._number.height() / 2),
+            )
+            radius = 16.0
+            x = top_center.x()
+            start_y = top_center.y() + radius
+            end_y = bottom_center.y() - radius
+            if end_y > start_y:
+                painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
+
+
+class LaunchSplitMenuButton(QPushButton):
+    """Правая часть split-кнопки: шеврон без системного menu-indicator Qt."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#ffffff" if self.isEnabled() else "#b8ccf5")
+        pen = QPen(color, 1.35)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        center_x = self.width() / 2
+        center_y = self.height() / 2 + 0.5
+        path = QPainterPath()
+        path.moveTo(center_x - 3.4, center_y - 1.4)
+        path.lineTo(center_x, center_y + 2.0)
+        path.lineTo(center_x + 3.4, center_y - 1.4)
+        painter.drawPath(path)
 
 
 class BadgeSelect(QPushButton):
@@ -1056,6 +1193,38 @@ class BadgeSelect(QPushButton):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(REASON_BADGE_STYLE if self._ghost else MODEL_BADGE_STYLE)
+
+    def _chevron_color(self) -> QColor:
+        if not self.isEnabled():
+            return QColor("#475569" if self._ghost else "#5c6b82")
+        if self.underMouse():
+            return QColor("#9da9bf" if self._ghost else "#c5d0e4")
+        return QColor("#94a3b8" if self._ghost else "#9da9bf")
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(self._chevron_color(), 1.25)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        center_x = self.width() - 11
+        center_y = self.height() / 2
+        path = QPainterPath()
+        path.moveTo(center_x - 3.2, center_y - 1.8)
+        path.lineTo(center_x, center_y + 1.6)
+        path.lineTo(center_x + 3.2, center_y - 1.8)
+        painter.drawPath(path)
 
     def _open_menu(self) -> None:
         if not self.isEnabled() or self.count() == 0:
@@ -1131,7 +1300,7 @@ class BadgeSelect(QPushButton):
             return
         previous = self._index
         self._index = index
-        self.setText(f"{self._labels[index]}  ▾")
+        self.setText(self._labels[index])
         if emit and previous != index:
             self.currentIndexChanged.emit(index)
 
@@ -1261,12 +1430,58 @@ class WorkflowStepIcon(QWidget):
             painter.drawLine(QPointF(8, 4.5), QPointF(8, 12.5))
 
 
+class MetricChipIcon(QWidget):
+    """Line-icon для метрик шапки timeline (часы, шаг, ETA)."""
+
+    def __init__(self, kind: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._kind = kind
+        self._active = False
+        self.setFixedSize(16, 16)
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self.update()
+
+    def _color(self) -> QColor:
+        return QColor("#3b82f6") if self._active else QColor("#64748b")
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = self._color()
+        pen = QPen(color, 1.35)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if self._kind == "elapsed":
+            painter.drawEllipse(QRectF(3, 3.5, 10, 10))
+            painter.drawLine(QPointF(8, 3.5), QPointF(8, 2))
+            painter.drawLine(QPointF(6.5, 2), QPointF(9.5, 2))
+            painter.drawLine(QPointF(8, 8.5), QPointF(8, 6.2))
+            painter.drawLine(QPointF(8, 8.5), QPointF(10.2, 8.5))
+        elif self._kind == "step":
+            painter.drawLine(QPointF(2.5, 11.5), QPointF(9, 11.5))
+            painter.drawLine(QPointF(9, 11.5), QPointF(9, 5))
+            painter.drawLine(QPointF(9, 5), QPointF(12.5, 8))
+            painter.drawLine(QPointF(9, 5), QPointF(6.5, 8))
+        else:
+            painter.drawEllipse(QRectF(2.5, 2.5, 11, 11))
+            painter.drawLine(QPointF(8, 8), QPointF(8, 5.2))
+            painter.drawLine(QPointF(8, 8), QPointF(10.4, 8))
+
+
 class WorkflowStepConnector(QWidget):
     """Короткая пунктирная линия между вкладками workflow."""
 
+    _WIDTH = 18
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(16, 32)
+        self.setFixedSize(self._WIDTH, 32)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -1305,12 +1520,17 @@ class WorkflowStepTab(QFrame):
         self._label = QLabel(label)
         self._label.setObjectName("workflowStepLabel")
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 6, 10, 6)
-        row.setSpacing(6)
-        row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self._label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._row = QHBoxLayout(self)
+        self._row.setContentsMargins(10, 6, 10, 6)
+        self._row.setSpacing(6)
+        self._row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._row.addWidget(self._label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._apply_style()
+
+    def set_content_padding(self, horizontal: int) -> None:
+        """Слегка расширить вкладку, если между шагами слишком большие промежутки."""
+        self._row.setContentsMargins(horizontal, 6, horizontal, 6)
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -1343,6 +1563,8 @@ class WorkflowStepBar(QFrame):
     """Горизонтальная панель шагов workflow как в референсе."""
 
     stageSelected = Signal(str)
+    _TAB_PADDING_BASE = 10
+    _TAB_PADDING_MAX = 14
 
     def __init__(
         self,
@@ -1352,23 +1574,68 @@ class WorkflowStepBar(QFrame):
         super().__init__(parent)
         self._on_select = on_select
         self._tabs: dict[str, WorkflowStepTab] = {}
+        self._connectors: list[WorkflowStepConnector] = []
         self.setObjectName("workflowStepBar")
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 6, 8, 6)
+        row.setContentsMargins(0, 6, 0, 6)
         row.setSpacing(0)
         for index, (stage_id, label, icon_kind) in enumerate(WORKFLOW_TABS):
             if index > 0:
-                row.addWidget(WorkflowStepConnector())
+                connector = WorkflowStepConnector(self)
+                self._connectors.append(connector)
+                row.addWidget(connector, 0)
             tab = WorkflowStepTab(stage_id, label, icon_kind, self)
             tab.clicked.connect(self._on_select)
             self._tabs[stage_id] = tab
-            row.addWidget(tab)
-        row.addStretch(1)
+            row.addWidget(tab, 0)
         self.setStyleSheet(
             "#workflowStepBar {"
-            "background:#060b13; border:1px solid #1a2740; border-radius:10px;"
+            "background:transparent; border:none;"
             "}"
         )
+        self._sync_tab_padding()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_tab_padding()
+
+    def _sync_layout_metrics(self) -> None:
+        """Распределить шаги по всей ширине панели (90% родителя)."""
+        if not self._tabs:
+            return
+        margins = self.layout().contentsMargins()
+        inner_width = self.width() - margins.left() - margins.right()
+        for connector in self._connectors:
+            connector.setFixedWidth(WorkflowStepConnector._WIDTH)
+        for tab in self._tabs.values():
+            tab.set_content_padding(self._TAB_PADDING_BASE)
+
+        compact_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
+        compact_width += len(self._connectors) * WorkflowStepConnector._WIDTH
+        surplus = max(0, inner_width - compact_width)
+
+        boost = min(
+            self._TAB_PADDING_MAX - self._TAB_PADDING_BASE,
+            surplus // max(1, len(self._tabs) * 18),
+        )
+        horizontal = self._TAB_PADDING_BASE + boost
+        for tab in self._tabs.values():
+            tab.set_content_padding(horizontal)
+
+        padded_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
+        padded_width += len(self._connectors) * WorkflowStepConnector._WIDTH
+        connector_surplus = max(0, inner_width - padded_width)
+        if not self._connectors:
+            return
+        extra = connector_surplus // len(self._connectors)
+        remainder = connector_surplus % len(self._connectors)
+        for index, connector in enumerate(self._connectors):
+            connector.setFixedWidth(
+                WorkflowStepConnector._WIDTH + extra + (1 if index < remainder else 0)
+            )
+
+    def _sync_tab_padding(self) -> None:
+        self._sync_layout_metrics()
 
     def set_active_stage(self, stage_id: str) -> None:
         if stage_id not in self._tabs:
@@ -1403,12 +1670,19 @@ class AgentCreateWidget(QWidget):
         self._plan_step_cards: dict[str, PlanStepRow] = {}
         self._workflow_step_bar: WorkflowStepBar | None = None
         self._launch_stop_action = None
+        self._request_min_height = 22
+        self._request_max_height = 120
         self._cancel_event = Event()
         self._paused_agent: AgentSpec | None = None
         self._paused_state: object | None = None
         self._human_radios: list[tuple[QRadioButton, str | None]] = []
         self._attachment_paths: list[str] = []
         self._model_options: list[UiModelOption] = []
+        self._run_started_at: float | None = None
+        self._run_elapsed_seconds = 0.0
+        self._run_timer = QTimer(self)
+        self._run_timer.setInterval(1000)
+        self._run_timer.timeout.connect(self._refresh_run_header)
 
         self._build_ui()
         self._connect_signals()
@@ -1449,27 +1723,55 @@ class AgentCreateWidget(QWidget):
         title_row.setSpacing(10)
         title = QLabel("Ход работы агента")
         title.setObjectName("screenTitle")
-        self.run_status_badge = QLabel("● Выполняется")
+        self.run_status_badge = QLabel("○ Ожидает")
         self.run_status_badge.setObjectName("runStatusBadge")
-        title_row.addWidget(title)
-        title_row.addWidget(self.run_status_badge)
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(self.run_status_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
         panel_layout.addLayout(title_row)
 
         summary = QHBoxLayout()
         summary.setContentsMargins(0, 0, 0, 0)
-        summary.setSpacing(18)
-        summary.addWidget(self._metric_chip("⏱", "00:01:42", "Прошло"))
-        summary.addWidget(self._metric_chip("↱", "Шаг 2 из 6", "Найти поручения в 1С"))
+        summary.setSpacing(14)
+        elapsed_chip, self._elapsed_value_label, _, self._elapsed_icon = self._metric_chip(
+            "elapsed", "00:00:00", "Прошло"
+        )
+        summary.addWidget(elapsed_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        step_chip, self._step_value_label, self._step_detail_label, self._step_icon = (
+            self._metric_chip("step", "Шаг 1 из 8", "Ожидает запуска")
+        )
+        summary.addWidget(step_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        progress_group = QWidget()
+        progress_group.setObjectName("runProgressGroup")
+        progress_row = QHBoxLayout(progress_group)
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.setSpacing(8)
         self.run_progress = QProgressBar()
         self.run_progress.setRange(0, 100)
-        self.run_progress.setValue(33)
+        self.run_progress.setValue(0)
         self.run_progress.setTextVisible(False)
         self.run_progress.setFixedHeight(6)
+        self.run_progress.setMinimumWidth(72)
         self.run_progress.setObjectName("runProgress")
-        summary.addWidget(self.run_progress, 1, Qt.AlignmentFlag.AlignVCenter)
-        summary.addWidget(QLabel("33%"))
-        summary.addWidget(self._metric_chip("◷", "~2 мин", "Ожидаемое завершение"))
+        progress_row.addWidget(self.run_progress, 1, Qt.AlignmentFlag.AlignVCenter)
+        self._progress_percent_label = QLabel("0%")
+        self._progress_percent_label.setObjectName("metricValue")
+        self._progress_percent_label.setFixedWidth(34)
+        self._progress_percent_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        progress_row.addWidget(
+            self._progress_percent_label,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        summary.addWidget(progress_group, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        eta_chip, self._eta_header_value_label, _, self._eta_icon = self._metric_chip(
+            "eta", "—", "Ожидаемое завершение"
+        )
+        summary.addWidget(eta_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         panel_layout.addLayout(summary)
 
         self._build_stage_cards()
@@ -1510,38 +1812,62 @@ class AgentCreateWidget(QWidget):
             "}"
             "#screenTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
             "#runStatusBadge {"
-            "background:#0d3a2b; color:#9fffd0; border:1px solid #1c664a;"
-            "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:800;"
+            f"background:{STATUS_STYLE['pending'][1]}; color:{STATUS_STYLE['pending'][2]};"
+            "border:1px solid rgba(255,255,255,0.07);"
+            "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:700;"
             "}"
-            "#runProgress { background:#17243a; border:none; border-radius:3px; }"
-            "#runProgress::chunk { background:#2f7cff; border-radius:3px; }"
-            "#metricChip { background:transparent; }"
-            "#metricValue { color:#e7eefc; font-size:12px; font-weight:800; }"
-            "#metricLabel { color:#667891; font-size:10px; }"
+            f"#runProgress {{ background:{REF_PANEL_ALT}; border:none; border-radius:3px; }}"
+            f"#runProgress::chunk {{ background:{REF_BLUE}; border-radius:3px; }}"
+            "#runProgressGroup { background:transparent; }"
+            "#metricChip { background:transparent; min-height:28px; }"
+            f"#metricValue {{ color:{REF_TEXT}; font-size:12px; font-weight:700; }}"
+            f"#metricLabel {{ color:{REF_MUTED}; font-size:10px; font-weight:600; }}"
             "QLabel { color:#8da0b8; }"
         )
         return container
 
-    def _metric_chip(self, icon: str, value: str, label: str) -> QWidget:
+    def _status_badge_stylesheet(self, status_key: str) -> tuple[str, str]:
+        """Текст и QSS бейджа статуса в стиле stageBadge / BadgeSelect."""
+        label, bg, fg, icon = STATUS_STYLE[status_key]
+        display = {
+            "pending": "○ Ожидает",
+            "running": "● Выполняется",
+            "passed": "✓ Завершено",
+            "failed": "✕ Ошибка",
+            "needs_human": "⏸ Ожидает ответа",
+            "needs_credentials": "🔑 Авторизация",
+            "warning": f"{icon} {label}",
+        }.get(status_key, f"{icon} {label}")
+        stylesheet = (
+            f"background:{bg}; color:{fg}; border:1px solid rgba(255,255,255,0.07);"
+            "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:700;"
+        )
+        return display, stylesheet
+
+    def _metric_chip(
+        self,
+        icon_kind: str,
+        value: str,
+        label: str,
+    ) -> tuple[QWidget, QLabel, QLabel, MetricChipIcon]:
         chip = QWidget()
         chip.setObjectName("metricChip")
         row = QHBoxLayout(chip)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        icon_label = QLabel(icon)
-        icon_label.setStyleSheet("color:#8daeff; font-size:18px;")
+        icon_widget = MetricChipIcon(icon_kind)
         texts = QVBoxLayout()
         texts.setContentsMargins(0, 0, 0, 0)
-        texts.setSpacing(1)
+        texts.setSpacing(2)
         value_label = QLabel(value)
         value_label.setObjectName("metricValue")
         label_widget = QLabel(label)
         label_widget.setObjectName("metricLabel")
         texts.addWidget(value_label)
         texts.addWidget(label_widget)
-        row.addWidget(icon_label)
+        row.addWidget(icon_widget, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addLayout(texts)
-        return chip
+        return chip, value_label, label_widget, icon_widget
 
     def _build_bottom_composer(self) -> QFrame:
         composer = QFrame()
@@ -1552,11 +1878,19 @@ class AgentCreateWidget(QWidget):
 
         self.request_edit = QTextEdit()
         self.request_edit.setPlaceholderText(EXAMPLE_REQUEST)
-        self.request_edit.setFixedHeight(22)
+        self.request_edit.setMinimumHeight(self._request_min_height)
+        self.request_edit.setMaximumHeight(self._request_max_height)
         self.request_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.request_edit.document().setDocumentMargin(0)
         self.request_edit.setObjectName("requestEdit")
+        self.request_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.request_edit.textChanged.connect(self._sync_request_edit_height)
+        self.request_edit.installEventFilter(self)
         layout.addWidget(self.request_edit)
+        self._sync_request_edit_height()
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
@@ -1588,8 +1922,35 @@ class AgentCreateWidget(QWidget):
         toolbar.addWidget(self._build_launch_split())
         layout.addLayout(toolbar)
 
+        divider_host = QWidget()
+        divider_host.setObjectName("workflowStepDividerHost")
+        divider_row = QHBoxLayout(divider_host)
+        divider_row.setContentsMargins(5, 5, 5, 5)
+        divider_row.setSpacing(0)
+        workflow_divider = QFrame()
+        workflow_divider.setObjectName("workflowStepDivider")
+        workflow_divider.setFixedHeight(1)
+        workflow_divider.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        divider_row.addWidget(workflow_divider)
+        layout.addWidget(divider_host)
+
+        workflow_host = QWidget()
+        workflow_host.setObjectName("workflowStepHost")
+        workflow_host_layout = QHBoxLayout(workflow_host)
+        workflow_host_layout.setContentsMargins(0, 0, 0, 0)
+        workflow_host_layout.setSpacing(0)
+        workflow_host_layout.addStretch(1)
         self._workflow_step_bar = WorkflowStepBar(self.select_stage, composer)
-        layout.addWidget(self._workflow_step_bar)
+        self._workflow_step_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        workflow_host_layout.addWidget(self._workflow_step_bar, 18)
+        workflow_host_layout.addStretch(1)
+        layout.addWidget(workflow_host)
 
         composer.setStyleSheet(
             "#composerPanel {"
@@ -1615,16 +1976,43 @@ class AgentCreateWidget(QWidget):
             "#launchSplitMain:disabled { color:#b8ccf5; }"
             "#launchSplitMenu {"
             "background:transparent; color:#ffffff; border:none;"
-            "border-left:1px solid #69a6ff; border-top-right-radius:9px;"
-            "border-bottom-right-radius:9px; font-size:12px; font-weight:700;"
+            "border-top-right-radius:9px; border-bottom-right-radius:9px;"
             "}"
+            "#launchSplitMenu::menu-indicator { width:0px; height:0px; border:none; }"
+            "#launchSplitDivider { background:rgba(0,0,0,0.22); min-width:1px; max-width:1px; }"
             "#launchSplitMenu:hover { background:rgba(255,255,255,0.08); }"
             "#launchSplitStop {"
             "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
             "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
             "}"
+            "#workflowStepDividerHost { background:transparent; }"
+            "#workflowStepDivider { background:#1a2740; border:none; }"
+            "#workflowStepHost { background:transparent; }"
         )
         return composer
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self.request_edit and event.type() == QEvent.Type.Resize:
+            self._sync_request_edit_height()
+        return super().eventFilter(obj, event)
+
+    def _sync_request_edit_height(self) -> None:
+        """Подстраивать высоту поля запроса под число строк без обрезки текста."""
+        edit = self.request_edit
+        viewport_width = max(40, edit.viewport().width())
+        edit.document().setTextWidth(viewport_width)
+        doc_height = edit.document().size().height()
+        frame = edit.frameWidth() * 2
+        margins = edit.contentsMargins()
+        target = int(doc_height + frame + margins.top() + margins.bottom() + 2)
+        target = max(self._request_min_height, min(self._request_max_height, target))
+        if edit.height() != target:
+            edit.setFixedHeight(target)
+        if target >= self._request_max_height:
+            edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            edit.verticalScrollBar().setValue(0)
 
     def _init_model_controls(self) -> None:
         """Создать селекты модели и кнопку обновления для строки toolbar."""
@@ -1684,9 +2072,18 @@ class AgentCreateWidget(QWidget):
         self.create_button.setCursor(Qt.CursorShape.PointingHandCursor)
         row.addWidget(self.create_button)
 
-        menu_button = QPushButton("▾")
+        divider = QFrame()
+        divider.setObjectName("launchSplitDivider")
+        divider.setFixedWidth(1)
+        divider.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
+        )
+        row.addWidget(divider)
+
+        menu_button = LaunchSplitMenuButton("")
         menu_button.setObjectName("launchSplitMenu")
-        menu_button.setFixedSize(28, 28)
+        menu_button.setFixedSize(30, 28)
         menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         menu = QMenu(wrap)
@@ -1808,67 +2205,62 @@ class AgentCreateWidget(QWidget):
             self._stage_cards[stage_id] = card
 
     def _build_details_panel(self) -> QWidget:
-        """Правая панель плана и текущего шага как на референсе."""
+        """Правая панель плана и текущего шага в одной непрерывной секции."""
         panel = QWidget()
         panel.setObjectName("detailsPanel")
-        panel.setMinimumWidth(318)
-        panel.setMaximumWidth(360)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 16, 14, 14)
+        panel.setMinimumWidth(400)
+        panel.setMaximumWidth(440)
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(8, 16, 14, 16)
+        outer.setSpacing(0)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebarPanel")
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        plan_panel = QFrame()
-        plan_panel.setObjectName("planPanel")
-        plan_layout = QVBoxLayout(plan_panel)
-        plan_layout.setContentsMargins(16, 16, 16, 14)
-        plan_layout.setSpacing(12)
-        header = QLabel("План")
-        header.setObjectName("planTitle")
-        plan_layout.addWidget(header)
+        plan_header = QLabel("План")
+        plan_header.setObjectName("planTitle")
+        layout.addWidget(plan_header)
 
         self._plan_steps_list = PlanStepsList(self)
-        for index, (stage_id, title, _subtitle) in enumerate(STAGE_ORDER[:6], start=1):
+        for index, (stage_id, title, _subtitle) in enumerate(STAGE_ORDER[:8], start=1):
             row = PlanStepRow(index, stage_id, title, self)
             self._plan_step_cards[stage_id] = row
             self._plan_steps_list.add_step(row)
-        plan_layout.addWidget(self._plan_steps_list)
-        plan_layout.addStretch(1)
-        layout.addWidget(plan_panel, 2)
+        layout.addWidget(self._plan_steps_list)
 
-        current_panel = QFrame()
-        current_panel.setObjectName("sidePanel")
-        current_layout = QVBoxLayout(current_panel)
-        current_layout.setContentsMargins(14, 14, 14, 14)
-        current_layout.setSpacing(10)
+        layout.addStretch(1)
+
+        self._current_step_section = QWidget()
+        self._current_step_section.setObjectName("currentStepSection")
+        current_layout = QVBoxLayout(self._current_step_section)
+        current_layout.setContentsMargins(0, 0, 0, 0)
+        current_layout.setSpacing(12)
+
         current_header = QLabel("Текущий шаг")
         current_header.setObjectName("sideTitle")
         current_layout.addWidget(current_header)
 
-        self.current_step_card = QFrame()
-        self.current_step_card.setObjectName("currentStepCard")
-        current_card_layout = QVBoxLayout(self.current_step_card)
-        current_card_layout.setContentsMargins(12, 10, 12, 10)
-        current_card_layout.setSpacing(6)
+        self._current_step_card = CurrentStepCard()
+        current_layout.addWidget(self._current_step_card)
 
-        self.detail_title = QLabel("Запрос пользователя")
-        self.detail_title.setObjectName("currentStepTitle")
-        self.detail_title.setWordWrap(True)
-        current_card_layout.addWidget(self.detail_title)
+        eta_row = QWidget()
+        eta_row.setObjectName("etaRow")
+        eta_row_layout = QHBoxLayout(eta_row)
+        eta_row_layout.setContentsMargins(0, 4, 0, 0)
+        eta_row_layout.setSpacing(6)
+        self._eta_sidebar_icon = MetricChipIcon("eta")
+        self.eta_label = QLabel("Ожидаемое завершение: —")
+        self.eta_label.setObjectName("etaLabel")
+        eta_row_layout.addWidget(self._eta_sidebar_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        eta_row_layout.addWidget(self.eta_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        current_layout.addWidget(eta_row)
 
-        self.detail_status = QLabel()
-        self.detail_status.setObjectName("currentStepStatus")
-        current_card_layout.addWidget(self.detail_status)
-        current_layout.addWidget(self.current_step_card)
+        layout.addWidget(self._current_step_section)
 
-        eta = QLabel("◷  Ожидаемое завершение ~2 мин")
-        eta.setObjectName("etaLabel")
-        current_layout.addWidget(eta)
-
-        self.detail_view = QTextEdit()
-        self.detail_view.setReadOnly(True)
-        self.detail_view.setObjectName("detailView")
-        current_layout.addWidget(self.detail_view, 1)
-        layout.addWidget(current_panel, 2)
+        layout.addStretch(1)
 
         self.dev_toggle = QPushButton("▸ Для разработчика (JSON и таблицы)")
         self.dev_toggle.setCheckable(True)
@@ -1880,26 +2272,22 @@ class AgentCreateWidget(QWidget):
         self._dev_container.setVisible(False)
         layout.addWidget(self._dev_container, 1)
 
+        outer.addWidget(sidebar, 1)
+
         panel.setStyleSheet(
             "#detailsPanel {"
             f"background:{REF_BG}; border-left:1px solid #10243c;"
             "}"
-            "#planPanel, #sidePanel {"
+            "#sidebarPanel {"
             f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
             "border-radius:14px;"
             "}"
             "#planTitle, #sideTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
-            "#currentStepCard { background:#0d213b; border:1px solid #183e68; border-radius:12px; }"
-            "#currentStepTitle { color:#e7eefc; font-size:13px; font-weight:800; }"
-            "#currentStepStatus { color:#9eb5d4; font-size:11px; }"
-            "#etaLabel { color:#75869f; font-size:11px; padding:4px 0; }"
-            "#detailView {"
-            "background:#071426; color:#aebbd0; border:1px solid #102844;"
-            "border-radius:10px; padding:10px; font-size:11px;"
-            "selection-background-color:#2f7cff;"
-            "}"
+            "#currentStepSection { background:transparent; }"
+            "#etaLabel { color:#75869f; font-size:12px; font-weight:600; padding:0; }"
+            "#etaRow { background:transparent; }"
             "#devToggle {"
-            "text-align:left; background:#0a1a2e; color:#8fa1bd;"
+            "text-align:left; background:transparent; color:#8fa1bd;"
             "border:1px solid #122844; border-radius:10px; padding:8px 10px;"
             "font-size:11px; font-weight:700;"
             "}"
@@ -2099,6 +2487,168 @@ class AgentCreateWidget(QWidget):
         self.live_log.append(message)
         scrollbar = self.live_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+        self._update_stage_from_progress(message)
+        self._refresh_run_header()
+
+    def _start_run_tracking(self) -> None:
+        """Запустить отсчёт времени выполнения для шапки."""
+        self._run_started_at = time.monotonic()
+        self._run_elapsed_seconds = 0.0
+        self._run_timer.start()
+        self._refresh_run_header()
+
+    def _stop_run_tracking(self) -> None:
+        """Остановить таймер и зафиксировать итоговое время."""
+        if self._run_started_at is not None:
+            self._run_elapsed_seconds = time.monotonic() - self._run_started_at
+            self._run_started_at = None
+        self._run_timer.stop()
+        self._refresh_run_header()
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _format_eta_minutes(seconds: float) -> str:
+        if seconds <= 0:
+            return "—"
+        minutes = max(1, int(round(seconds / 60)))
+        return f"~{minutes} мин"
+
+    def _current_elapsed_seconds(self) -> float:
+        if self._run_started_at is not None:
+            return time.monotonic() - self._run_started_at
+        return self._run_elapsed_seconds
+
+    def _resolve_active_stage_id(self) -> str:
+        for stage_id in TRACKED_STAGE_IDS:
+            if self._stage_cards[stage_id]._status == "running":
+                return stage_id
+        for stage_id in TRACKED_STAGE_IDS:
+            status = self._stage_cards[stage_id]._status
+            if status in {
+                "failed",
+                "warning",
+                "needs_human",
+                "needs_credentials",
+            }:
+                return stage_id
+        for stage_id in TRACKED_STAGE_IDS:
+            if self._stage_cards[stage_id]._status == "pending":
+                return stage_id
+        return TRACKED_STAGE_IDS[-1]
+
+    def _run_progress_percent(self) -> int:
+        total = len(TRACKED_STAGE_IDS)
+        passed = sum(
+            1
+            for stage_id in TRACKED_STAGE_IDS
+            if self._stage_cards[stage_id]._status == "passed"
+        )
+        active_id = self._resolve_active_stage_id()
+        active_status = self._stage_cards[active_id]._status
+        progress = float(passed)
+        if active_status == "running":
+            progress += 0.5
+        elif active_status == "passed" and active_id == TRACKED_STAGE_IDS[-1]:
+            progress = float(total)
+        return int(min(100, max(0, round(progress / total * 100))))
+
+    def _header_step_title(self, stage_id: str) -> str:
+        subtitle = self._stage_cards[stage_id]._subtitle.text().strip()
+        default_subtitle = next(
+            sub for sid, _, sub in STAGE_ORDER if sid == stage_id
+        )
+        if subtitle and subtitle not in {
+            default_subtitle,
+            "Стадия ещё не выполнялась.",
+        }:
+            return subtitle
+        return WORKFLOW_STAGE_LABELS.get(stage_id, default_subtitle)
+
+    def _run_header_status(self) -> str:
+        if self._human_panel.isVisible():
+            return "needs_human"
+        if self._is_busy():
+            return "running"
+        for stage_id in TRACKED_STAGE_IDS:
+            if self._stage_cards[stage_id]._status == "failed":
+                return "failed"
+        passed_count = sum(
+            1
+            for stage_id in TRACKED_STAGE_IDS
+            if self._stage_cards[stage_id]._status == "passed"
+        )
+        if passed_count == len(TRACKED_STAGE_IDS):
+            return "passed"
+        return "pending"
+
+    def _refresh_run_header(self) -> None:
+        """Обновить метрики шапки по текущему состоянию этапов."""
+        if not hasattr(self, "_elapsed_value_label"):
+            return
+
+        total_steps = len(TRACKED_STAGE_IDS)
+        active_id = self._resolve_active_stage_id()
+        active_index = TRACKED_STAGE_IDS.index(active_id) + 1
+        progress = self._run_progress_percent()
+        elapsed = self._current_elapsed_seconds()
+        step_title = self._header_step_title(active_id)
+
+        self._elapsed_value_label.setText(self._format_elapsed(elapsed))
+        self._step_value_label.setText(f"Шаг {active_index} из {total_steps}")
+        self._step_detail_label.setText(step_title)
+        self.run_progress.setValue(progress)
+        self._progress_percent_label.setText(f"{progress}%")
+
+        if self._is_busy() and progress > 0:
+            remaining = elapsed * (100 - progress) / progress
+            eta_text = self._format_eta_minutes(remaining)
+        elif progress >= 100:
+            eta_text = "0 мин"
+        else:
+            eta_text = "—"
+        self._eta_header_value_label.setText(eta_text)
+        if hasattr(self, "eta_label"):
+            self.eta_label.setText(f"Ожидаемое завершение: {eta_text}")
+
+        is_active = self._is_busy()
+        for icon in (
+            getattr(self, "_elapsed_icon", None),
+            getattr(self, "_step_icon", None),
+            getattr(self, "_eta_icon", None),
+            getattr(self, "_eta_sidebar_icon", None),
+        ):
+            if icon is not None:
+                icon.set_active(is_active)
+
+        status_key = self._run_header_status()
+        badge_text, badge_style = self._status_badge_stylesheet(status_key)
+        self.run_status_badge.setText(badge_text)
+        self.run_status_badge.setStyleSheet(badge_style)
+
+    def _update_stage_from_progress(self, message: str) -> None:
+        """Сопоставить live-сообщения с активным этапом workflow."""
+        lower = message.lower()
+        if "остановк" in lower:
+            return
+        if "строю план" in lower:
+            self._set_running(STAGE_PLAN)
+            self._stage_details[STAGE_PLAN] = message.strip()
+            return
+        if "план построен" in lower:
+            self._set_stage(STAGE_PLAN, "passed", "План LLM построен", message.strip())
+            self._set_running(STAGE_TRIAL)
+            self._stage_details[STAGE_TRIAL] = message.strip()
+            return
+        if self._stage_cards[STAGE_TRIAL]._status == "running":
+            self._stage_details[STAGE_TRIAL] = message.strip()
+            if self._selected_stage == STAGE_TRIAL:
+                self._refresh_current_step_card()
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         """Включить/выключить кнопки действий на время фоновой операции."""
@@ -2125,6 +2675,7 @@ class AgentCreateWidget(QWidget):
         self.stop_button.setVisible(True)
         if self._launch_stop_action is not None:
             self._launch_stop_action.setEnabled(True)
+        self._start_run_tracking()
         thread = QThread()
         worker = CreateFlowWorker(job)
         self._thread = thread
@@ -2154,6 +2705,7 @@ class AgentCreateWidget(QWidget):
             self._launch_stop_action.setEnabled(False)
         self._cancel_event.clear()
         self._set_buttons_enabled(True)
+        self._stop_run_tracking()
 
     def request_stop(self) -> None:
         """Запросить остановку выполняющегося агента (кооперативно, между шагами)."""
@@ -2421,6 +2973,7 @@ class AgentCreateWidget(QWidget):
         self.human_continue_button.setEnabled(True)
         self._human_panel.setVisible(True)
         self._append_log("⏸ Агент ожидает вашего ответа/действия. Ответьте и нажмите «Продолжить».")
+        self._refresh_run_header()
 
     def _populate_human_options(self, options: list[str]) -> None:
         """Перестроить радиокнопки вариантов ответа + «Свой вариант»."""
@@ -2484,6 +3037,7 @@ class AgentCreateWidget(QWidget):
         self._human_panel.setVisible(False)
         self._paused_agent = None
         self._paused_state = None
+        self._refresh_run_header()
 
     def continue_after_human(self) -> None:
         """Продолжить работу агента после ответа/действия человека."""
@@ -2635,6 +3189,10 @@ class AgentCreateWidget(QWidget):
             "Технические детали доступны в разделе «Для разработчика» ниже: "
             "вкладки Общее / Данные / Инструменты / Граф / JSON."
         )
+        self._run_started_at = None
+        self._run_elapsed_seconds = 0.0
+        self._run_timer.stop()
+        self._refresh_run_header()
 
     def _set_stage(
         self,
@@ -2652,12 +3210,68 @@ class AgentCreateWidget(QWidget):
         self._stage_details[stage_id] = detail
         if self._selected_stage == stage_id:
             self.select_stage(stage_id)
+        self._refresh_run_header()
 
     def _set_running(self, stage_id: str) -> None:
         """Пометить стадию как выполняющуюся."""
         self._stage_cards[stage_id].set_status("running")
         if stage_id in self._plan_step_cards:
             self._plan_step_cards[stage_id].set_status("running")
+        if self._selected_stage == stage_id:
+            self._refresh_current_step_card()
+        self._refresh_run_header()
+
+    def _stage_plan_index(self, stage_id: str) -> int:
+        for index, (sid, _, _) in enumerate(STAGE_ORDER[:8], start=1):
+            if sid == stage_id:
+                return index
+        return 1
+
+    def _current_step_title(self, stage_id: str) -> str:
+        card = self._stage_cards[stage_id]
+        subtitle = card._subtitle.text().strip()
+        if subtitle:
+            return subtitle
+        return next(title for sid, title, _ in STAGE_ORDER if sid == stage_id)
+
+    def _current_step_detail_text(self, stage_id: str, status: str) -> str:
+        if status == "running":
+            detail = (self._stage_details.get(stage_id) or "").strip()
+            for line in detail.splitlines():
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                lowered = cleaned.lower()
+                if lowered.startswith("выполняю:"):
+                    return cleaned
+                if "." in cleaned and len(cleaned) <= 80 and " " not in cleaned:
+                    return f"Выполняю: {cleaned}"
+                if " — " in cleaned:
+                    tool_name = cleaned.split(" — ", 1)[0].strip("• ").strip()
+                    if tool_name:
+                        return f"Выполняю: {tool_name}"
+            subtitle = self._current_step_title(stage_id)
+            if subtitle and subtitle != "Стадия ещё не выполнялась.":
+                return f"Выполняю: {_short(subtitle, 55)}"
+            return "Выполняю шаг"
+        if status == "passed":
+            return "Шаг выполнен"
+        if status == "pending":
+            return "Ожидает начала"
+        label, _, _, _ = STATUS_STYLE.get(status, STATUS_STYLE["pending"])
+        return f"Статус: {label}"
+
+    def _refresh_current_step_card(self) -> None:
+        if self._selected_stage is None:
+            return
+        stage_id = self._selected_stage
+        card = self._stage_cards[stage_id]
+        self._current_step_card.set_content(
+            self._stage_plan_index(stage_id),
+            self._current_step_title(stage_id),
+            self._current_step_detail_text(stage_id, card._status),
+            card._status,
+        )
 
     def select_stage(self, stage_id: str) -> None:
         """Показать детали выбранной стадии в правой панели."""
@@ -2668,16 +3282,7 @@ class AgentCreateWidget(QWidget):
             card.set_active(other_id == stage_id)
         if self._workflow_step_bar is not None:
             self._workflow_step_bar.set_active_stage(stage_id)
-        card = self._stage_cards[stage_id]
-        title = next(t for sid, t, _ in STAGE_ORDER if sid == stage_id)
-        self.detail_title.setText(title)
-        label, bg, fg, icon = STATUS_STYLE[card._status]
-        self.detail_status.setText(f"{icon}  Статус: {label}")
-        self.detail_status.setStyleSheet(
-            f"color:{fg}; background:{bg}; font-size:12px; font-weight:700;"
-            "padding:6px 10px; border-radius:9px; border:1px solid #2b3852;"
-        )
-        self.detail_view.setPlainText(self._stage_details.get(stage_id, ""))
+        self._refresh_current_step_card()
         if stage_id == STAGE_DEV:
             self.dev_toggle.setChecked(True)
 

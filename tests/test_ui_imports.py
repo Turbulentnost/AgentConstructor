@@ -149,7 +149,7 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
 
     widget.model_combo.currentIndexChanged.connect(_capture)
     for action in menu.actions():
-        if action.text() != widget.model_combo.currentText().rstrip(" ▾"):
+        if action.text() != widget.model_combo.currentText():
             action.trigger()
             break
     qt_app.processEvents()

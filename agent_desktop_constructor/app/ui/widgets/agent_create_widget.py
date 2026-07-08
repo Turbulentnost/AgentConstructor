@@ -16,6 +16,7 @@ from urllib import error, request
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QPoint,
     QPointF,
     Property,
     QPropertyAnimation,
@@ -23,11 +24,11 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
+    Signal,
 )
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -35,7 +36,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QProgressBar,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
@@ -90,6 +93,85 @@ DEFAULT_UI_MODEL_OPTIONS: tuple[UiModelOption, ...] = (
     UiModelOption("lmstudio", "LM Studio (gpt-oss-120b)"),
 )
 
+BADGE_SELECT_MENU_STYLE = """
+QMenu {
+    background: #0f172a;
+    color: #dbeafe;
+    border: 1px solid #1e3a5f;
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 18px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background: #1d4ed8;
+}
+"""
+
+MODEL_BADGE_STYLE = """
+QPushButton {
+    background: #20283a;
+    color: #9da9bf;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 9px;
+    padding: 3px 20px 3px 9px;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: left;
+}
+QPushButton:hover {
+    background: #263247;
+    color: #c5d0e4;
+    border-color: rgba(255,255,255,0.12);
+}
+QPushButton:disabled {
+    color: #5c6b82;
+    background: #161d2c;
+}
+"""
+
+REASON_BADGE_STYLE = """
+QPushButton {
+    background: transparent;
+    color: #94a3b8;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    padding: 3px 20px 3px 9px;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: left;
+}
+QPushButton:hover {
+    background: #20283a;
+    color: #9da9bf;
+    border: 1px solid rgba(255,255,255,0.07);
+}
+QPushButton:disabled {
+    color: #475569;
+    background: transparent;
+    border-color: transparent;
+}
+"""
+
+MODEL_REFRESH_BUTTON_STYLE = """
+QPushButton {
+    background: transparent;
+    color: #64748b;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 700;
+}
+QPushButton:hover {
+    background: #20283a;
+    color: #9da9bf;
+    border: 1px solid rgba(255,255,255,0.07);
+}
+"""
+
 
 def _split_model_mode(model_id: str) -> tuple[str, str | None]:
     """Разобрать selectable id вида model:internal/model:reason."""
@@ -132,6 +214,17 @@ STAGE_ORDER: list[tuple[str, str, str]] = [
     (STAGE_DEV, "JSON для разработчика", "Технические детали"),
 ]
 
+WORKFLOW_TABS: list[tuple[str, str, str]] = [
+    (STAGE_REQUEST, "Запрос", "request"),
+    (STAGE_PLAN, "План", "plan"),
+    (STAGE_TOOLS, "Инструменты", "tools"),
+    (STAGE_GRAPH, "Граф", "graph"),
+    (STAGE_CHECK, "Проверка", "check"),
+    (STAGE_TRIAL, "Запуск", "launch"),
+    (STAGE_QUALITY, "Качество", "quality"),
+    (STAGE_RESULT, "Итог", "result"),
+]
+
 # status -> (подпись бейджа, цвет фона, цвет текста, значок)
 STATUS_STYLE: dict[str, tuple[str, str, str, str]] = {
     "pending": ("Ожидает", "#20283a", "#9da9bf", "○"),
@@ -142,6 +235,14 @@ STATUS_STYLE: dict[str, tuple[str, str, str, str]] = {
     "needs_human": ("Нужен человек", "#57351c", "#ffe1bd", "☺"),
     "needs_credentials": ("Авторизация", "#4c3d19", "#ffe7a3", "🔑"),
 }
+
+REF_BG = "#06101d"
+REF_PANEL = "#08172a"
+REF_PANEL_ALT = "#0a1b31"
+REF_BORDER = "#16304f"
+REF_BLUE = "#2f7cff"
+REF_TEXT = "#e7eefc"
+REF_MUTED = "#7f8ea5"
 
 
 def _short(text: object, max_len: int = 90) -> str:
@@ -278,8 +379,8 @@ class NeonStepIndicator(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        center = QPointF(24, 27)
-        radius = 14
+        center = QPointF(self.width() / 2, 29)
+        radius = 11
         circle_rect = QRectF(
             center.x() - radius,
             center.y() - radius,
@@ -326,12 +427,12 @@ class NeonStepIndicator(QWidget):
             painter.drawText(circle_rect, Qt.AlignmentFlag.AlignCenter, str(self._index))
         elif self._status == "failed":
             painter.setPen(self._glow_pen(color, 2.5, 230))
-            painter.drawLine(QPointF(19, 22), QPointF(29, 32))
-            painter.drawLine(QPointF(29, 22), QPointF(19, 32))
+            painter.drawLine(QPointF(center.x() - 4, center.y() - 4), QPointF(center.x() + 4, center.y() + 4))
+            painter.drawLine(QPointF(center.x() + 4, center.y() - 4), QPointF(center.x() - 4, center.y() + 4))
         else:
             painter.setPen(self._glow_pen(color, 2.6, 230))
-            painter.drawLine(QPointF(24, 19), QPointF(24, 29))
-            painter.drawPoint(QPointF(24, 35))
+            painter.drawLine(QPointF(center.x(), center.y() - 7), QPointF(center.x(), center.y() + 3))
+            painter.drawPoint(QPointF(center.x(), center.y() + 8))
 
     def _paint_connector(
         self,
@@ -448,9 +549,15 @@ class StageCard(QFrame):
         self._selected = False
         self.setObjectName("stageCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(86)
+        self.setMinimumHeight(56)
 
         self._indicator = NeonStepIndicator(index, is_last)
+        self._indicator.setFixedWidth(38)
+        self._indicator.setMinimumHeight(50)
+
+        self._time = QLabel("10:42:17")
+        self._time.setObjectName("stageTime")
+        self._time.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._title = QLabel(title)
         self._title.setObjectName("stageTitle")
@@ -462,22 +569,27 @@ class StageCard(QFrame):
         self._badge.setObjectName("stageBadge")
         self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        self._chevron = QLabel("⌄")
+        self._chevron.setObjectName("stageChevron")
+        self._chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        row.addWidget(self._indicator, 0, Qt.AlignmentFlag.AlignTop)
+        row.setContentsMargins(10, 0, 10, 0)
+        row.setSpacing(10)
+        row.addWidget(self._time, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._indicator, 0, Qt.AlignmentFlag.AlignVCenter)
         text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 8, 12, 8)
-        text_col.setSpacing(4)
+        text_col.setContentsMargins(0, 6, 0, 6)
+        text_col.setSpacing(3)
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
+        title_row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self._title, 1)
-        title_row.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignTop)
         text_col.addLayout(title_row)
         text_col.addWidget(self._subtitle)
-        text_col.addStretch(1)
         row.addLayout(text_col, 1)
+        row.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.set_status("pending")
 
@@ -486,10 +598,10 @@ class StageCard(QFrame):
         self._status = status if status in STATUS_STYLE else "pending"
         label, bg, fg, icon = STATUS_STYLE[self._status]
         self._indicator.set_status(self._status)
-        self._badge.setText(f"{icon} {label}")
+        self._badge.setText(label)
         self._badge.setStyleSheet(
             f"background:{bg}; color:{fg}; border-radius:9px;"
-            "padding:3px 10px; font-size:11px; font-weight:600;"
+            "padding:3px 9px; font-size:10px; font-weight:700;"
         )
         self._apply_frame_style()
 
@@ -503,19 +615,19 @@ class StageCard(QFrame):
         self._apply_frame_style()
 
     def _apply_frame_style(self) -> None:
-        border = "#5d8cff" if self._selected else "#243047"
-        bg = "#192030" if self._selected else "#111722"
-        glow = "rgba(77,139,255,0.22)" if self._selected else "rgba(47,255,163,0.08)"
+        border = "#275d9e" if self._selected else "#15304e"
+        bg = "#0d213b" if self._selected else "#08172a"
         self.setStyleSheet(
             "#stageCard {"
             f"background:{bg}; border:1px solid {border};"
-            "border-radius:14px;"
+            "border-radius:12px;"
             "}"
-            "#stageCard:hover { border:1px solid #536b99; background:#151d2b; }"
-            f"#stageCard {{ selection-background-color:{glow}; }}"
-            "#stageTitle { color:#f5f7ff; font-size:13px; font-weight:700; }"
-            "#stageSubtitle { color:#8d9ab3; font-size:11px; line-height:1.35; }"
+            "#stageCard:hover { border:1px solid #2f7cff; background:#0b1d34; }"
+            "#stageTime { color:#52637a; font-size:11px; min-width:54px; }"
+            "#stageTitle { color:#dce7f8; font-size:12px; font-weight:700; }"
+            "#stageSubtitle { color:#7f8ea5; font-size:10px; line-height:1.25; }"
             "#stageBadge { border:1px solid rgba(255,255,255,0.07); }"
+            "#stageChevron { color:#6f7e93; font-size:17px; min-width:18px; }"
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -555,14 +667,13 @@ class LiveLogView(QScrollArea):
         self.setWidget(self._host)
         self.setStyleSheet(
             "#liveLogView {"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            "stop:0 #0b101a, stop:0.52 #0d1320, stop:1 #111827);"
-            "border:1px solid #263247; border-radius:14px;"
+            "background:#071426;"
+            "border:1px solid #102844; border-radius:12px;"
             "}"
             "#liveLogHost { background:transparent; }"
             "#livePlaceholder { color:#66738b; font-size:12px; padding:8px; }"
             "#liveLogItem {"
-            "background:rgba(18,26,41,0.82); border:1px solid #253249;"
+            "background:#081a2f; border:1px solid #15304e;"
             "border-radius:10px;"
             "}"
             "#liveLogItem QLabel { color:#d6deec; font-size:12px; }"
@@ -691,7 +802,7 @@ class LiveLogView(QScrollArea):
         return (
             "#liveLogItem {"
             "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            f"stop:0 {color}, stop:0.012 #172033, stop:1 #0f1624);"
+            f"stop:0 {color}, stop:0.009 #0c213a, stop:1 #08172a);"
             f"border:1px solid {color}; border-radius:10px;"
             "}"
         )
@@ -699,6 +810,571 @@ class LiveLogView(QScrollArea):
     @staticmethod
     def _clean_message(text: str) -> str:
         return text.lstrip("✅⚠❌⏸📎🧩🔎▶⏹ ").strip() or text
+
+
+class PlanNumberCircle(QWidget):
+    """Круг с номером шага, как в референсе плана."""
+
+    def __init__(self, number: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._number = number
+        self._visual = "pending"
+        self.setFixedSize(28, 28)
+
+    def set_visual(self, visual: str) -> None:
+        self._visual = visual
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(1.5, 1.5, 25, 25)
+        if self._visual == "active":
+            border = QColor("#3b82f6")
+            text = QColor("#eef5ff")
+        elif self._visual == "passed":
+            border = QColor("#4b5568")
+            text = QColor("#9aa8bc")
+        else:
+            border = QColor("#334155")
+            text = QColor("#64748b")
+        pen = QPen(border, 1.4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(rect)
+        painter.setPen(text)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(self._number))
+
+
+class PlanStatusIcon(QWidget):
+    """Статус справа: зелёная галочка или синяя точка."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._mode = "none"
+        self.setFixedSize(18, 18)
+
+    def set_mode(self, mode: str) -> None:
+        self._mode = mode
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._mode == "none":
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._mode == "check":
+            color = QColor("#22c55e")
+            painter.setPen(QPen(color, 1.3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(2, 2, 14, 14))
+            painter.setPen(QPen(color, 1.5))
+            path = QPainterPath(QPointF(5.5, 9.2))
+            path.lineTo(QPointF(8.2, 11.8))
+            path.lineTo(QPointF(12.8, 6.2))
+            painter.drawPath(path)
+        elif self._mode == "dot":
+            glow = QColor("#3b82f6")
+            glow.setAlpha(60)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(QRectF(3, 3, 12, 12))
+            painter.setBrush(QColor("#3b82f6"))
+            painter.drawEllipse(QRectF(6, 6, 6, 6))
+
+
+class PlanStepRow(QFrame):
+    """Строка шага в блоке «План» с левой accent-полосой и статусом справа."""
+
+    def __init__(
+        self,
+        index: int,
+        stage_id: str,
+        title: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.stage_id = stage_id
+        self._status = "pending"
+        self._active = False
+        self.setObjectName("planStepRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(46)
+        self.setMaximumHeight(52)
+
+        self._accent = QFrame()
+        self._accent.setFixedWidth(3)
+        self._accent.setObjectName("planStepAccent")
+
+        self._number = PlanNumberCircle(index)
+        self._title = QLabel(title)
+        self._title.setObjectName("planStepTitle")
+        self._title.setWordWrap(False)
+        self._status_icon = PlanStatusIcon()
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 10, 0)
+        row.setSpacing(10)
+        row.addWidget(self._accent)
+        row.addWidget(self._number, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._title, 1, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._status_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._apply_style()
+
+    def set_status(self, status: str) -> None:
+        self._status = status if status in STATUS_STYLE else "pending"
+        self._apply_style()
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self._apply_style()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        parent = self.parent()
+        while parent is not None and not hasattr(parent, "select_stage"):
+            parent = parent.parent()
+        if parent is not None:
+            parent.select_stage(self.stage_id)
+        super().mousePressEvent(event)
+
+    def _apply_style(self) -> None:
+        is_running = self._status == "running"
+        is_passed = self._status == "passed"
+        is_problem = self._status in {
+            "failed",
+            "warning",
+            "needs_human",
+            "needs_credentials",
+        }
+
+        if is_running:
+            row_bg = "#131d2f"
+            title_color = "#3b82f6"
+            number_visual = "active"
+            status_mode = "dot"
+            accent = "#3b82f6"
+        elif is_passed:
+            row_bg = "rgba(21, 26, 35, 0.72)"
+            title_color = "#b8c5d6"
+            number_visual = "passed"
+            status_mode = "check"
+            accent = "transparent"
+        elif is_problem:
+            row_bg = "rgba(21, 26, 35, 0.72)"
+            title_color = "#fbbf24" if self._status != "failed" else "#f87171"
+            number_visual = "pending"
+            status_mode = "none"
+            accent = "transparent"
+        elif self._active:
+            row_bg = "#131d2f"
+            title_color = "#3b82f6"
+            number_visual = "active"
+            status_mode = "none"
+            accent = "#3b82f6"
+        else:
+            row_bg = "rgba(21, 26, 35, 0.55)"
+            title_color = "#64748b"
+            number_visual = "pending"
+            status_mode = "none"
+            accent = "transparent"
+
+        self._number.set_visual(number_visual)
+        self._status_icon.set_mode(status_mode)
+        self._accent.setStyleSheet(f"background:{accent}; border-radius:2px;")
+        self.setStyleSheet(
+            "#planStepRow {"
+            f"background:{row_bg}; border:none; border-radius:8px;"
+            "}"
+            "#planStepRow:hover { background:#172338; }"
+            f"#planStepTitle {{ color:{title_color}; font-size:12px; font-weight:600; }}"
+        )
+
+
+class PlanStepsList(QWidget):
+    """Вертикальный список шагов плана с пунктирной линией между кругами."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rows: list[PlanStepRow] = []
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 2, 0, 2)
+        self._layout.setSpacing(6)
+
+    def add_step(self, row: PlanStepRow) -> None:
+        self._rows.append(row)
+        self._layout.addWidget(row)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if len(self._rows) < 2:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        first = self._rows[0]
+        last = self._rows[-1]
+        start_center = first._number.mapTo(
+            self,
+            QPointF(first._number.width() / 2, first._number.height() / 2),
+        )
+        end_center = last._number.mapTo(
+            self,
+            QPointF(last._number.width() / 2, last._number.height() / 2),
+        )
+        x = start_center.x()
+        start_y = start_center.y()
+        end_y = end_center.y()
+        pen = QPen(QColor("#334155"), 1.2)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setDashPattern([3, 4])
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
+
+
+class BadgeSelect(QPushButton):
+    """Pill-селект в стиле бейджа «Ожидает» с меню, раскрывающимся вверх."""
+
+    currentIndexChanged = Signal(int)
+
+    def __init__(self, *, ghost: bool = False, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ghost = ghost
+        self._labels: list[str] = []
+        self._data: list[object] = []
+        self._index = -1
+        self._menu = QMenu(self)
+        self._menu.setStyleSheet(BADGE_SELECT_MENU_STYLE)
+        self._menu.triggered.connect(self._on_menu_action)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clicked.connect(self._open_menu)
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(REASON_BADGE_STYLE if self._ghost else MODEL_BADGE_STYLE)
+
+    def _open_menu(self) -> None:
+        if not self.isEnabled() or self.count() == 0:
+            return
+        self._rebuild_menu()
+        self._menu.adjustSize()
+        anchor = self.mapToGlobal(QPoint(0, 0))
+        menu_height = self._menu.sizeHint().height()
+        if menu_height <= 0:
+            menu_height = self.count() * 28 + 12
+        self._menu.popup(QPoint(anchor.x(), anchor.y() - menu_height))
+
+    def _rebuild_menu(self) -> None:
+        self._menu.clear()
+        for index, label in enumerate(self._labels):
+            action = self._menu.addAction(label)
+            action.setData(index)
+
+    def _on_menu_action(self, action) -> None:
+        index = action.data()
+        if index is None:
+            return
+        self.setCurrentIndex(int(index))
+
+    def addItem(self, text: str, data: object | None = None) -> None:
+        self._labels.append(text)
+        self._data.append(data if data is not None else text)
+        if self.count() == 1:
+            self._set_index(0, emit=False)
+
+    def clear(self) -> None:
+        self._labels.clear()
+        self._data.clear()
+        self._index = -1
+        self.setText("")
+
+    def count(self) -> int:
+        return len(self._labels)
+
+    def currentIndex(self) -> int:
+        return self._index
+
+    def currentText(self) -> str:
+        if self._index < 0 or self._index >= len(self._labels):
+            return ""
+        return self._labels[self._index]
+
+    def currentData(self) -> object | None:
+        if self._index < 0 or self._index >= len(self._data):
+            return None
+        return self._data[self._index]
+
+    def setCurrentIndex(self, index: int) -> None:
+        self._set_index(index, emit=True)
+
+    def findData(self, data: object) -> int:
+        for index, value in enumerate(self._data):
+            if value == data:
+                return index
+        return -1
+
+    def showPopup(self) -> None:
+        self._open_menu()
+
+    def hidePopup(self) -> None:
+        self._menu.hide()
+
+    def view(self) -> QMenu:
+        return self._menu
+
+    def _set_index(self, index: int, *, emit: bool) -> None:
+        if index < 0 or index >= len(self._labels):
+            return
+        previous = self._index
+        self._index = index
+        self.setText(f"{self._labels[index]}  ▾")
+        if emit and previous != index:
+            self.currentIndexChanged.emit(index)
+
+
+class ComposerIconButton(QPushButton):
+    """Квадратная кнопка с line-icon для нижней панели composer."""
+
+    def __init__(self, kind: str, tooltip: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._kind = kind
+        self.setText("")
+        self.setObjectName("composerIconButton")
+        self.setToolTip(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(30, 30)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#94a3b8")
+        pen = QPen(color, 1.35)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if self._kind == "attach":
+            path = QPainterPath(QPointF(14, 8))
+            path.arcTo(QRectF(10, 8, 6, 6), 0, -180)
+            path.lineTo(QPointF(14, 19))
+            path.arcTo(QRectF(10, 16, 6, 6), 180, -180)
+            painter.drawPath(path)
+        elif self._kind == "database":
+            painter.drawEllipse(QRectF(7, 5, 16, 5))
+            painter.drawLine(QPointF(7, 7.5), QPointF(7, 20))
+            painter.drawLine(QPointF(23, 7.5), QPointF(23, 20))
+            painter.drawEllipse(QRectF(7, 12, 16, 5))
+            painter.drawEllipse(QRectF(7, 18, 16, 5))
+        elif self._kind == "grid":
+            painter.drawRect(QRectF(7, 7, 7, 7))
+            painter.drawRect(QRectF(16, 7, 7, 7))
+            painter.drawRect(QRectF(7, 16, 7, 7))
+            painter.drawRect(QRectF(16, 16, 7, 7))
+        else:
+            painter.drawLine(QPointF(10, 10), QPointF(8, 10))
+            painter.drawLine(QPointF(8, 10), QPointF(8, 20))
+            painter.drawLine(QPointF(8, 20), QPointF(10, 20))
+            painter.drawLine(QPointF(20, 10), QPointF(22, 10))
+            painter.drawLine(QPointF(22, 10), QPointF(22, 20))
+            painter.drawLine(QPointF(22, 20), QPointF(20, 20))
+
+
+class WorkflowStepIcon(QWidget):
+    """Line-icon для нижней панели шагов workflow."""
+
+    def __init__(self, kind: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._kind = kind
+        self._active = False
+        self.setFixedSize(16, 16)
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self.update()
+
+    def _color(self) -> QColor:
+        return QColor("#3b82f6") if self._active else QColor("#64748b")
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = self._color()
+        pen = QPen(color, 1.35)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if self._kind == "request":
+            painter.drawRoundedRect(QRectF(1.5, 2.5, 11, 9), 3, 3)
+            painter.drawLine(QPointF(4.5, 11.5), QPointF(6.5, 14))
+            for y in (5.5, 7.5, 9.5):
+                painter.drawLine(QPointF(4, y), QPointF(10, y))
+        elif self._kind == "plan":
+            painter.drawRect(QRectF(2.5, 2.5, 11, 11))
+            painter.drawLine(QPointF(8, 2.5), QPointF(8, 13.5))
+            painter.drawLine(QPointF(2.5, 8), QPointF(13.5, 8))
+        elif self._kind == "tools":
+            painter.drawEllipse(QRectF(2.5, 4.5, 5, 5))
+            painter.drawEllipse(QRectF(8.5, 6.5, 5, 5))
+        elif self._kind == "graph":
+            for x, y in ((3, 3), (12, 3), (3, 12), (12, 12)):
+                painter.drawEllipse(QRectF(x - 1.2, y - 1.2, 2.4, 2.4))
+            painter.drawLine(QPointF(4.2, 4.2), QPointF(10.8, 4.2))
+            painter.drawLine(QPointF(4.2, 11.8), QPointF(10.8, 11.8))
+            painter.drawLine(QPointF(4.2, 4.2), QPointF(4.2, 11.8))
+            painter.drawLine(QPointF(10.8, 4.2), QPointF(10.8, 11.8))
+        elif self._kind == "check":
+            path = QPainterPath(QPointF(8, 2.2))
+            path.lineTo(QPointF(12.8, 4.2))
+            path.lineTo(QPointF(11.8, 12.2))
+            path.lineTo(QPointF(4.2, 12.2))
+            path.lineTo(QPointF(3.2, 4.2))
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.drawLine(QPointF(6.2, 8.2), QPointF(7.8, 9.8))
+            painter.drawLine(QPointF(7.8, 9.8), QPointF(10.2, 6.8))
+        elif self._kind == "launch":
+            painter.drawEllipse(QRectF(2.5, 2.5, 11, 11))
+            painter.drawLine(QPointF(8, 5), QPointF(8, 11))
+            painter.drawLine(QPointF(5, 8), QPointF(11, 8))
+        elif self._kind == "quality":
+            painter.drawEllipse(QRectF(5, 2.2, 6, 6))
+            path = QPainterPath(QPointF(4.5, 8.2))
+            path.lineTo(QPointF(11.5, 8.2))
+            path.lineTo(QPointF(10, 13.5))
+            path.lineTo(QPointF(6, 13.5))
+            path.closeSubpath()
+            painter.drawPath(path)
+        else:
+            path = QPainterPath(QPointF(8, 2.5))
+            path.lineTo(QPointF(13, 8))
+            path.lineTo(QPointF(8, 13.5))
+            path.lineTo(QPointF(3, 8))
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.drawLine(QPointF(8, 4.5), QPointF(8, 12.5))
+
+
+class WorkflowStepConnector(QWidget):
+    """Короткая пунктирная линия между вкладками workflow."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(16, 32)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#2563eb"), 1.2)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setDashPattern([2.5, 3.5])
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        y = self.height() / 2
+        painter.drawLine(QPointF(1, y), QPointF(self.width() - 1, y))
+
+
+class WorkflowStepTab(QFrame):
+    """Вкладка нижней панели workflow с иконкой и подписью."""
+
+    clicked = Signal(str)
+
+    def __init__(
+        self,
+        stage_id: str,
+        label: str,
+        icon_kind: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.stage_id = stage_id
+        self._active = False
+        self.setObjectName("workflowStepTab")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(32)
+        self.setMaximumHeight(34)
+
+        self._icon = WorkflowStepIcon(icon_kind)
+        self._label = QLabel(label)
+        self._label.setObjectName("workflowStepLabel")
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 6, 10, 6)
+        row.setSpacing(6)
+        row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._apply_style()
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self._icon.set_active(active)
+        self._apply_style()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit(self.stage_id)
+        super().mousePressEvent(event)
+
+    def _apply_style(self) -> None:
+        if self._active:
+            bg = "#0f2340"
+            border = "#3b82f6"
+            text = "#eef5ff"
+        else:
+            bg = "rgba(17, 24, 39, 0.55)"
+            border = "#1e293b"
+            text = "#64748b"
+        self.setStyleSheet(
+            "#workflowStepTab {"
+            f"background:{bg}; border:1px solid {border}; border-radius:8px;"
+            "}"
+            "#workflowStepTab:hover { background:#172338; border-color:#334155; }"
+            f"#workflowStepLabel {{ color:{text}; font-size:11px; font-weight:600; }}"
+        )
+
+
+class WorkflowStepBar(QFrame):
+    """Горизонтальная панель шагов workflow как в референсе."""
+
+    stageSelected = Signal(str)
+
+    def __init__(
+        self,
+        on_select: Callable[[str], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_select = on_select
+        self._tabs: dict[str, WorkflowStepTab] = {}
+        self.setObjectName("workflowStepBar")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 6, 8, 6)
+        row.setSpacing(0)
+        for index, (stage_id, label, icon_kind) in enumerate(WORKFLOW_TABS):
+            if index > 0:
+                row.addWidget(WorkflowStepConnector())
+            tab = WorkflowStepTab(stage_id, label, icon_kind, self)
+            tab.clicked.connect(self._on_select)
+            self._tabs[stage_id] = tab
+            row.addWidget(tab)
+        row.addStretch(1)
+        self.setStyleSheet(
+            "#workflowStepBar {"
+            "background:#060b13; border:1px solid #1a2740; border-radius:10px;"
+            "}"
+        )
+
+    def set_active_stage(self, stage_id: str) -> None:
+        if stage_id not in self._tabs:
+            return
+        for sid, tab in self._tabs.items():
+            tab.set_active(sid == stage_id)
 
 
 class AgentCreateWidget(QWidget):
@@ -724,6 +1400,9 @@ class AgentCreateWidget(QWidget):
         self._thread: QThread | None = None
         self._worker: CreateFlowWorker | None = None
         self._action_buttons: list[QPushButton] = []
+        self._plan_step_cards: dict[str, PlanStepRow] = {}
+        self._workflow_step_bar: WorkflowStepBar | None = None
+        self._launch_stop_action = None
         self._cancel_event = Event()
         self._paused_agent: AgentSpec | None = None
         self._paused_state: object | None = None
@@ -743,119 +1422,71 @@ class AgentCreateWidget(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(self._build_center())
         splitter.addWidget(self._build_details_panel())
-        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 2)
+        splitter.setHandleWidth(1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
 
     def _build_center(self) -> QWidget:
-        """Центральная рабочая область: заголовок, запрос, кнопки, лента."""
-        container = QWidget()
+        """Центральная рабочая область в стиле run timeline из референса."""
+        container = QWidget(self)
         container.setObjectName("centerArea")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 16, 8, 14)
+        layout.setSpacing(10)
 
-        title = QLabel("Создать агента")
+        timeline_panel = QFrame()
+        timeline_panel.setObjectName("timelinePanel")
+        panel_layout = QVBoxLayout(timeline_panel)
+        panel_layout.setContentsMargins(14, 12, 14, 10)
+        panel_layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        title = QLabel("Ход работы агента")
         title.setObjectName("screenTitle")
-        title.setStyleSheet("font-size:21px; font-weight:800; color:#f6f8ff;")
-        layout.addWidget(title)
+        self.run_status_badge = QLabel("● Выполняется")
+        self.run_status_badge.setObjectName("runStatusBadge")
+        title_row.addWidget(title)
+        title_row.addWidget(self.run_status_badge)
+        title_row.addStretch(1)
+        panel_layout.addLayout(title_row)
 
-        request_label = QLabel("Запрос пользователя")
-        request_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
-        layout.addWidget(request_label)
+        summary = QHBoxLayout()
+        summary.setContentsMargins(0, 0, 0, 0)
+        summary.setSpacing(18)
+        summary.addWidget(self._metric_chip("⏱", "00:01:42", "Прошло"))
+        summary.addWidget(self._metric_chip("↱", "Шаг 2 из 6", "Найти поручения в 1С"))
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(33)
+        self.run_progress.setTextVisible(False)
+        self.run_progress.setFixedHeight(6)
+        self.run_progress.setObjectName("runProgress")
+        summary.addWidget(self.run_progress, 1, Qt.AlignmentFlag.AlignVCenter)
+        summary.addWidget(QLabel("33%"))
+        summary.addWidget(self._metric_chip("◷", "~2 мин", "Ожидаемое завершение"))
+        panel_layout.addLayout(summary)
 
-        self.request_edit = QTextEdit()
-        self.request_edit.setPlaceholderText(EXAMPLE_REQUEST)
-        self.request_edit.setFixedHeight(96)
-        self.request_edit.setStyleSheet(
-            "background:#0f1624; color:#e8eefb; border:1px solid #263247;"
-            "border-radius:12px; padding:10px; font-size:13px;"
-            "selection-background-color:#2f6bff;"
-        )
-        layout.addWidget(self.request_edit)
+        self._build_stage_cards()
 
-        model_row = QHBoxLayout()
-        model_row.setSpacing(10)
-        model_label = QLabel("Модель")
-        model_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
-        self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(240)
-        self.model_combo.setStyleSheet(
-            "QComboBox { background:#161f31; color:#e8eefb; border:1px solid #263247;"
-            "border-radius:8px; padding:7px 10px; font-size:12px; }"
-            "QComboBox:disabled { color:#6f7788; background:#121825; }"
-            "QComboBox QAbstractItemView { background:#121825; color:#e8eefb;"
-            "selection-background-color:#263b66; border:1px solid #263247; }"
+        self.live_log = LiveLogView()
+        self.live_log.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
         )
-        reason_label = QLabel("Reason")
-        reason_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
-        self.reason_combo = QComboBox()
-        self.reason_combo.setMinimumWidth(130)
-        self.reason_combo.setStyleSheet(self.model_combo.styleSheet())
-        self.reason_combo.addItem("internal", "internal")
-        self.reason_combo.addItem("reason", "reason")
-        self.refresh_models_button = QPushButton("Обновить")
-        self.refresh_models_button.setStyleSheet(
-            "QPushButton { background:#232733; color:#d9e2f2; border:1px solid #333846;"
-            "border-radius:8px; padding:7px 12px; font-size:12px; }"
-            "QPushButton:hover { border:1px solid #3d6fd6; }"
+        self.live_log.setPlaceholderText(
+            "Live-события агента появятся здесь: планирование, инструменты, проверки."
         )
-        self.refresh_models_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        model_row.addWidget(model_label)
-        model_row.addWidget(self.model_combo, 1)
-        model_row.addWidget(reason_label)
-        model_row.addWidget(self.reason_combo)
-        model_row.addWidget(self.refresh_models_button)
-        layout.addLayout(model_row)
-        self._reload_model_options()
-
-        attach_row = QHBoxLayout()
-        self.attach_button = QPushButton("📎 Прикрепить файл")
-        self.attach_button.setStyleSheet(
-            "QPushButton { background:#232733; color:#e6e9ef; border:1px solid #333846;"
-            "border-radius:8px; padding:7px 12px; font-size:12px; }"
-            "QPushButton:hover { border:1px solid #3d6fd6; }"
-        )
-        self.attach_button.clicked.connect(self.attach_files)
-        self.attach_clear_button = QPushButton("Очистить вложения")
-        self.attach_clear_button.setStyleSheet(
-            "QPushButton { background:transparent; color:#9aa0ac; border:none;"
-            "font-size:11px; }"
-            "QPushButton:hover { color:#c76b6b; }"
-        )
-        self.attach_clear_button.clicked.connect(self.clear_attachments)
-        self.attach_label = QLabel("Файлы не прикреплены")
-        self.attach_label.setStyleSheet("color:#7f8794; font-size:11px;")
-        attach_row.addWidget(self.attach_button)
-        attach_row.addWidget(self.attach_clear_button)
-        attach_row.addWidget(self.attach_label, 1)
-        layout.addLayout(attach_row)
-
-        layout.addLayout(self._build_buttons())
+        panel_layout.addWidget(self.live_log, 1)
 
         self._human_panel = self._build_human_panel()
         self._human_panel.setVisible(False)
-        layout.addWidget(self._human_panel)
-
-        # Живой ход выполнения: показывает текст LLM и вызовы инструментов в
-        # реальном времени, чтобы окно не выглядело зависшим.
-        live_label = QLabel("Живой ход выполнения")
-        live_label.setStyleSheet(
-            "color:#c7d2e5; font-size:12px; font-weight:700; "
-            "letter-spacing:0.4px;"
-        )
-        layout.addWidget(live_label)
-
-        self.live_log = LiveLogView()
-        self.live_log.setFixedHeight(168)
-        self.live_log.setPlaceholderText(
-            "Здесь построчно появляется ход работы агента: планирование LLM, "
-            "выбор инструментов, результаты и итоговый вывод."
-        )
-        layout.addWidget(self.live_log)
+        panel_layout.addWidget(self._human_panel)
 
         self.files_label = QLabel()
         self.files_label.setTextFormat(Qt.TextFormat.RichText)
@@ -864,78 +1495,226 @@ class AgentCreateWidget(QWidget):
         self.files_label.setVisible(False)
         self.files_label.setStyleSheet("color:#8ec3ff; font-size:12px; padding:2px 0;")
         self.files_label.linkActivated.connect(open_local_path)
-        layout.addWidget(self.files_label)
+        panel_layout.addWidget(self.files_label)
 
-        # Пошаговая лента выполнения.
-        feed_scroll = QScrollArea()
-        feed_scroll.setWidgetResizable(True)
-        feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        feed_host = QWidget()
-        self._feed_layout = QVBoxLayout(feed_host)
-        self._feed_layout.setContentsMargins(0, 6, 2, 6)
-        self._feed_layout.setSpacing(7)
-        self._build_stage_cards()
-        self._feed_layout.addStretch(1)
-        feed_scroll.setWidget(feed_host)
-        layout.addWidget(feed_scroll, 1)
+        layout.addWidget(timeline_panel, 1)
+        layout.addWidget(self._build_bottom_composer(), 0)
 
         container.setStyleSheet(
             "#centerArea {"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            "stop:0 #0d111a, stop:0.55 #101827, stop:1 #0b1018);"
+            f"background:{REF_BG};"
             "}"
+            "#timelinePanel {"
+            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
+            "border-radius:14px;"
+            "}"
+            "#screenTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
+            "#runStatusBadge {"
+            "background:#0d3a2b; color:#9fffd0; border:1px solid #1c664a;"
+            "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:800;"
+            "}"
+            "#runProgress { background:#17243a; border:none; border-radius:3px; }"
+            "#runProgress::chunk { background:#2f7cff; border-radius:3px; }"
+            "#metricChip { background:transparent; }"
+            "#metricValue { color:#e7eefc; font-size:12px; font-weight:800; }"
+            "#metricLabel { color:#667891; font-size:10px; }"
+            "QLabel { color:#8da0b8; }"
         )
         return container
 
-    def _build_buttons(self) -> QHBoxLayout:
-        """Ряд основных действий: Создать, Сохранить, Сбросить и Остановить."""
-        self.create_button = QPushButton("Создать")
+    def _metric_chip(self, icon: str, value: str, label: str) -> QWidget:
+        chip = QWidget()
+        chip.setObjectName("metricChip")
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        icon_label = QLabel(icon)
+        icon_label.setStyleSheet("color:#8daeff; font-size:18px;")
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(1)
+        value_label = QLabel(value)
+        value_label.setObjectName("metricValue")
+        label_widget = QLabel(label)
+        label_widget.setObjectName("metricLabel")
+        texts.addWidget(value_label)
+        texts.addWidget(label_widget)
+        row.addWidget(icon_label)
+        row.addLayout(texts)
+        return chip
+
+    def _build_bottom_composer(self) -> QFrame:
+        composer = QFrame()
+        composer.setObjectName("composerPanel")
+        layout = QVBoxLayout(composer)
+        layout.setContentsMargins(14, 10, 14, 8)
+        layout.setSpacing(5)
+
+        self.request_edit = QTextEdit()
+        self.request_edit.setPlaceholderText(EXAMPLE_REQUEST)
+        self.request_edit.setFixedHeight(22)
+        self.request_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.request_edit.document().setDocumentMargin(0)
+        self.request_edit.setObjectName("requestEdit")
+        layout.addWidget(self.request_edit)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
+
+        self.attach_button = ComposerIconButton("attach", "Прикрепить файл")
+        self.attach_button.clicked.connect(self.attach_files)
+        toolbar.addWidget(self.attach_button)
+        for kind, tip in (
+            ("database", "Источники данных"),
+            ("grid", "Табличные данные"),
+            ("code", "Параметры JSON"),
+        ):
+            toolbar.addWidget(ComposerIconButton(kind, tip))
+
+        self._init_model_controls()
+        toolbar.addSpacing(4)
+        toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.attach_clear_button = QPushButton("Очистить вложения")
+        self.attach_clear_button.clicked.connect(self.clear_attachments)
+        self.attach_label = QLabel("Файлы не прикреплены")
+        self.attach_clear_button.setVisible(False)
+        self.attach_label.setVisible(False)
+
+        toolbar.addStretch(1)
+        toolbar.addWidget(self._build_launch_split())
+        layout.addLayout(toolbar)
+
+        self._workflow_step_bar = WorkflowStepBar(self.select_stage, composer)
+        layout.addWidget(self._workflow_step_bar)
+
+        composer.setStyleSheet(
+            "#composerPanel {"
+            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
+            "border-radius:14px;"
+            "}"
+            "#requestEdit {"
+            "background:transparent; color:#cbd5e1; border:none;"
+            "padding:0; margin:0; font-size:13px; line-height:1.2;"
+            "selection-background-color:#2f7cff;"
+            "}"
+            "#composerIconButton {"
+            "background:#0c1828; color:#94a3b8; border:1px solid #1a2a40;"
+            "border-radius:7px;"
+            "}"
+            "#composerIconButton:hover { background:#132238; border-color:#2a4060; }"
+            "#launchSplit { background:#2f80ff; border-radius:9px; }"
+            "#launchSplitMain {"
+            "background:transparent; color:#ffffff; border:none;"
+            "padding:4px 10px; font-size:12px; font-weight:700;"
+            "}"
+            "#launchSplitMain:hover { background:rgba(255,255,255,0.06); }"
+            "#launchSplitMain:disabled { color:#b8ccf5; }"
+            "#launchSplitMenu {"
+            "background:transparent; color:#ffffff; border:none;"
+            "border-left:1px solid #69a6ff; border-top-right-radius:9px;"
+            "border-bottom-right-radius:9px; font-size:12px; font-weight:700;"
+            "}"
+            "#launchSplitMenu:hover { background:rgba(255,255,255,0.08); }"
+            "#launchSplitStop {"
+            "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
+            "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
+            "}"
+        )
+        return composer
+
+    def _init_model_controls(self) -> None:
+        """Создать селекты модели и кнопку обновления для строки toolbar."""
+        self.model_combo = BadgeSelect(ghost=False)
+        self.model_combo.setObjectName("modelCombo")
+        self._configure_compact_combo(self.model_combo)
+
+        self.reason_combo = BadgeSelect(ghost=True)
+        self.reason_combo.setObjectName("reasonCombo")
+        self._configure_compact_combo(self.reason_combo)
+        self.reason_combo.addItem("internal", "internal")
+        self.reason_combo.addItem("reason", "reason")
+
+        self.refresh_models_button = QPushButton("Обновить")
+        self.refresh_models_button.setObjectName("modelRefreshButton")
+        self.refresh_models_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_models_button.setFixedHeight(22)
+        self.refresh_models_button.setStyleSheet(MODEL_REFRESH_BUTTON_STYLE)
+        self._reload_model_options()
+
+    def _configure_compact_combo(self, combo: BadgeSelect) -> None:
+        """Настроить pill-селект под ширину текущего значения."""
+        combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        combo.setFixedHeight(22)
+
+    def _fit_combo_to_contents(self, combo: BadgeSelect) -> None:
+        """Подогнать ширину селекта под текущий выбранный пункт."""
+        text = combo.currentText()
+        if not text:
+            return
+        metrics = combo.fontMetrics()
+        text_width = metrics.horizontalAdvance(text)
+        combo.setFixedWidth(text_width + 34)
+
+    def _build_launch_split(self) -> QWidget:
+        """Split-кнопка «Запустить агента» с выпадающим меню, как в референсе."""
+        self.create_button = QPushButton("Запустить агента")
         self.save_button = QPushButton("Сохранить")
         self.reset_button = QPushButton("Сбросить")
         self.stop_button = QPushButton("Остановить")
-
-        secondary = (
-            "QPushButton { background:#232733; color:#e6e9ef; border:1px solid #333846;"
-            "border-radius:8px; padding:9px 14px; font-size:12px; font-weight:600; }"
-            "QPushButton:hover { background:#2b3040; }"
-            "QPushButton:disabled { color:#5a5f6b; border-color:#2a2e39; }"
-        )
-        primary = (
-            "QPushButton { background:#2f6bff; color:#ffffff; border:none;"
-            "border-radius:8px; padding:9px 16px; font-size:12px; font-weight:700; }"
-            "QPushButton:hover { background:#3f79ff; }"
-            "QPushButton:disabled { background:#26324f; color:#8b93a7; }"
-        )
-        stop_style = (
-            "QPushButton { background:#a12727; color:#ffffff; border:none;"
-            "border-radius:8px; padding:9px 16px; font-size:12px; font-weight:700; }"
-            "QPushButton:hover { background:#c23232; }"
-            "QPushButton:disabled { background:#3a2626; color:#8b7676; }"
-        )
-        for button in (self.save_button, self.reset_button):
-            button.setStyleSheet(secondary)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.create_button.setStyleSheet(primary)
-        self.create_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.stop_button.setStyleSheet(stop_style)
-        self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_button.setEnabled(False)
+        self.stop_button.setVisible(False)
 
-        # Кнопки, которые блокируются на время фоновой работы агента.
         self._action_buttons = [
             self.create_button,
             self.save_button,
             self.reset_button,
         ]
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        wrap = QFrame()
+        wrap.setObjectName("launchSplit")
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        self.create_button.setObjectName("launchSplitMain")
+        self.create_button.setCursor(Qt.CursorShape.PointingHandCursor)
         row.addWidget(self.create_button)
-        row.addWidget(self.save_button)
-        row.addWidget(self.reset_button)
-        row.addWidget(self.stop_button)
-        row.addStretch(1)
-        return row
+
+        menu_button = QPushButton("▾")
+        menu_button.setObjectName("launchSplitMenu")
+        menu_button.setFixedSize(28, 28)
+        menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        menu = QMenu(wrap)
+        menu.setStyleSheet(
+            "QMenu { background:#0f172a; color:#dbeafe; border:1px solid #1e3a5f; "
+            "padding:4px; }"
+            "QMenu::item { padding:6px 14px; border-radius:4px; }"
+            "QMenu::item:selected { background:#1d4ed8; }"
+        )
+        menu.addAction("Сохранить агента", self.save_agent)
+        menu.addAction("Сбросить форму", self.clear)
+        menu.addAction("Очистить вложения", self.clear_attachments)
+        menu.addSeparator()
+        stop_action = menu.addAction("Остановить выполнение", self.request_stop)
+        stop_action.setEnabled(False)
+        self._launch_stop_action = stop_action
+        menu_button.setMenu(menu)
+        row.addWidget(menu_button)
+
+        host = QHBoxLayout()
+        host.setContentsMargins(0, 0, 0, 0)
+        host.setSpacing(8)
+        host.addWidget(wrap)
+        self.stop_button.setObjectName("launchSplitStop")
+        host.addWidget(self.stop_button)
+        container = QWidget()
+        container.setLayout(host)
+        return container
 
     def _build_human_panel(self) -> QFrame:
         """Панель участия человека: вопрос/просьба, варианты ответа и свой вариант."""
@@ -1013,7 +1792,7 @@ class AgentCreateWidget(QWidget):
         return panel
 
     def _build_stage_cards(self) -> None:
-        """Создать карточки стадий в ленте."""
+        """Создать скрытые карточки стадий для логики статусов без ленты в центре."""
         last_index = len(STAGE_ORDER)
         for index, (stage_id, title, subtitle) in enumerate(STAGE_ORDER, start=1):
             card = StageCard(
@@ -1023,56 +1802,77 @@ class AgentCreateWidget(QWidget):
                 subtitle,
                 index == last_index,
                 self.select_stage,
+                parent=self,
             )
+            card.hide()
             self._stage_cards[stage_id] = card
-            self._feed_layout.addWidget(card)
 
     def _build_details_panel(self) -> QWidget:
-        """Правая панель деталей выбранной стадии + dev-вкладки."""
+        """Правая панель плана и текущего шага как на референсе."""
         panel = QWidget()
         panel.setObjectName("detailsPanel")
-        panel.setMinimumWidth(320)
+        panel.setMinimumWidth(318)
+        panel.setMaximumWidth(360)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 16, 14, 14)
+        layout.setSpacing(12)
 
-        header = QLabel("Детали шага")
-        header.setStyleSheet("font-size:16px; font-weight:800; color:#f6f8ff;")
-        layout.addWidget(header)
+        plan_panel = QFrame()
+        plan_panel.setObjectName("planPanel")
+        plan_layout = QVBoxLayout(plan_panel)
+        plan_layout.setContentsMargins(16, 16, 16, 14)
+        plan_layout.setSpacing(12)
+        header = QLabel("План")
+        header.setObjectName("planTitle")
+        plan_layout.addWidget(header)
+
+        self._plan_steps_list = PlanStepsList(self)
+        for index, (stage_id, title, _subtitle) in enumerate(STAGE_ORDER[:6], start=1):
+            row = PlanStepRow(index, stage_id, title, self)
+            self._plan_step_cards[stage_id] = row
+            self._plan_steps_list.add_step(row)
+        plan_layout.addWidget(self._plan_steps_list)
+        plan_layout.addStretch(1)
+        layout.addWidget(plan_panel, 2)
+
+        current_panel = QFrame()
+        current_panel.setObjectName("sidePanel")
+        current_layout = QVBoxLayout(current_panel)
+        current_layout.setContentsMargins(14, 14, 14, 14)
+        current_layout.setSpacing(10)
+        current_header = QLabel("Текущий шаг")
+        current_header.setObjectName("sideTitle")
+        current_layout.addWidget(current_header)
+
+        self.current_step_card = QFrame()
+        self.current_step_card.setObjectName("currentStepCard")
+        current_card_layout = QVBoxLayout(self.current_step_card)
+        current_card_layout.setContentsMargins(12, 10, 12, 10)
+        current_card_layout.setSpacing(6)
 
         self.detail_title = QLabel("Запрос пользователя")
-        self.detail_title.setStyleSheet(
-            "font-size:13px; font-weight:700; color:#dfe7f7;"
-        )
+        self.detail_title.setObjectName("currentStepTitle")
         self.detail_title.setWordWrap(True)
-        layout.addWidget(self.detail_title)
+        current_card_layout.addWidget(self.detail_title)
 
         self.detail_status = QLabel()
-        self.detail_status.setStyleSheet(
-            "font-size:12px; padding:6px 10px; border-radius:9px;"
-            "background:#111a29; border:1px solid #263247;"
-        )
-        layout.addWidget(self.detail_status)
+        self.detail_status.setObjectName("currentStepStatus")
+        current_card_layout.addWidget(self.detail_status)
+        current_layout.addWidget(self.current_step_card)
+
+        eta = QLabel("◷  Ожидаемое завершение ~2 мин")
+        eta.setObjectName("etaLabel")
+        current_layout.addWidget(eta)
 
         self.detail_view = QTextEdit()
         self.detail_view.setReadOnly(True)
-        self.detail_view.setStyleSheet(
-            "background:#0f1624; color:#d8e0ee; border:1px solid #263247;"
-            "border-radius:13px; padding:12px; font-size:12px;"
-            "selection-background-color:#2f6bff;"
-        )
-        layout.addWidget(self.detail_view, 1)
+        self.detail_view.setObjectName("detailView")
+        current_layout.addWidget(self.detail_view, 1)
+        layout.addWidget(current_panel, 2)
 
-        # --- Раздел для разработчика (JSON и таблицы) ---
         self.dev_toggle = QPushButton("▸ Для разработчика (JSON и таблицы)")
         self.dev_toggle.setCheckable(True)
-        self.dev_toggle.setStyleSheet(
-            "QPushButton { text-align:left; background:#111a29; color:#8fa1bd;"
-            "border:1px solid #243047; border-radius:10px; padding:8px 10px;"
-            "font-size:11px; font-weight:700; }"
-            "QPushButton:hover { color:#d7e3f8; border-color:#536b99; }"
-            "QPushButton:checked { color:#e8f0ff; background:#172235; }"
-        )
+        self.dev_toggle.setObjectName("devToggle")
         self.dev_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(self.dev_toggle)
 
@@ -1082,10 +1882,29 @@ class AgentCreateWidget(QWidget):
 
         panel.setStyleSheet(
             "#detailsPanel {"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            "stop:0 #0b1018, stop:0.65 #0d1420, stop:1 #101827);"
-            "border-left:1px solid #202b3f;"
+            f"background:{REF_BG}; border-left:1px solid #10243c;"
             "}"
+            "#planPanel, #sidePanel {"
+            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
+            "border-radius:14px;"
+            "}"
+            "#planTitle, #sideTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
+            "#currentStepCard { background:#0d213b; border:1px solid #183e68; border-radius:12px; }"
+            "#currentStepTitle { color:#e7eefc; font-size:13px; font-weight:800; }"
+            "#currentStepStatus { color:#9eb5d4; font-size:11px; }"
+            "#etaLabel { color:#75869f; font-size:11px; padding:4px 0; }"
+            "#detailView {"
+            "background:#071426; color:#aebbd0; border:1px solid #102844;"
+            "border-radius:10px; padding:10px; font-size:11px;"
+            "selection-background-color:#2f7cff;"
+            "}"
+            "#devToggle {"
+            "text-align:left; background:#0a1a2e; color:#8fa1bd;"
+            "border:1px solid #122844; border-radius:10px; padding:8px 10px;"
+            "font-size:11px; font-weight:700;"
+            "}"
+            "#devToggle:hover { color:#d7e3f8; border-color:#2f7cff; }"
+            "#devToggle:checked { color:#e8f0ff; background:#102946; }"
         )
         return panel
 
@@ -1123,7 +1942,10 @@ class AgentCreateWidget(QWidget):
         self.stop_button.clicked.connect(self.request_stop)
         self.dev_toggle.toggled.connect(self._toggle_dev)
         self.refresh_models_button.clicked.connect(self._reload_model_options)
-        self.model_combo.currentIndexChanged.connect(self._sync_reason_combo)
+        self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
+        self.reason_combo.currentIndexChanged.connect(
+            lambda _index: self._fit_combo_to_contents(self.reason_combo)
+        )
 
     def _toggle_dev(self, checked: bool) -> None:
         """Показать или скрыть раздел разработчика."""
@@ -1150,6 +1972,8 @@ class AgentCreateWidget(QWidget):
         self.model_combo.setCurrentIndex(selected_index)
         self.model_combo.blockSignals(False)
         self._sync_reason_combo()
+        self._fit_combo_to_contents(self.model_combo)
+        self._fit_combo_to_contents(self.reason_combo)
         if mode:
             reason_index = self.reason_combo.findData(mode)
             if reason_index >= 0:
@@ -1217,6 +2041,11 @@ class AgentCreateWidget(QWidget):
             return None
         return self._model_options[index]
 
+    def _on_model_combo_changed(self, _index: int) -> None:
+        """Обновить reason-селект и ширину pill-комбобоксов после смены модели."""
+        self._sync_reason_combo()
+        self._fit_combo_to_contents(self.model_combo)
+
     def _sync_reason_combo(self) -> None:
         """Включить/выключить селект reason в зависимости от выбранной модели."""
         option = self._current_model_option()
@@ -1224,12 +2053,14 @@ class AgentCreateWidget(QWidget):
         self.reason_combo.setEnabled(supports)
         if not supports:
             self.reason_combo.setToolTip("Эта модель не объявила поддержку reason.")
+            self._fit_combo_to_contents(self.reason_combo)
             return
         self.reason_combo.setToolTip("Режим reasoning для выбранной модели.")
         mode = self.reason_combo.currentData()
         allowed = set(option.modes or ("internal", "reason"))
         if mode not in allowed:
             self.reason_combo.setCurrentIndex(0)
+        self._fit_combo_to_contents(self.reason_combo)
 
     def _selected_model_id(self) -> str:
         """Сформировать model id для LLM config из селектов UI."""
@@ -1291,6 +2122,9 @@ class AgentCreateWidget(QWidget):
 
         self._set_buttons_enabled(False)
         self.stop_button.setEnabled(True)
+        self.stop_button.setVisible(True)
+        if self._launch_stop_action is not None:
+            self._launch_stop_action.setEnabled(True)
         thread = QThread()
         worker = CreateFlowWorker(job)
         self._thread = thread
@@ -1315,6 +2149,9 @@ class AgentCreateWidget(QWidget):
         self._thread = None
         self._worker = None
         self.stop_button.setEnabled(False)
+        self.stop_button.setVisible(False)
+        if self._launch_stop_action is not None:
+            self._launch_stop_action.setEnabled(False)
         self._cancel_event.clear()
         self._set_buttons_enabled(True)
 
@@ -1752,14 +2589,16 @@ class AgentCreateWidget(QWidget):
         self._update_attach_label()
 
     def _update_attach_label(self) -> None:
-        """Обновить подпись со списком прикреплённых файлов."""
+        """Обновить подсказку на кнопке вложений."""
         if not self._attachment_paths:
-            self.attach_label.setText("Файлы не прикреплены")
+            self.attach_button.setToolTip("Прикрепить файл")
             return
         from pathlib import Path
 
         names = ", ".join(Path(path).name for path in self._attachment_paths)
-        self.attach_label.setText(f"Прикреплено: {names}")
+        self.attach_button.setToolTip(f"Прикреплено: {names}")
+        if self.attach_label is not None:
+            self.attach_label.setText(f"Прикреплено: {names}")
 
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""
@@ -1789,6 +2628,8 @@ class AgentCreateWidget(QWidget):
             card = self._stage_cards[stage_id]
             card.set_status("pending")
             card.set_subtitle(subtitle)
+            if stage_id in self._plan_step_cards:
+                self._plan_step_cards[stage_id].set_status("pending")
             self._stage_details[stage_id] = "Стадия ещё не выполнялась."
         self._stage_details[STAGE_DEV] = (
             "Технические детали доступны в разделе «Для разработчика» ниже: "
@@ -1806,6 +2647,8 @@ class AgentCreateWidget(QWidget):
         card = self._stage_cards[stage_id]
         card.set_status(status)
         card.set_subtitle(subtitle)
+        if stage_id in self._plan_step_cards:
+            self._plan_step_cards[stage_id].set_status(status)
         self._stage_details[stage_id] = detail
         if self._selected_stage == stage_id:
             self.select_stage(stage_id)
@@ -1813,12 +2656,18 @@ class AgentCreateWidget(QWidget):
     def _set_running(self, stage_id: str) -> None:
         """Пометить стадию как выполняющуюся."""
         self._stage_cards[stage_id].set_status("running")
+        if stage_id in self._plan_step_cards:
+            self._plan_step_cards[stage_id].set_status("running")
 
     def select_stage(self, stage_id: str) -> None:
         """Показать детали выбранной стадии в правой панели."""
         self._selected_stage = stage_id
         for other_id, card in self._stage_cards.items():
             card.set_selected(other_id == stage_id)
+        for other_id, card in self._plan_step_cards.items():
+            card.set_active(other_id == stage_id)
+        if self._workflow_step_bar is not None:
+            self._workflow_step_bar.set_active_stage(stage_id)
         card = self._stage_cards[stage_id]
         title = next(t for sid, t, _ in STAGE_ORDER if sid == stage_id)
         self.detail_title.setText(title)

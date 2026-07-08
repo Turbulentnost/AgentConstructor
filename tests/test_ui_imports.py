@@ -86,25 +86,75 @@ def test_main_window_can_be_created(qt_app, fake_container) -> None:
     window = MainWindow(fake_container)
 
     assert window.windowTitle() == "Конструктор ИИ-агентов"
-    assert window.pages.count() == 4
-    assert window.nav.count() == 4
+    assert window.pages.count() == 5
+    assert window.nav.count() == 5
     assert [item.title for item in NAV_ITEMS] == [
         "Агенты",
         "Создать агента",
-        "Журнал",
+        "Запуски",
+        "События",
         "Настройки",
     ]
 
 
 def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     """AgentCreateWidget можно создать."""
+    from PySide6.QtCore import QPoint
+
     from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        MODEL_BADGE_STYLE,
         AgentCreateWidget,
+        BadgeSelect,
     )
 
     widget = AgentCreateWidget(fake_container)
+    widget.resize(900, 700)
+    widget.show()
+    widget.move(0, 200)
+    qt_app.processEvents()
 
     assert widget.request_edit is not None
+    assert isinstance(widget.model_combo, BadgeSelect)
+    assert isinstance(widget.reason_combo, BadgeSelect)
+    assert "border-radius: 9px" in MODEL_BADGE_STYLE
+    assert widget.model_combo.isEnabled()
+    assert widget.model_combo.count() >= 2
+
+    composer = widget.request_edit.parentWidget()
+    toolbar = composer.layout().itemAt(1).layout()
+    attach_index = None
+    model_index = None
+    for index in range(toolbar.count()):
+        item_widget = toolbar.itemAt(index).widget()
+        if item_widget is widget.attach_button:
+            attach_index = index
+        if item_widget is widget.model_combo:
+            model_index = index
+    assert attach_index is not None
+    assert model_index is not None
+    assert model_index > attach_index
+
+    widget.model_combo.showPopup()
+    qt_app.processEvents()
+    menu = widget.model_combo.view()
+    assert menu.isVisible()
+    combo_top = widget.model_combo.mapToGlobal(QPoint(0, 0)).y()
+    assert combo_top > 0
+    assert menu.frameGeometry().bottom() <= combo_top + 2
+
+    changed_index = None
+    def _capture(index: int) -> None:
+        nonlocal changed_index
+        changed_index = index
+
+    widget.model_combo.currentIndexChanged.connect(_capture)
+    for action in menu.actions():
+        if action.text() != widget.model_combo.currentText().rstrip(" ▾"):
+            action.trigger()
+            break
+    qt_app.processEvents()
+    assert changed_index is not None
+    widget.model_combo.hidePopup()
 
 
 def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:

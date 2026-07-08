@@ -1,24 +1,22 @@
-"""Боковая навигация в стиле Microsoft Teams."""
+"""Боковая навигация в стиле референса Cursor-like UI."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QLabel,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-ICONS_DIR = Path(__file__).resolve().parent / "resources" / "icons"
-NAV_WIDTH = 72
-ICON_SIZE = 28
-SETTINGS_PAGE_INDEX = 3
+NAV_WIDTH = 188
+SETTINGS_PAGE_INDEX = 4
 
 
 @dataclass(frozen=True)
@@ -26,16 +24,76 @@ class NavItemSpec:
     """Описание пункта навигации."""
 
     title: str
-    default_icon: str
-    active_icon: str
+    icon_kind: str
 
 
 NAV_ITEMS: tuple[NavItemSpec, ...] = (
-    NavItemSpec("Агенты", "agents_default.svg", "agents_active.svg"),
-    NavItemSpec("Создать агента", "create_default.svg", "create_active.svg"),
-    NavItemSpec("Журнал", "journal_default.svg", "journal_active.svg"),
-    NavItemSpec("Настройки", "settings_default.svg", "settings_active.svg"),
+    NavItemSpec("Агенты", "user"),
+    NavItemSpec("Создать агента", "plus"),
+    NavItemSpec("Запуски", "play"),
+    NavItemSpec("События", "bell"),
+    NavItemSpec("Настройки", "gear"),
 )
+
+
+class NavVectorIcon(QWidget):
+    """Тонкая линейная иконка как в левой панели референса."""
+
+    def __init__(self, kind: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.kind = kind
+        self._active = False
+        self.setFixedSize(22, 22)
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#e8f1ff" if self._active else "#8a98ad")
+        pen = QPen(color, 1.45)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if self.kind == "user":
+            painter.drawEllipse(QRectF(8, 3.2, 6, 6))
+            path = QPainterPath(QPointF(4.5, 18.5))
+            path.cubicTo(QPointF(5.5, 13.2), QPointF(16.5, 13.2), QPointF(17.5, 18.5))
+            painter.drawPath(path)
+        elif self.kind == "plus":
+            painter.setBrush(QColor("#2f7cff" if self._active else "#132945"))
+            painter.drawEllipse(QRectF(2.2, 2.2, 17.6, 17.6))
+            painter.setPen(QPen(QColor("#ffffff" if self._active else "#8bb7ff"), 1.7))
+            painter.drawLine(QPointF(11, 6.8), QPointF(11, 15.2))
+            painter.drawLine(QPointF(6.8, 11), QPointF(15.2, 11))
+        elif self.kind == "play":
+            painter.drawEllipse(QRectF(2.5, 2.5, 17, 17))
+            path = QPainterPath(QPointF(9, 7.2))
+            path.lineTo(QPointF(15.2, 11))
+            path.lineTo(QPointF(9, 14.8))
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif self.kind == "bell":
+            path = QPainterPath(QPointF(6, 15.5))
+            path.cubicTo(QPointF(7.1, 13.7), QPointF(7.2, 11.2), QPointF(7.2, 9.2))
+            path.cubicTo(QPointF(7.2, 5.9), QPointF(9.1, 4), QPointF(11, 4))
+            path.cubicTo(QPointF(12.9, 4), QPointF(14.8, 5.9), QPointF(14.8, 9.2))
+            path.cubicTo(QPointF(14.8, 11.2), QPointF(14.9, 13.7), QPointF(16, 15.5))
+            path.lineTo(QPointF(6, 15.5))
+            painter.drawPath(path)
+            painter.drawLine(QPointF(9.3, 18), QPointF(12.7, 18))
+        else:
+            painter.drawEllipse(QRectF(6.2, 6.2, 9.6, 9.6))
+            for angle in range(0, 360, 45):
+                painter.save()
+                painter.translate(QPointF(11, 11))
+                painter.rotate(angle)
+                painter.drawLine(QPointF(0, -9.2), QPointF(0, -7.2))
+                painter.restore()
 
 
 class NavIconButton(QFrame):
@@ -55,7 +113,7 @@ class NavIconButton(QFrame):
         self._spec = spec
         self._active = False
 
-        self._indicator = QFrame()
+        self._indicator = QFrame(self)
         self._indicator.setFixedWidth(3)
         self._indicator.setFixedHeight(28)
         self._indicator.setStyleSheet(
@@ -64,42 +122,50 @@ class NavIconButton(QFrame):
 
         self._button = QToolButton()
         self._button.setAutoRaise(True)
-        self._button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._button.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
-        self._button.setFixedSize(48, 48)
+        self._button.setFixedSize(0, 0)
         self._button.setToolTip(spec.title)
         self._button.clicked.connect(lambda: self.clicked.emit(self.index))
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
-        row.addWidget(self._indicator)
-        row.addStretch(1)
-        row.addWidget(self._button, 0, Qt.AlignmentFlag.AlignHCenter)
-        row.addStretch(1)
+        self._icon = NavVectorIcon(spec.icon_kind, self)
+        self._label = QLabel(spec.title)
+        self._label.setObjectName("navLabel")
 
-        self.setFixedHeight(52)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 10, 0)
+        row.setSpacing(10)
+        row.addWidget(self._indicator)
+        row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._label, 1, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._button)
+
+        self.setFixedHeight(46)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_state()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.clicked.emit(self.index)
+        super().mousePressEvent(event)
 
     def set_active(self, active: bool) -> None:
         """Переключить активное состояние."""
         self._active = active
         self._apply_state()
 
-    def _icon_path(self, filename: str) -> str:
-        return str(ICONS_DIR / filename)
-
     def _apply_state(self) -> None:
-        icon_file = (
-            self._spec.active_icon if self._active else self._spec.default_icon
-        )
-        self._button.setIcon(QIcon(self._icon_path(icon_file)))
-        indicator_color = "#6264a7" if self._active else "transparent"
-        bg_color = "#1f1f23" if self._active else "transparent"
+        self._icon.set_active(self._active)
+        indicator_color = "#2f7cff" if self._active else "transparent"
+        bg_color = "#0f2340" if self._active else "transparent"
+        label_color = "#eaf2ff" if self._active else "#9aa8ba"
         self._indicator.setStyleSheet(
             f"background: {indicator_color}; border-radius: 2px;"
         )
-        self.setStyleSheet(f"NavIconButton {{ background: {bg_color}; }}")
+        self.setStyleSheet(
+            "NavIconButton {"
+            f"background:{bg_color}; border-radius:10px;"
+            "}"
+            "NavIconButton:hover { background:#0d1b30; }"
+            f"#navLabel {{ color:{label_color}; font-size:13px; font-weight:600; }}"
+        )
 
 
 class TeamsNavSidebar(QWidget):
@@ -116,12 +182,28 @@ class TeamsNavSidebar(QWidget):
         self.setFixedWidth(NAV_WIDTH)
         self.setObjectName("teamsNavSidebar")
 
+        header = QHBoxLayout()
+        header.setContentsMargins(10, 8, 10, 12)
+        header.setSpacing(8)
+
+        logo = QLabel("✦")
+        logo.setFixedSize(18, 18)
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setStyleSheet(
+            "background:#152640; color:#9dc2ff; border:1px solid #263a58;"
+            "border-radius:4px; font-size:11px; font-weight:800;"
+        )
+        title = QLabel("Конструктор ИИ-агентов")
+        title.setStyleSheet("color:#d7e2f5; font-size:12px; font-weight:700;")
+        header.addWidget(logo)
+        header.addWidget(title, 1)
+
         top = QVBoxLayout()
-        top.setContentsMargins(0, 12, 0, 8)
-        top.setSpacing(4)
+        top.setContentsMargins(10, 0, 10, 8)
+        top.setSpacing(8)
 
         bottom = QVBoxLayout()
-        bottom.setContentsMargins(0, 8, 0, 12)
+        bottom.setContentsMargins(10, 8, 10, 12)
         bottom.setSpacing(4)
 
         for index, spec in enumerate(NAV_ITEMS):
@@ -136,14 +218,14 @@ class TeamsNavSidebar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.addLayout(header)
         layout.addLayout(top)
         layout.addStretch(1)
         layout.addLayout(bottom)
 
         self.setStyleSheet(
-            "#teamsNavSidebar { background: #0b0b0d; border-right: 1px solid #1f1f23; }"
+            "#teamsNavSidebar { background: #07111f; border-right: 1px solid #11243d; }"
             "QToolButton { background: transparent; border: none; }"
-            "QToolButton:hover { background: #1a1a1e; border-radius: 8px; }"
         )
 
     def count(self) -> int:

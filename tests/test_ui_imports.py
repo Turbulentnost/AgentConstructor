@@ -161,6 +161,55 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     widget.model_combo.hidePopup()
 
 
+def test_agent_create_layout_narrow_sidebar_without_workflow_bar(
+    qt_app, fake_container
+) -> None:
+    """Правая панель уже, нижний workflow-stepper отсутствует."""
+    from PySide6.QtWidgets import QSplitter, QWidget
+
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+        STAGE_PLAN,
+    )
+
+    widget = AgentCreateWidget(fake_container)
+    widget.resize(1100, 760)
+    widget.show()
+    qt_app.processEvents()
+    widget._apply_default_splitter_sizes()
+    qt_app.processEvents()
+
+    assert not hasattr(widget, "_workflow_step_bar")
+    assert widget.findChild(QWidget, "workflowStepBar") is None
+    assert widget.findChild(QWidget, "workflowStepHost") is None
+
+    details = widget.findChild(QWidget, "detailsPanel")
+    assert details is not None
+    assert details.maximumWidth() <= 320
+    assert details.minimumWidth() >= 240
+
+    splitter = widget._main_splitter
+    assert isinstance(splitter, QSplitter)
+    sizes = splitter.sizes()
+    assert len(sizes) == 2
+    assert sizes[0] > sizes[1]
+    assert sizes[1] <= 320
+
+    widget.select_stage(STAGE_PLAN)
+    qt_app.processEvents()
+    assert widget._selected_stage == STAGE_PLAN
+    assert widget._plan_step_cards[STAGE_PLAN]._active is True
+
+    # Resize/scale smoke: debounce не должен падать и должен пересчитать высоту.
+    widget.resize(900, 640)
+    qt_app.processEvents()
+    widget.resize(1000, 700)
+    qt_app.processEvents()
+    widget._resize_sync_timer.stop()
+    widget._apply_deferred_resize_sync()
+    assert widget.request_edit.height() >= widget._request_min_height
+
+
 def test_context_indicator_accepts_usage(qt_app) -> None:
     """ContextIndicator принимает usage payload и обновляет tooltip."""
     from agent_desktop_constructor.app.ui.widgets.context_indicator import (

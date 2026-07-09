@@ -47,6 +47,30 @@ class FakeVisionSession:
         self.evaluated.append(expression)
         if "scrollableAxis" in expression:
             return dict(self._scroll_metrics)
+        if "outerHTML" in expression:
+            full = "<html><head></head><body>" + ("x" * 120) + "</body></html>"
+            max_chars = 50
+            summary_chars = 20
+            if "const maxChars =" in expression:
+                try:
+                    max_chars = int(expression.split("const maxChars =", 1)[1].split(";", 1)[0].strip())
+                except ValueError:
+                    pass
+            if "const summaryChars =" in expression:
+                try:
+                    summary_chars = int(
+                        expression.split("const summaryChars =", 1)[1].split(";", 1)[0].strip()
+                    )
+                except ValueError:
+                    pass
+            return {
+                "url": "https://example.com/app",
+                "title": "App",
+                "html": full[:max_chars],
+                "html_length": len(full),
+                "truncated": len(full) > max_chars,
+                "html_summary": full[:summary_chars],
+            }
         if "location.href" in expression:
             return "https://example.com/app"
         if "document.title" in expression:
@@ -77,6 +101,23 @@ def test_screenshot_returns_base64(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["viewport_width"] == 1280
     assert result["profile_mode"] == "automation"
     assert result["used_default_profile"] is False
+
+
+def test_get_page_html_returns_truncated_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_page_html берёт outerHTML через Runtime.evaluate и обрезает по max_chars."""
+    worker, session = _worker_with_fake(monkeypatch)
+
+    result = worker.get_page_html({"max_chars": 40, "summary_chars": 100})
+
+    assert result["url"] == "https://example.com/app"
+    assert result["title"] == "App"
+    assert result["html_length"] > 40
+    assert result["truncated"] is True
+    assert len(result["html"]) == 40
+    assert len(result["html_summary"]) == 100
+    assert result["cdp_available"] is True
+    assert any("outerHTML" in expr for expr in session.evaluated)
+    assert not any(method == "Page.captureScreenshot" for method, _ in session.sent)
 
 
 def test_yandex_vision_default_profile_uses_real_user_data_dir(
@@ -115,6 +156,128 @@ def test_yandex_vision_default_profile_uses_real_user_data_dir(
     assert "--profile-directory=Default" in command
     assert not any("browser_profiles" in arg for arg in command)
     assert worker.profile_output()["profile_mode"] == "default"
+
+
+def test_default_profile_navigate_falls_back_when_cdp_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Занятый штатный профиль открывается без CDP с явной диагностикой."""
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 4321
+
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(
+            executable_path="C:/Chrome/chrome.exe",
+            use_default_profile=True,
+            timeout_seconds=0,
+        )
+    )
+    monkeypatch.setattr(worker, "_is_cdp_available", lambda: False)
+    monkeypatch.setattr(worker, "_desktop_screenshot", lambda: ("OSB64", 1600, 900))
+
+    def fake_popen(command, stdout, stderr):
+        commands.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(vision_worker.subprocess, "Popen", fake_popen)
+
+    result = worker.navigate({"url": "https://example.com"})
+
+    assert result["url"] == "https://example.com"
+    assert result["profile_mode"] == "default"
+    assert result["cdp_available"] is False
+    assert result["fallback_used"] is True
+    assert result["fallback_reason"] == "default_profile_cdp_unavailable"
+    assert result["screenshot_base64"] == "OSB64"
+    assert result["viewport_width"] == 1600
+    assert "OS fallback" in result["next_action_hint"]
+    assert "automation profile" in result["next_action_hint"]
+    assert len(commands) == 2
+    assert commands[-1] == ["C:/Chrome/chrome.exe", "https://example.com"]
+
+
+def test_default_profile_screenshot_uses_os_fallback_after_navigate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """После fallback-open screenshot больше не падает на CDP, а берёт экран ОС."""
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(
+            executable_path="C:/Chrome/chrome.exe",
+            use_default_profile=True,
+            timeout_seconds=0,
+        )
+    )
+    monkeypatch.setattr(worker, "_is_cdp_available", lambda: False)
+    monkeypatch.setattr(worker, "_desktop_screenshot", lambda: ("OSB64", 1366, 768))
+    monkeypatch.setattr(
+        vision_worker.subprocess,
+        "Popen",
+        lambda command, stdout, stderr: type("FakeProcess", (), {"pid": 123})(),
+    )
+
+    worker.navigate({"url": "https://example.com"})
+    result = worker.screenshot({})
+
+    assert result["screenshot_base64"] == "OSB64"
+    assert result["screenshot_media_type"] == "image/png"
+    assert result["cdp_available"] is False
+    assert result["fallback_used"] is True
+    assert result["fallback_reason"] == "default_profile_os_fallback"
+
+
+def test_default_profile_os_fallback_click_and_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OS fallback позволяет продолжать UI-действия без CDP."""
+    events: list[tuple] = []
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(
+            executable_path="C:/Chrome/chrome.exe",
+            use_default_profile=True,
+            timeout_seconds=0,
+        )
+    )
+    worker._os_fallback_active = True
+    worker._os_fallback_url = "https://example.com"
+    monkeypatch.setattr(worker, "_desktop_screenshot", lambda: ("OSB64", 1366, 768))
+    monkeypatch.setattr(
+        worker,
+        "_send_os_click",
+        lambda x, y, button: events.append(("click", x, y, button)),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_send_os_text",
+        lambda text: events.append(("text", text)),
+    )
+
+    click_result = worker.click({"x": 10, "y": 20})
+    type_result = worker.type_text({"text": "hello"})
+
+    assert events == [("click", 10, 20, "left"), ("text", "hello")]
+    assert click_result["screenshot_base64"] == "OSB64"
+    assert type_result["fallback_used"] is True
+
+
+def test_automation_profile_reports_cdp_available_under_mocked_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Automation profile остаётся CDP-режимом и отдаёт cdp_url."""
+    worker = BrowserVisionWorker(BrowserLaunchConfig(port=9444, browser_id="chrome"))
+
+    def fake_get_json(path, method="GET", *, timeout_seconds=None):
+        assert path == "/json/version"
+        return {"Browser": "Chrome/122"}
+
+    monkeypatch.setattr(worker, "_get_json", fake_get_json)
+
+    output = worker.profile_output()
+
+    assert output["profile_mode"] == "automation"
+    assert output["used_default_profile"] is False
+    assert output["cdp_available"] is True
+    assert output["cdp_url"] == "http://127.0.0.1:9444"
+    assert output["fallback_used"] is False
 
 
 def test_click_dispatches_mouse_events(monkeypatch: pytest.MonkeyPatch) -> None:

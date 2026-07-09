@@ -149,6 +149,11 @@ _BROWSER_PROFILE_OUTPUT_PROPERTIES = {
     "user_data_dir": {"type": "string"},
     "used_default_profile": {"type": "boolean"},
     "command_args_summary": {"type": "array"},
+    "cdp_available": {"type": "boolean"},
+    "cdp_url": {"type": "string"},
+    "fallback_used": {"type": "boolean"},
+    "fallback_reason": {"type": "string"},
+    "next_action_hint": {"type": "string"},
 }
 
 
@@ -647,6 +652,7 @@ def _execute_browser_worker(
             tool_name=tool_name,
             error_type="BROWSER_CDP_ERROR",
             error_message=str(exc),
+            output_data=exc.output_data,
         )
     except Exception as exc:  # noqa: BLE001 - worker изолирует внешние browser ошибки
         return ToolCallResult(

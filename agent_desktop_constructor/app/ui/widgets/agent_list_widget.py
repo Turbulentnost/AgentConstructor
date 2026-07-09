@@ -576,12 +576,14 @@ class AgentListWidget(QWidget):
         return self._thread is not None
 
     def request_stop(self) -> None:
-        """Кооперативно остановить выполняющегося агента."""
+        """Остановить агента: прерывает ожидание ответа LLM и шаги цикла."""
         if not self._is_busy():
             return
         self._cancel_event.set()
         self.stop_button.setEnabled(False)
-        self.live_log.append("⏹ Запрошена остановка. Останавливаю после текущего шага…")
+        self.live_log.append(
+            "⏹ Запрошена остановка. Прерываю текущий запрос к модели…"
+        )
 
     def _append_log(self, message: str) -> None:
         """Добавить строку в живой лог."""

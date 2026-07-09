@@ -22,6 +22,9 @@ def test_fake_mode_registers_fake_tools() -> None:
     assert registry.has_tool("browser.extract_table")
     assert registry.has_tool("browser.scroll_page")
     assert registry.has_tool("browser.click_link")
+    assert registry.has_tool("browser.navigate")
+    assert registry.has_tool("browser.screenshot")
+    assert registry.has_tool("browser.get_page_html")
     assert registry.has_tool("workspace.powershell_run")
 
 
@@ -36,6 +39,7 @@ def test_outlook_readonly_mode_registers_search_mail() -> None:
     assert registry.has_tool("browser.extract_table")
     assert registry.has_tool("browser.scroll_page")
     assert registry.has_tool("browser.click_link")
+    assert registry.has_tool("browser.get_page_html")
     assert registry.has_tool("workspace.powershell_run")
 
 

@@ -286,3 +286,46 @@ def test_http_error_includes_response_body(
     with pytest.raises(LLMResponseError, match="model not found"):
         OpenAICompatibleLLMClient(LLMConfig()).complete(make_request())
 
+
+def test_client_passes_cancel_callback_to_http_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """set_cancel_callback пробрасывается в read_with_retry."""
+    captured: dict = {}
+
+    def fake_read_with_retry(urlopen_callable, http_request, timeout, **kwargs):
+        captured["cancel_callback"] = kwargs.get("cancel_callback")
+        return json.dumps(
+            {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+        ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.read_with_retry",
+        fake_read_with_retry,
+    )
+
+    client = OpenAICompatibleLLMClient(LLMConfig())
+    cb = lambda: False
+    client.set_cancel_callback(cb)
+    client.complete(make_request())
+
+    assert captured["cancel_callback"] is cb
+
+
+def test_client_propagates_cancelled_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLMCancelledError из HTTP-слоя не маскируется как connection error."""
+    from agent_desktop_constructor.app.llm.errors import LLMCancelledError
+
+    def fake_read_with_retry(*args, **kwargs):
+        raise LLMCancelledError("stop")
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.read_with_retry",
+        fake_read_with_retry,
+    )
+
+    with pytest.raises(LLMCancelledError):
+        OpenAICompatibleLLMClient(LLMConfig()).complete(make_request())
+

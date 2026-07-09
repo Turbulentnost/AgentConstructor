@@ -1028,12 +1028,13 @@ class PlanStepRow(QFrame):
         self.setObjectName("planStepRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(54)
-        self.setMaximumHeight(58)
+        self.setMaximumHeight(72)
 
         self._number = PlanNumberCircle(index)
         self._title = QLabel(title)
         self._title.setObjectName("planStepTitle")
-        self._title.setWordWrap(False)
+        self._title.setWordWrap(True)
+        self._title.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self._status_icon = PlanStatusIcon()
 
         row = QHBoxLayout(self)
@@ -1129,36 +1130,31 @@ class PlanStepsList(QWidget):
         self._layout.addWidget(row)
         self.update()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self.update()
-
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         if len(self._rows) < 2:
             return
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#2563eb"), 1.2)
+        # Без Antialiasing: пунктирная линия дешёвая и не даёт лагов при resize.
+        pen = QPen(QColor("#2563eb"), 1)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setDashPattern([2.5, 3.5])
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
+        # Фиксированный x по первому кругу — без mapTo на каждый resize/paint.
+        first_number = self._rows[0]._number
+        x = first_number.x() + first_number.width() / 2
+        radius = 16.0
         for index in range(len(self._rows) - 1):
             top_row = self._rows[index]
             bottom_row = self._rows[index + 1]
-            top_center = top_row._number.mapTo(
-                self,
-                QPointF(top_row._number.width() / 2, top_row._number.height() / 2),
+            start_y = top_row.y() + top_row._number.y() + top_row._number.height() / 2 + radius
+            end_y = (
+                bottom_row.y()
+                + bottom_row._number.y()
+                + bottom_row._number.height() / 2
+                - radius
             )
-            bottom_center = bottom_row._number.mapTo(
-                self,
-                QPointF(bottom_row._number.width() / 2, bottom_row._number.height() / 2),
-            )
-            radius = 16.0
-            x = top_center.x()
-            start_y = top_center.y() + radius
-            end_y = bottom_center.y() - radius
             if end_y > start_y:
                 painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
 
@@ -1365,83 +1361,6 @@ class ComposerIconButton(QPushButton):
             painter.drawLine(QPointF(22, 20), QPointF(20, 20))
 
 
-class WorkflowStepIcon(QWidget):
-    """Line-icon для нижней панели шагов workflow."""
-
-    def __init__(self, kind: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._kind = kind
-        self._active = False
-        self.setFixedSize(16, 16)
-
-    def set_active(self, active: bool) -> None:
-        self._active = active
-        self.update()
-
-    def _color(self) -> QColor:
-        return QColor("#3b82f6") if self._active else QColor("#64748b")
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = self._color()
-        pen = QPen(color, 1.35)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._kind == "request":
-            painter.drawRoundedRect(QRectF(1.5, 2.5, 11, 9), 3, 3)
-            painter.drawLine(QPointF(4.5, 11.5), QPointF(6.5, 14))
-            for y in (5.5, 7.5, 9.5):
-                painter.drawLine(QPointF(4, y), QPointF(10, y))
-        elif self._kind == "plan":
-            painter.drawRect(QRectF(2.5, 2.5, 11, 11))
-            painter.drawLine(QPointF(8, 2.5), QPointF(8, 13.5))
-            painter.drawLine(QPointF(2.5, 8), QPointF(13.5, 8))
-        elif self._kind == "tools":
-            painter.drawEllipse(QRectF(2.5, 4.5, 5, 5))
-            painter.drawEllipse(QRectF(8.5, 6.5, 5, 5))
-        elif self._kind == "graph":
-            for x, y in ((3, 3), (12, 3), (3, 12), (12, 12)):
-                painter.drawEllipse(QRectF(x - 1.2, y - 1.2, 2.4, 2.4))
-            painter.drawLine(QPointF(4.2, 4.2), QPointF(10.8, 4.2))
-            painter.drawLine(QPointF(4.2, 11.8), QPointF(10.8, 11.8))
-            painter.drawLine(QPointF(4.2, 4.2), QPointF(4.2, 11.8))
-            painter.drawLine(QPointF(10.8, 4.2), QPointF(10.8, 11.8))
-        elif self._kind == "check":
-            path = QPainterPath(QPointF(8, 2.2))
-            path.lineTo(QPointF(12.8, 4.2))
-            path.lineTo(QPointF(11.8, 12.2))
-            path.lineTo(QPointF(4.2, 12.2))
-            path.lineTo(QPointF(3.2, 4.2))
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.drawLine(QPointF(6.2, 8.2), QPointF(7.8, 9.8))
-            painter.drawLine(QPointF(7.8, 9.8), QPointF(10.2, 6.8))
-        elif self._kind == "launch":
-            painter.drawEllipse(QRectF(2.5, 2.5, 11, 11))
-            painter.drawLine(QPointF(8, 5), QPointF(8, 11))
-            painter.drawLine(QPointF(5, 8), QPointF(11, 8))
-        elif self._kind == "quality":
-            painter.drawEllipse(QRectF(5, 2.2, 6, 6))
-            path = QPainterPath(QPointF(4.5, 8.2))
-            path.lineTo(QPointF(11.5, 8.2))
-            path.lineTo(QPointF(10, 13.5))
-            path.lineTo(QPointF(6, 13.5))
-            path.closeSubpath()
-            painter.drawPath(path)
-        else:
-            path = QPainterPath(QPointF(8, 2.5))
-            path.lineTo(QPointF(13, 8))
-            path.lineTo(QPointF(8, 13.5))
-            path.lineTo(QPointF(3, 8))
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.drawLine(QPointF(8, 4.5), QPointF(8, 12.5))
-
-
 class MetricChipIcon(QWidget):
     """Line-icon для метрик шапки timeline (часы, шаг, ETA)."""
 
@@ -1485,177 +1404,6 @@ class MetricChipIcon(QWidget):
             painter.drawLine(QPointF(8, 8), QPointF(10.4, 8))
 
 
-class WorkflowStepConnector(QWidget):
-    """Короткая пунктирная линия между вкладками workflow."""
-
-    _WIDTH = 18
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(self._WIDTH, 32)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#2563eb"), 1.2)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([2.5, 3.5])
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        y = self.height() / 2
-        painter.drawLine(QPointF(1, y), QPointF(self.width() - 1, y))
-
-
-class WorkflowStepTab(QFrame):
-    """Вкладка нижней панели workflow с иконкой и подписью."""
-
-    clicked = Signal(str)
-
-    def __init__(
-        self,
-        stage_id: str,
-        label: str,
-        icon_kind: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.stage_id = stage_id
-        self._active = False
-        self.setObjectName("workflowStepTab")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(32)
-        self.setMaximumHeight(34)
-
-        self._icon = WorkflowStepIcon(icon_kind)
-        self._label = QLabel(label)
-        self._label.setObjectName("workflowStepLabel")
-
-        self._row = QHBoxLayout(self)
-        self._row.setContentsMargins(10, 6, 10, 6)
-        self._row.setSpacing(6)
-        self._row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._row.addWidget(self._label, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._apply_style()
-
-    def set_content_padding(self, horizontal: int) -> None:
-        """Слегка расширить вкладку, если между шагами слишком большие промежутки."""
-        self._row.setContentsMargins(horizontal, 6, horizontal, 6)
-
-    def set_active(self, active: bool) -> None:
-        self._active = active
-        self._icon.set_active(active)
-        self._apply_style()
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        self.clicked.emit(self.stage_id)
-        super().mousePressEvent(event)
-
-    def _apply_style(self) -> None:
-        if self._active:
-            bg = "#0f2340"
-            border = "#3b82f6"
-            text = "#eef5ff"
-        else:
-            bg = "rgba(17, 24, 39, 0.55)"
-            border = "#1e293b"
-            text = "#64748b"
-        self.setStyleSheet(
-            "#workflowStepTab {"
-            f"background:{bg}; border:1px solid {border}; border-radius:8px;"
-            "}"
-            "#workflowStepTab:hover { background:#172338; border-color:#334155; }"
-            f"#workflowStepLabel {{ color:{text}; font-size:11px; font-weight:600; }}"
-        )
-
-
-class WorkflowStepBar(QFrame):
-    """Горизонтальная панель шагов workflow как в референсе."""
-
-    stageSelected = Signal(str)
-    _TAB_PADDING_BASE = 10
-    _TAB_PADDING_MAX = 14
-
-    def __init__(
-        self,
-        on_select: Callable[[str], None],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._on_select = on_select
-        self._tabs: dict[str, WorkflowStepTab] = {}
-        self._connectors: list[WorkflowStepConnector] = []
-        self.setObjectName("workflowStepBar")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 6, 0, 6)
-        row.setSpacing(0)
-        for index, (stage_id, label, icon_kind) in enumerate(WORKFLOW_TABS):
-            if index > 0:
-                connector = WorkflowStepConnector(self)
-                self._connectors.append(connector)
-                row.addWidget(connector, 0)
-            tab = WorkflowStepTab(stage_id, label, icon_kind, self)
-            tab.clicked.connect(self._on_select)
-            self._tabs[stage_id] = tab
-            row.addWidget(tab, 0)
-        self.setStyleSheet(
-            "#workflowStepBar {"
-            "background:transparent; border:none;"
-            "}"
-        )
-        self._sync_tab_padding()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._sync_tab_padding()
-
-    def _sync_layout_metrics(self) -> None:
-        """Распределить шаги по всей ширине панели (90% родителя)."""
-        if not self._tabs:
-            return
-        margins = self.layout().contentsMargins()
-        inner_width = self.width() - margins.left() - margins.right()
-        for connector in self._connectors:
-            connector.setFixedWidth(WorkflowStepConnector._WIDTH)
-        for tab in self._tabs.values():
-            tab.set_content_padding(self._TAB_PADDING_BASE)
-
-        compact_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
-        compact_width += len(self._connectors) * WorkflowStepConnector._WIDTH
-        surplus = max(0, inner_width - compact_width)
-
-        boost = min(
-            self._TAB_PADDING_MAX - self._TAB_PADDING_BASE,
-            surplus // max(1, len(self._tabs) * 18),
-        )
-        horizontal = self._TAB_PADDING_BASE + boost
-        for tab in self._tabs.values():
-            tab.set_content_padding(horizontal)
-
-        padded_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
-        padded_width += len(self._connectors) * WorkflowStepConnector._WIDTH
-        connector_surplus = max(0, inner_width - padded_width)
-        if not self._connectors:
-            return
-        extra = connector_surplus // len(self._connectors)
-        remainder = connector_surplus % len(self._connectors)
-        for index, connector in enumerate(self._connectors):
-            connector.setFixedWidth(
-                WorkflowStepConnector._WIDTH + extra + (1 if index < remainder else 0)
-            )
-
-    def _sync_tab_padding(self) -> None:
-        self._sync_layout_metrics()
-
-    def set_active_stage(self, stage_id: str) -> None:
-        if stage_id not in self._tabs:
-            return
-        for sid, tab in self._tabs.items():
-            tab.set_active(sid == stage_id)
-
-
 class AgentCreateWidget(QWidget):
     """Пошаговый экран создания и проверки агента.
 
@@ -1680,7 +1428,6 @@ class AgentCreateWidget(QWidget):
         self._worker: CreateFlowWorker | None = None
         self._action_buttons: list[QPushButton] = []
         self._plan_step_cards: dict[str, PlanStepRow] = {}
-        self._workflow_step_bar: WorkflowStepBar | None = None
         self._launch_stop_action = None
         self._request_min_height = 22
         self._request_max_height = 120
@@ -1697,6 +1444,12 @@ class AgentCreateWidget(QWidget):
         self._run_timer = QTimer(self)
         self._run_timer.setInterval(1000)
         self._run_timer.timeout.connect(self._refresh_run_header)
+        self._main_splitter: QSplitter | None = None
+        self._resize_sync_timer = QTimer(self)
+        self._resize_sync_timer.setSingleShot(True)
+        self._resize_sync_timer.setInterval(48)
+        self._resize_sync_timer.timeout.connect(self._apply_deferred_resize_sync)
+        self._request_height_sync_pending = False
 
         self._build_ui()
         self._connect_signals()
@@ -1710,13 +1463,27 @@ class AgentCreateWidget(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(self._build_center())
         splitter.addWidget(self._build_details_panel())
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 2)
+        # Центр доминирует; правая колонка узкая и почти не растягивается.
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 1)
         splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
+        self._main_splitter = splitter
+        QTimer.singleShot(0, self._apply_default_splitter_sizes)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
+
+    def _apply_default_splitter_sizes(self) -> None:
+        """Задать начальные размеры: центр шире, план справа уже."""
+        splitter = self._main_splitter
+        if splitter is None:
+            return
+        total = max(splitter.width(), 900)
+        right = min(300, max(260, total // 4))
+        left = max(total - right, total - 320)
+        splitter.setSizes([left, right])
 
     def _build_center(self) -> QWidget:
         """Центральная рабочая область в стиле run timeline из референса."""
@@ -1948,36 +1715,6 @@ class AgentCreateWidget(QWidget):
         toolbar.addWidget(self._build_launch_split())
         layout.addLayout(toolbar)
 
-        divider_host = QWidget()
-        divider_host.setObjectName("workflowStepDividerHost")
-        divider_row = QHBoxLayout(divider_host)
-        divider_row.setContentsMargins(5, 5, 5, 5)
-        divider_row.setSpacing(0)
-        workflow_divider = QFrame()
-        workflow_divider.setObjectName("workflowStepDivider")
-        workflow_divider.setFixedHeight(1)
-        workflow_divider.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        divider_row.addWidget(workflow_divider)
-        layout.addWidget(divider_host)
-
-        workflow_host = QWidget()
-        workflow_host.setObjectName("workflowStepHost")
-        workflow_host_layout = QHBoxLayout(workflow_host)
-        workflow_host_layout.setContentsMargins(0, 0, 0, 0)
-        workflow_host_layout.setSpacing(0)
-        workflow_host_layout.addStretch(1)
-        self._workflow_step_bar = WorkflowStepBar(self.select_stage, composer)
-        self._workflow_step_bar.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        workflow_host_layout.addWidget(self._workflow_step_bar, 18)
-        workflow_host_layout.addStretch(1)
-        layout.addWidget(workflow_host)
-
         composer.setStyleSheet(
             "#composerPanel {"
             f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
@@ -2011,23 +1748,44 @@ class AgentCreateWidget(QWidget):
             "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
             "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
             "}"
-            "#workflowStepDividerHost { background:transparent; }"
-            "#workflowStepDivider { background:#1a2740; border:none; }"
-            "#workflowStepHost { background:transparent; }"
         )
         return composer
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # На каждом Resize пересчёт document height даёт layout thrashing при scale.
         if obj is self.request_edit and event.type() == QEvent.Type.Resize:
-            self._sync_request_edit_height()
+            self._schedule_request_edit_height_sync()
+            return False
         return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_request_edit_height_sync()
+
+    def _schedule_request_edit_height_sync(self) -> None:
+        """Отложить пересчёт высоты поля запроса до конца серии resize/scale."""
+        self._request_height_sync_pending = True
+        self._resize_sync_timer.start()
+
+    def _apply_deferred_resize_sync(self) -> None:
+        if not self._request_height_sync_pending:
+            return
+        self._request_height_sync_pending = False
+        self._sync_request_edit_height()
 
     def _sync_request_edit_height(self) -> None:
         """Подстраивать высоту поля запроса под число строк без обрезки текста."""
-        edit = self.request_edit
+        edit = getattr(self, "request_edit", None)
+        if edit is None:
+            return
         viewport_width = max(40, edit.viewport().width())
-        edit.document().setTextWidth(viewport_width)
-        doc_height = edit.document().size().height()
+        document = edit.document()
+        if abs(document.textWidth() - viewport_width) < 1.0 and edit.height() > 0:
+            # Ширина не изменилась — не трогаем layout во время непрерывного resize.
+            doc_height = document.size().height()
+        else:
+            document.setTextWidth(viewport_width)
+            doc_height = document.size().height()
         frame = edit.frameWidth() * 2
         margins = edit.contentsMargins()
         target = int(doc_height + frame + margins.top() + margins.bottom() + 2)
@@ -2234,17 +1992,18 @@ class AgentCreateWidget(QWidget):
         """Правая панель плана и текущего шага в одной непрерывной секции."""
         panel = QWidget()
         panel.setObjectName("detailsPanel")
-        panel.setMinimumWidth(400)
-        panel.setMaximumWidth(440)
+        panel.setMinimumWidth(260)
+        panel.setMaximumWidth(320)
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         outer = QVBoxLayout(panel)
-        outer.setContentsMargins(8, 16, 14, 16)
+        outer.setContentsMargins(6, 16, 10, 16)
         outer.setSpacing(0)
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebarPanel")
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 14, 12, 14)
+        layout.setSpacing(10)
 
         plan_header = QLabel("План")
         plan_header.setObjectName("planTitle")
@@ -2532,6 +2291,14 @@ class AgentCreateWidget(QWidget):
 
     def _append_log(self, message: str) -> None:
         """Добавить строку в живой лог хода выполнения."""
+        if message.startswith("CTX_USAGE:"):
+            try:
+                usage = json.loads(message.removeprefix("CTX_USAGE:"))
+            except json.JSONDecodeError:
+                return
+            if self.context_indicator is not None:
+                self.context_indicator.set_usage(usage)
+            return
         self.live_log.append(message)
         scrollbar = self.live_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
@@ -2777,12 +2544,16 @@ class AgentCreateWidget(QWidget):
         self._stop_run_tracking()
 
     def request_stop(self) -> None:
-        """Запросить остановку выполняющегося агента (кооперативно, между шагами)."""
+        """Запросить остановку: прерывает ожидание ответа LLM и шаги цикла."""
         if not self._is_busy():
             return
         self._cancel_event.set()
         self.stop_button.setEnabled(False)
-        self._append_log("⏹ Запрошена остановка агента. Останавливаю после текущего шага…")
+        if self._launch_stop_action is not None:
+            self._launch_stop_action.setEnabled(False)
+        self._append_log(
+            "⏹ Запрошена остановка агента. Прерываю текущий запрос к модели…"
+        )
 
     # -------------------------------------------------------------- actions
 
@@ -2799,16 +2570,21 @@ class AgentCreateWidget(QWidget):
         self._start_elapsed_timer(reset=True)
         self.live_log.clear()
         self._ensure_selected_model_container()
+        self._cancel_event.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
         self.select_stage(STAGE_PLAN)
 
         service = self._container.agent_service
+        cancel_event = self._cancel_event
 
         def job(progress: Callable[[str], None]) -> object:
             progress("🧩 Строю план агента через LLM…")
-            spec = service.build_preview(user_request)
+            spec = service.build_preview(
+                user_request,
+                cancel_callback=cancel_event.is_set,
+            )
             progress("✅ План построен.")
             return spec
 
@@ -3406,8 +3182,6 @@ class AgentCreateWidget(QWidget):
             card.set_selected(other_id == stage_id)
         for other_id, card in self._plan_step_cards.items():
             card.set_active(other_id == stage_id)
-        if self._workflow_step_bar is not None:
-            self._workflow_step_bar.set_active_stage(stage_id)
         self._refresh_current_step_card()
         if stage_id == STAGE_DEV:
             self.dev_toggle.setChecked(True)

@@ -54,6 +54,16 @@ class BrowserVisionWorkerProvider:
         """Вернуть worker для browser_id/name или последний активный."""
         name = _requested_browser_name(input_data)
         profile_options = _profile_options(input_data)
+        inherited_session = _inherited_user_browser_session(input_data)
+        inherited_session_used = False
+        if inherited_session and not name and not _has_explicit_profile(input_data):
+            name = str(inherited_session.get("browser_id") or "")
+            profile_options = {
+                "use_default_profile": True,
+                "profile_name": None,
+                "user_data_dir": None,
+            }
+            inherited_session_used = True
         if not name and not _has_explicit_profile(input_data):
             if self._active_key:
                 return self._by_browser[self._active_key]
@@ -84,6 +94,13 @@ class BrowserVisionWorkerProvider:
                 )
             )
             self._by_browser[cache_key] = worker
+        if inherited_session_used:
+            worker.activate_os_fallback(
+                url=str(inherited_session.get("url") or ""),
+                command_args_summary=inherited_session.get("command_args_summary")
+                if isinstance(inherited_session.get("command_args_summary"), list)
+                else None,
+            )
         self._active_key = cache_key
         return worker
 
@@ -116,6 +133,7 @@ class _BaseVisionTool(BaseTool):
                 tool_name=self.definition.name,
                 error_type="BROWSER_CDP_ERROR",
                 error_message=str(exc),
+                output_data=exc.output_data,
             )
         except Exception as exc:  # noqa: BLE001 - worker изолирует ошибки браузера
             return ToolCallResult(
@@ -143,6 +161,12 @@ _SCREENSHOT_OUTPUT = {
         "user_data_dir": {"type": "string"},
         "used_default_profile": {"type": "boolean"},
         "command_args_summary": {"type": "array"},
+        "cdp_available": {"type": "boolean"},
+        "cdp_url": {"type": "string"},
+        "fallback_used": {"type": "boolean"},
+        "fallback_reason": {"type": "string"},
+        "next_action_hint": {"type": "string"},
+        "warning": {"type": "string"},
     },
 }
 
@@ -151,6 +175,8 @@ _BROWSER_INPUT_PROPERTIES = {
     "browser_name": {"type": "string"},
     "browser": {"type": "string"},
     "use_default_profile": {"type": "boolean"},
+    "allow_open_browser_fallback": {"type": "boolean"},
+    "allow_os_fallback": {"type": "boolean"},
     "profile_name": {"type": "string"},
     "user_data_dir": {"type": "string"},
 }
@@ -182,6 +208,24 @@ def _has_explicit_profile(input_data: dict) -> bool:
     )
 
 
+def _inherited_user_browser_session(input_data: dict) -> dict | None:
+    """Найти в tool_outputs уже открытый обычный браузер с пользовательским профилем."""
+    tool_outputs = input_data.get("tool_outputs")
+    if not isinstance(tool_outputs, dict):
+        return None
+    for tool_name in ("browser.open_browser", "browser.navigate"):
+        output = tool_outputs.get(tool_name)
+        if not isinstance(output, dict):
+            continue
+        browser_id = str(output.get("browser_id") or output.get("browser_name") or "").strip()
+        if not browser_id:
+            continue
+        if output.get("used_default_profile") is True or output.get("profile_mode") == "default":
+            if output.get("cdp_available") is False or tool_name == "browser.open_browser":
+                return output
+    return None
+
+
 def _worker_cache_key(browser_id: str, profile_options: dict[str, object]) -> str:
     """Стабильный cache key для browser/profile worker."""
     return "|".join(
@@ -207,7 +251,10 @@ class BrowserNavigateTool(_BaseVisionTool):
                     "Открывает URL в управляемой вкладке браузера и возвращает "
                     "скриншот страницы. По умолчанию использует стабильный "
                     "automation-профиль; use_default_profile/profile_name/"
-                    "user_data_dir применяются только при явном указании."
+                    "user_data_dir применяются только при явном указании. Если "
+                    "штатный профиль уже открыт без CDP, может открыть URL обычным "
+                    "браузером и перейти в OS fallback: cdp_available=false, "
+                    "но screenshot/click/type_text продолжат работать по видимому экрану."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
@@ -239,7 +286,11 @@ class BrowserScreenshotTool(_BaseVisionTool):
             ToolDefinition(
                 name="browser.screenshot",
                 title="Скриншот страницы браузера",
-                description="Делает скриншот текущей вкладки браузера (base64 PNG), чтобы LLM видела UI и решила следующее действие.",
+                description=(
+                    "Делает скриншот текущей вкладки браузера (base64 PNG), чтобы "
+                    "LLM видела UI и решила следующее действие. Если штатный профиль "
+                    "открыт без CDP после fallback, делает скриншот видимого экрана."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
@@ -260,6 +311,66 @@ class BrowserScreenshotTool(_BaseVisionTool):
         return "screenshot"
 
 
+_PAGE_HTML_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string"},
+        "title": {"type": "string"},
+        "html": {"type": "string"},
+        "html_length": {"type": "integer"},
+        "truncated": {"type": "boolean"},
+        "html_summary": {"type": "string"},
+        "profile_mode": {"type": "string"},
+        "user_data_dir": {"type": "string"},
+        "used_default_profile": {"type": "boolean"},
+        "command_args_summary": {"type": "array"},
+        "cdp_available": {"type": "boolean"},
+        "cdp_url": {"type": "string"},
+        "fallback_used": {"type": "boolean"},
+        "fallback_reason": {"type": "string"},
+        "next_action_hint": {"type": "string"},
+        "warning": {"type": "string"},
+    },
+}
+
+
+class BrowserGetPageHtmlTool(_BaseVisionTool):
+    """Получить HTML-код текущей вкладки через CDP."""
+
+    def __init__(self, provider: BrowserVisionWorkerProvider) -> None:
+        """Создать инструмент browser.get_page_html."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.get_page_html",
+                title="HTML текущей страницы браузера",
+                description=(
+                    "Возвращает HTML текущей вкладки (document.documentElement.outerHTML) "
+                    "через CDP: url, title, html (с лимитом), html_length, truncated, "
+                    "html_summary. Нужен для структуры DOM, селекторов, текста форм и "
+                    "скрытого контента — не заменяет screenshot для визуального UI."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=40,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "max_chars": {"type": "integer"},
+                        "summary_chars": {"type": "integer"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
+                },
+                output_schema=_PAGE_HTML_OUTPUT,
+            ),
+            provider,
+        )
+
+    def _method_name(self) -> str:
+        return "get_page_html"
+
+
 class BrowserClickTool(_BaseVisionTool):
     """Кликнуть по координатам на странице (координаты определяет LLM по скриншоту)."""
 
@@ -269,7 +380,11 @@ class BrowserClickTool(_BaseVisionTool):
             ToolDefinition(
                 name="browser.click",
                 title="Клик по координатам в браузере",
-                description="Кликает по координатам (x, y) в пикселях viewport текущей вкладки и возвращает новый скриншот. Координаты бери со скриншота.",
+                description=(
+                    "Кликает по координатам (x, y) со скриншота и возвращает новый "
+                    "скриншот. В CDP-режиме координаты viewport; в OS fallback после "
+                    "штатного профиля — координаты видимого экрана."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
@@ -302,7 +417,11 @@ class BrowserTypeTextTool(_BaseVisionTool):
             ToolDefinition(
                 name="browser.type_text",
                 title="Ввод текста в браузере",
-                description="Вводит текст в текущий активный элемент (сначала кликни в поле через browser.click) и возвращает скриншот.",
+                description=(
+                    "Вводит текст в текущий активный элемент (сначала кликни в поле "
+                    "через browser.click) и возвращает скриншот. В OS fallback "
+                    "вставляет текст в активное окно через clipboard."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
@@ -333,7 +452,11 @@ class BrowserPressKeyTool(_BaseVisionTool):
             ToolDefinition(
                 name="browser.press_key",
                 title="Нажатие клавиши в браузере",
-                description="Нажимает спец-клавишу (enter, tab, escape, backspace, стрелки) в браузере и возвращает скриншот.",
+                description=(
+                    "Нажимает спец-клавишу (enter, tab, escape, backspace, стрелки) "
+                    "в браузере и возвращает скриншот. В OS fallback нажимает клавишу "
+                    "в активном окне."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
@@ -364,7 +487,10 @@ class BrowserScrollTool(_BaseVisionTool):
             ToolDefinition(
                 name="browser.scroll",
                 title="Прокрутка браузера (UI)",
-                description="Прокручивает текущую вкладку вверх/вниз и возвращает скриншот.",
+                description=(
+                    "Прокручивает текущую вкладку вверх/вниз и возвращает скриншот. "
+                    "В OS fallback прокручивает активное окно системным wheel-событием."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.BROWSER_WORKER,
                 requires_human_approval=False,
@@ -397,6 +523,7 @@ def register_browser_vision_tools(
     tools = [
         BrowserNavigateTool(provider),
         BrowserScreenshotTool(provider),
+        BrowserGetPageHtmlTool(provider),
         BrowserClickTool(provider),
         BrowserTypeTextTool(provider),
         BrowserPressKeyTool(provider),

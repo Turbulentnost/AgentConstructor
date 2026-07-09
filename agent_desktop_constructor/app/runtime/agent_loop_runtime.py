@@ -12,6 +12,7 @@ from agent_desktop_constructor.app.core.models.human_approval import (
 )
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEventType
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
+from agent_desktop_constructor.app.llm.errors import LLMCancelledError
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
@@ -93,8 +94,23 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self,
         callback: Callable[[], bool] | None,
     ) -> None:
-        """Задать колбэк отмены: если вернёт True, цикл остановится между шагами."""
+        """Задать колбэк отмены: цикл и текущий HTTP-запрос к LLM могут прерваться."""
         self._cancel_callback = callback
+        self._sync_llm_cancel_callback(callback)
+
+    def _sync_llm_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Пробросить отмену в LLM-клиент планировщика, если он это поддерживает."""
+        llm_client = getattr(self._planner, "_llm_client", None)
+        if llm_client is None:
+            return
+        if hasattr(llm_client, "set_cancel_callback"):
+            try:
+                llm_client.set_cancel_callback(callback)
+            except Exception:
+                pass
 
     def _is_cancel_requested(self) -> bool:
         """Проверить, запросил ли пользователь остановку (безопасно к ошибкам)."""
@@ -106,8 +122,26 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         except Exception:
             return False
 
-    def _emit_progress(self, message: str) -> None:
-        """Отправить строку прогресса в UI, не роняя выполнение при ошибке колбэка."""
+    def _mark_user_cancelled(self, state: AgentRuntimeState) -> None:
+        """Пометить run как отменённый пользователем и сообщить в UI."""
+        state.mark_cancelled("Выполнение остановлено пользователем")
+        self._add_run_event(
+            state,
+            AgentRunEventType.NODE_FAILED,
+            "Выполнение остановлено пользователем",
+            details={"reason": "user_stop"},
+        )
+        self._emit_progress("⏹ Выполнение остановлено пользователем.")
+
+    def _emit_progress(
+        self,
+        message: str,
+        state: AgentRuntimeState | None = None,
+        agent_spec: AgentSpec | None = None,
+    ) -> None:
+        """Отправить строку прогресса в UI и сохранить её в контексте run."""
+        if state is not None:
+            self._record_live_progress_event(state, message, agent_spec)
         callback = self._progress_callback
         if callback is None:
             return
@@ -116,20 +150,47 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         except Exception:
             pass
 
-    def _emit_decision_progress(self, decision: SupervisorDecision) -> None:
+    def _record_live_progress_event(
+        self,
+        state: AgentRuntimeState,
+        message: str,
+        agent_spec: AgentSpec | None = None,
+    ) -> None:
+        """Сохранить live-событие, чтобы следующий LLM шаг видел историю чата."""
+        events = state.variables.setdefault("live_progress_events", [])
+        if not isinstance(events, list):
+            events = []
+            state.variables["live_progress_events"] = events
+        events.append(
+            {
+                "step": state.step_counter,
+                "message": message,
+            }
+        )
+        del events[:-80]
+        self._refresh_context(state, agent_spec, emit_usage=False)
+
+    def _emit_decision_progress(
+        self,
+        decision: SupervisorDecision,
+        state: AgentRuntimeState | None = None,
+        agent_spec: AgentSpec | None = None,
+    ) -> None:
         """Транслировать в UI текст решения LLM (полностью, без обрезки)."""
         reason = (decision.reason or "").strip()
         if reason:
-            self._emit_progress(f"🧠 LLM: {reason}")
+            self._emit_progress(f"🧠 LLM: {reason}", state, agent_spec)
         if decision.tool_call is not None:
             tool_reason = (decision.tool_call.reason or "").strip()
             suffix = f" — {tool_reason}" if tool_reason else ""
             self._emit_progress(
-                f"→ LLM выбрала инструмент {decision.tool_call.tool_name}{suffix}"
+                f"→ LLM выбрала инструмент {decision.tool_call.tool_name}{suffix}",
+                state,
+                agent_spec,
             )
         final_message = (decision.final_message or "").strip()
         if final_message:
-            self._emit_progress(f"✅ Итоговый вывод LLM: {final_message}")
+            self._emit_progress(f"✅ Итоговый вывод LLM: {final_message}", state, agent_spec)
 
     def run(
         self,
@@ -154,7 +215,11 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             "Запуск LLM-управляемого агента начат",
             details={"agent_id": agent_spec.agent_id},
         )
-        self._emit_progress(f"▶ Запуск агента «{agent_spec.name}». Цель: {agent_spec.goal.main_goal}")
+        self._emit_progress(
+            f"▶ Запуск агента «{agent_spec.name}». Цель: {agent_spec.goal.main_goal}",
+            state,
+            agent_spec,
+        )
         return self._drive_loop(agent_spec, state)
 
     def resume_with_human_input(
@@ -264,12 +329,31 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self,
         state: AgentRuntimeState,
         agent_spec: AgentSpec | None = None,
+        *,
+        emit_usage: bool = True,
     ) -> None:
         """Обновить context_snapshot в state.variables без влияния на выполнение."""
         try:
-            self._context_manager.update_state_context(state, agent_spec=agent_spec)
+            snapshot = self._context_manager.update_state_context(
+                state,
+                agent_spec=agent_spec,
+            )
+            if emit_usage:
+                usage = snapshot.usage
+                if usage is not None:
+                    self._emit_context_usage(usage.model_dump(mode="json"))
         except Exception as exc:
             state.variables["context_snapshot_error"] = str(exc)
+
+    def _emit_context_usage(self, usage: dict) -> None:
+        """Отправить UI машинно-читаемое обновление индикатора контекста."""
+        callback = self._progress_callback
+        if callback is None:
+            return
+        try:
+            callback("CTX_USAGE:" + json.dumps(usage, ensure_ascii=False, default=str))
+        except Exception:
+            pass
 
     def _drive_loop(
         self,
@@ -287,18 +371,13 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
 
         while state.can_continue(limits.max_steps, limits.max_tool_calls):
             if self._is_cancel_requested():
-                state.mark_cancelled("Выполнение остановлено пользователем")
-                self._add_run_event(
-                    state,
-                    AgentRunEventType.NODE_FAILED,
-                    "Выполнение остановлено пользователем",
-                    details={"reason": "user_stop"},
-                )
-                self._emit_progress("⏹ Выполнение остановлено пользователем.")
+                self._mark_user_cancelled(state)
                 break
             state.step_counter += 1
             self._emit_progress(
-                f"🧠 Шаг {state.step_counter}: LLM планирует следующее действие…"
+                f"🧠 Шаг {state.step_counter}: LLM планирует следующее действие…",
+                state,
+                agent_spec,
             )
             try:
                 decision = self._planner.decide(
@@ -307,7 +386,13 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     executed_signatures=list(executed_signatures),
                     repeat_notes=list(repeat_notes),
                 )
+            except LLMCancelledError:
+                self._mark_user_cancelled(state)
+                break
             except Exception as exc:
+                if self._is_cancel_requested():
+                    self._mark_user_cancelled(state)
+                    break
                 decision_failures += 1
                 if decision_failures <= self._max_decision_retries:
                     hint = (
@@ -338,7 +423,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             state.variables.setdefault("loop_decisions", []).append(
                 decision.model_dump(mode="json")
             )
-            self._emit_decision_progress(decision)
+            self._emit_decision_progress(decision, state, agent_spec)
             self._refresh_context(state, agent_spec)
 
             stop = self._apply_loop_decision(
@@ -609,6 +694,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             if tool_name in VISION_INTERACTION_TOOLS:
                 self._track_vision_progress(state, tool_name, proposed_input, output_data)
             stored_output = self._stash_screenshot(state, output_data)
+            stored_output = self._stash_page_html(state, stored_output)
             state.variables.setdefault("tool_outputs", {})[tool_name] = stored_output
             self._refresh_context(state, agent_spec)
             output_keys = sorted(output_data.keys())
@@ -632,7 +718,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 return
             self._emit_progress(
                 f"✓ Инструмент {tool_name} выполнен. Данные: "
-                f"{', '.join(output_keys) if output_keys else 'нет полей'}"
+                f"{', '.join(output_keys) if output_keys else 'нет полей'}",
+                state,
+                agent_spec,
             )
             return
 
@@ -651,7 +739,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         )
         self._emit_progress(
             f"✕ Инструмент {tool_name} ошибка "
-            f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}"
+            f"[{result.error_type or 'ERROR'}]: {result.error_message or ''}",
+            state,
+            agent_spec,
         )
         self._refresh_context(state, agent_spec)
 
@@ -737,6 +827,31 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             }
         trimmed = {k: v for k, v in output_data.items() if k != "screenshot_base64"}
         trimmed["screenshot_captured"] = bool(screenshot)
+        return trimmed
+
+    @staticmethod
+    def _stash_page_html(state: AgentRuntimeState, output_data: dict) -> dict:
+        """Убрать сырой html из tool_outputs; оставить summary/length для LLM-контекста."""
+        if not isinstance(output_data, dict) or "html" not in output_data:
+            return output_data
+        html = str(output_data.get("html") or "")
+        html_summary = str(output_data.get("html_summary") or html[:4000])
+        html_length = int(output_data.get("html_length") or len(html))
+        truncated = bool(output_data.get("truncated"))
+        if html:
+            state.variables["last_page_html"] = {
+                "url": output_data.get("url"),
+                "title": output_data.get("title"),
+                "html": html,
+                "html_length": html_length,
+                "truncated": truncated,
+                "html_summary": html_summary,
+            }
+        trimmed = {k: v for k, v in output_data.items() if k != "html"}
+        trimmed["html_captured"] = bool(html)
+        trimmed["html_length"] = html_length
+        trimmed["truncated"] = truncated
+        trimmed["html_summary"] = html_summary
         return trimmed
 
     def _validate_tool_call(

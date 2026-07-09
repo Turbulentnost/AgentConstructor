@@ -204,6 +204,29 @@ def test_runtime_persists_context_snapshot_after_tool_call() -> None:
     assert snapshot["sections"]["tool_results"]
 
 
+def test_runtime_streams_live_context_usage_and_progress_events() -> None:
+    """Во время run live-log события попадают в context_snapshot и UI usage stream."""
+    registry = ToolRegistry()
+    register_fake_task_control_tools(registry)
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=ToolGateway(registry),
+        agent_loop_planner=OneToolPlanner(),
+        tools_catalog=load_tools_catalog(),
+        tool_registry=registry,
+    )
+    progress: list[str] = []
+    runtime.set_progress_callback(progress.append)
+
+    state = runtime.run(_agent_spec(), {"user_request": "проверь календарь"})
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert any(message.startswith("CTX_USAGE:") for message in progress)
+    snapshot_json = json.dumps(state.variables["context_snapshot"], ensure_ascii=False)
+    assert "live_progress_events" in snapshot_json
+    assert "LLM выбрала инструмент" in snapshot_json
+    assert "outlook.read_calendar" in snapshot_json
+
+
 def test_runtime_persists_failed_command_output_for_next_prompt() -> None:
     """LLM runtime сохраняет stdout/stderr даже для failed PowerShell command."""
     registry = ToolRegistry()

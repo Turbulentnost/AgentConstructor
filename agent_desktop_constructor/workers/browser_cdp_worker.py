@@ -40,6 +40,15 @@ DEFAULT_AUTOMATION_PROFILE_NAME = "automation"
 class BrowserCdpError(RuntimeError):
     """Ошибка CDP browser worker."""
 
+    def __init__(self, message: str, *, output_data: dict | None = None) -> None:
+        """Сохранить человекочитаемую ошибку и безопасную диагностику."""
+        super().__init__(message)
+        self.output_data = output_data or {}
+
+
+class BrowserCdpEndpointUnavailable(BrowserCdpError):
+    """Браузер запущен, но локальный CDP endpoint не поднялся."""
+
 
 @dataclass
 class BrowserLaunchConfig:
@@ -130,7 +139,7 @@ class BrowserCdpWorker:
                 "url": session.evaluate("location.href"),
                 "title": session.evaluate("document.title"),
                 "tables": tables[:MAX_TABLES] if isinstance(tables, list) else [],
-                **self.profile_output(),
+                **self.profile_output(cdp_available=True),
             }
 
     def _session_for_url(self, url: str) -> "_CdpSession":
@@ -178,20 +187,42 @@ class BrowserCdpWorker:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        deadline = time.time() + self._config.timeout_seconds
-        while time.time() < deadline:
-            if self._is_cdp_available():
-                return
-            time.sleep(0.2)
-        raise BrowserCdpError("Браузер запущен, но CDP endpoint не ответил.")
+        if self._wait_for_cdp_endpoint():
+            return
+        raise self._cdp_unavailable_error()
 
     def _is_cdp_available(self) -> bool:
         """Проверить, отвечает ли CDP endpoint."""
         try:
-            payload = self._get_json("/json/version")
+            payload = self._get_json("/json/version", timeout_seconds=1.0)
         except Exception:
             return False
         return bool(payload.get("webSocketDebuggerUrl") or payload.get("Browser"))
+
+    def _wait_for_cdp_endpoint(self) -> bool:
+        """Дождаться /json/version короткими polling-запросами."""
+        deadline = time.monotonic() + self._config.timeout_seconds
+        while time.monotonic() < deadline:
+            if self._is_cdp_available():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def _cdp_unavailable_error(self) -> BrowserCdpEndpointUnavailable:
+        """Собрать понятную ошибку недоступного CDP endpoint."""
+        reason = (
+            "default_profile_cdp_unavailable"
+            if self._profile_mode == "default"
+            else "cdp_endpoint_unavailable"
+        )
+        return BrowserCdpEndpointUnavailable(
+            _cdp_unavailable_message(self._profile_mode),
+            output_data=self.profile_output(
+                cdp_available=False,
+                fallback_used=False,
+                fallback_reason=reason,
+            ),
+        )
 
     def _get_page_websocket_url(self, url: str) -> str:
         """Создать/найти вкладку и вернуть webSocketDebuggerUrl."""
@@ -211,14 +242,20 @@ class BrowserCdpWorker:
                     return str(page["webSocketDebuggerUrl"])
         raise BrowserCdpError("Не удалось получить CDP websocket вкладки.")
 
-    def _get_json(self, path: str, method: str = "GET") -> Any:
+    def _get_json(
+        self,
+        path: str,
+        method: str = "GET",
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         """Прочитать JSON с локального CDP HTTP endpoint."""
         url = f"http://127.0.0.1:{self._config.port}{path}"
         http_request = request.Request(url, method=method)
         try:
             with request.urlopen(
                 http_request,
-                timeout=self._config.timeout_seconds,
+                timeout=timeout_seconds or self._config.timeout_seconds,
             ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
@@ -243,17 +280,39 @@ class BrowserCdpWorker:
         """Вернуть title/text/links текущей страницы."""
         snapshot = session.evaluate(_snapshot_script(max_chars, MAX_LINKS)) or {}
         if isinstance(snapshot, dict):
-            snapshot.update(self.profile_output())
+            snapshot.update(self.profile_output(cdp_available=True))
         return snapshot
 
-    def profile_output(self) -> dict:
+    def profile_output(
+        self,
+        *,
+        cdp_available: bool | None = None,
+        fallback_used: bool = False,
+        fallback_reason: str = "",
+    ) -> dict:
         """Вернуть безопасную диагностику режима профиля browser worker."""
+        if cdp_available is None:
+            try:
+                available = self._is_cdp_available()
+            except Exception:
+                available = False
+        else:
+            available = cdp_available
         return {
             "profile_mode": self._profile_mode,
             "user_data_dir": self._user_data_dir or "",
             "used_default_profile": self._profile_mode == "default",
             "command_args_summary": self._last_command_args_summary
             or _planned_command_args_summary(self._config, self._user_data_dir),
+            "cdp_available": available,
+            "cdp_url": _cdp_http_url(self._config.port) if available else "",
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
+            "next_action_hint": _next_action_hint(
+                self._profile_mode,
+                cdp_available=available,
+                fallback_used=fallback_used,
+            ),
         }
 
     def _find_link_url(self, session: "_CdpSession", *, href: str, link_text: str) -> str:
@@ -505,6 +564,51 @@ def _planned_command_args_summary(
 def _command_args_summary(command: list[str], *, executable: str) -> list[str]:
     """Убрать полный путь exe из summary, оставив важные флаги запуска."""
     return ["<browser_executable>", *command[1:]] if command and command[0] == executable else command
+
+
+def _cdp_http_url(port: int) -> str:
+    """Вернуть базовый URL локального CDP HTTP endpoint."""
+    return f"http://127.0.0.1:{port}"
+
+
+def _cdp_unavailable_message(profile_mode: str) -> str:
+    """Вернуть понятную причину, почему CDP endpoint мог не подняться."""
+    if profile_mode == "default":
+        return (
+            "Браузер запущен, но CDP endpoint не ответил. Частая причина: штатный "
+            "профиль уже открыт обычным процессом браузера без remote debugging, "
+            "поэтому новый запуск с тем же профилем не создаёт управляемый CDP endpoint."
+        )
+    return "Браузер запущен, но CDP endpoint не ответил."
+
+
+def _next_action_hint(
+    profile_mode: str,
+    *,
+    cdp_available: bool,
+    fallback_used: bool,
+) -> str:
+    """Подсказать planner-у безопасный следующий шаг."""
+    if cdp_available:
+        return "CDP доступен: можно продолжать browser vision/CDP действия."
+    if fallback_used:
+        return (
+            "URL открыт в штатном профиле без CDP: пользовательская сессия сохранена. "
+            "Продолжай через browser.screenshot/browser.click/browser.type_text/"
+            "browser.press_key/browser.scroll в OS fallback; координаты бери с "
+            "видимого скриншота экрана. Не переключайся на automation profile, если "
+            "нужна текущая авторизация пользователя."
+        )
+    if profile_mode == "default":
+        return (
+            "Для пользовательской сессии открой URL через browser.open_browser без CDP; "
+            "для скриншотов/vision повтори с use_default_profile=false, чтобы "
+            "использовать automation profile."
+        )
+    return (
+        "CDP endpoint недоступен даже в automation profile: проверь установленный "
+        "Chromium-браузер, порт remote debugging и локальные политики безопасности."
+    )
 
 
 def _browser_profiles_root() -> Path:

@@ -153,6 +153,19 @@ class AgentContextManager:
                 repeat_notes[-5:] if isinstance(repeat_notes, list) else repeat_notes,
                 priority=70,
             )
+        if progress_events := state.variables.get("live_progress_events"):
+            self._upsert(
+                snapshot,
+                ContextSection.EVENTS,
+                "live_progress_events",
+                (
+                    progress_events[-20:]
+                    if isinstance(progress_events, list)
+                    else progress_events
+                ),
+                priority=85,
+            )
+        self.record_user_history(snapshot, state)
 
     def record_run_event(
         self,

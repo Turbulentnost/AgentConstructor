@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from typing import Callable
 from urllib import error, request
 
 from agent_desktop_constructor.app.llm.errors import (
+    LLMCancelledError,
     LLMConnectionError,
     LLMResponseError,
 )
@@ -24,11 +26,19 @@ class OpenAICompatibleLLMClient:
     def __init__(self, config: LLMConfig) -> None:
         """Сохранить конфигурацию локальной LLM."""
         self._config = config
+        self._cancel_callback: Callable[[], bool] | None = None
 
     @property
     def config(self) -> LLMConfig:
         """Вернуть конфигурацию клиента для сборки LLMRequest."""
         return self._config
+
+    def set_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Задать колбэк отмены текущего HTTP-запроса к модели."""
+        self._cancel_callback = callback
 
     def complete(self, llm_request: LLMRequest) -> LLMResponse:
         """Выполнить chat completion запрос и вернуть текст ответа."""
@@ -36,12 +46,16 @@ class OpenAICompatibleLLMClient:
         payload = self._build_payload(llm_request)
         try:
             raw_bytes = self._post_payload(endpoint, payload)
+        except LLMCancelledError:
+            raise
         except error.HTTPError as exc:
             if exc.code == 400 and llm_request.response_format is not None:
                 fallback_payload = dict(payload)
                 fallback_payload.pop("response_format", None)
                 try:
                     raw_bytes = self._post_payload(endpoint, fallback_payload)
+                except LLMCancelledError:
+                    raise
                 except error.HTTPError as retry_exc:
                     self._raise_http_response_error(retry_exc)
             else:
@@ -69,6 +83,7 @@ class OpenAICompatibleLLMClient:
             request.urlopen,
             http_request,
             self._config.timeout_seconds,
+            cancel_callback=self._cancel_callback,
         )
 
     def _build_headers(self) -> dict[str, str]:

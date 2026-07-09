@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from agent_desktop_constructor.app.llm.errors import (
+    LLMCancelledError,
     LLMConnectionError,
     LLMResponseError,
 )
@@ -28,16 +31,29 @@ class FallbackLLMClient:
         """Вернуть конфигурацию запасного клиента для диагностики."""
         return self._fallback_client.config
 
+    def set_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Пробросить колбэк отмены в основной и запасной клиенты."""
+        for client in (self._primary_client, self._fallback_client):
+            if hasattr(client, "set_cancel_callback"):
+                client.set_cancel_callback(callback)
+
     def complete(self, llm_request: LLMRequest) -> LLMResponse:
         """Выполнить запрос с автоматическим fallback на LM Studio."""
         try:
             return self._primary_client.complete(llm_request)
+        except LLMCancelledError:
+            raise
         except (LLMConnectionError, LLMResponseError) as primary_exc:
             fallback_request = llm_request.model_copy(
                 update={"model_name": self._fallback_client.config.model_name}
             )
             try:
                 response = self._fallback_client.complete(fallback_request)
+            except LLMCancelledError:
+                raise
             except (LLMConnectionError, LLMResponseError) as fallback_exc:
                 raise _combine_errors(primary_exc, fallback_exc) from fallback_exc
             return response

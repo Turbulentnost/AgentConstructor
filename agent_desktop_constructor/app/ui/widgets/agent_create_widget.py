@@ -96,7 +96,12 @@ DEFAULT_UI_MODEL_OPTIONS: tuple[UiModelOption, ...] = (
         supports_reasoning=True,
         modes=("internal", "reason"),
     ),
-    UiModelOption("lmstudio", "LM Studio (gpt-oss-120b)"),
+    UiModelOption(
+        "lmstudio",
+        "LM Studio (gpt-oss-120b)",
+        supports_reasoning=True,
+        modes=("internal", "reason"),
+    ),
 )
 
 BADGE_SELECT_MENU_STYLE = """
@@ -1541,13 +1546,26 @@ class AgentCreateWidget(QWidget):
         title.setObjectName("screenTitle")
         self.run_status_badge = QLabel("○ Ожидает")
         self.run_status_badge.setObjectName("runStatusBadge")
+        self.run_status_badge.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
         self.open_workspace_button = QPushButton("Открыть папку агента")
         self.open_workspace_button.setObjectName("workspaceButton")
         self.open_workspace_button.setEnabled(False)
+        self.open_workspace_button.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
         self.open_workspace_button.clicked.connect(self.open_agent_workspace)
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.run_status_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        title_row.addWidget(self.open_workspace_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        title_row.addWidget(
+            self.open_workspace_button,
+            0,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+        )
         layout.addLayout(title_row)
 
         summary = QHBoxLayout()
@@ -1638,10 +1656,12 @@ class AgentCreateWidget(QWidget):
             f"background:{STATUS_STYLE['pending'][1]}; color:{STATUS_STYLE['pending'][2]};"
             "border:1px solid rgba(255,255,255,0.07);"
             "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:700;"
+            "margin:0;"
             "}"
             "#workspaceButton {"
             "background:#182338; color:#b9d7ff; border:1px solid #2b4c7a;"
             "border-radius:9px; padding:5px 10px; font-size:11px; font-weight:700;"
+            "margin:0;"
             "}"
             "#workspaceButton:disabled { color:#526075; border-color:#263247; }"
             f"#runProgress {{ background:{REF_PANEL_ALT}; border:none; border-radius:3px; }}"
@@ -1732,6 +1752,7 @@ class AgentCreateWidget(QWidget):
         self._init_model_controls()
         toolbar.addSpacing(4)
         toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.context_indicator = ContextIndicator()
         toolbar.addWidget(self.context_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -2247,17 +2268,18 @@ class AgentCreateWidget(QWidget):
         self._persist_selected_model_choice()
 
     def _sync_reason_combo(self) -> None:
-        """Включить/выключить селект reason в зависимости от выбранной модели."""
+        """Показать селект reason и подстроить доступные режимы под модель."""
         option = self._current_model_option()
+        allowed = set(option.modes or ("internal", "reason")) if option else {"internal", "reason"}
         supports = bool(option and option.supports_reasoning)
-        self.reason_combo.setEnabled(supports)
-        if not supports:
-            self.reason_combo.setToolTip("Эта модель не объявила поддержку reason.")
-            self._fit_combo_to_contents(self.reason_combo)
-            return
-        self.reason_combo.setToolTip("Режим reasoning для выбранной модели.")
+        self.reason_combo.setEnabled(True)
+        if supports:
+            self.reason_combo.setToolTip("Режим reasoning для выбранной модели.")
+        else:
+            self.reason_combo.setToolTip(
+                "Режим reasoning для выбранной модели (может быть недоступен у провайдера)."
+            )
         mode = self.reason_combo.currentData()
-        allowed = set(option.modes or ("internal", "reason"))
         if mode not in allowed:
             for index in range(self.reason_combo.count()):
                 if self.reason_combo.itemData(index) in allowed:

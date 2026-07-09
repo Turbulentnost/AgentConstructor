@@ -57,6 +57,7 @@ class BrowserWorkerProvider:
 
     def get(self, input_data: dict) -> BrowserCdpWorker:
         """Вернуть worker: дефолтный (авто) или под конкретный browser/profile."""
+        input_data = _inherit_browser_context(input_data)
         name = _requested_browser_name(input_data)
         profile_options = _profile_options(input_data)
         if not name and not _has_explicit_profile(input_data):
@@ -88,6 +89,10 @@ class BrowserWorkerProvider:
         )
         self._by_browser[cache_key] = worker
         return worker
+
+    def input_for_worker(self, input_data: dict) -> dict:
+        """Вернуть input с унаследованными browser_id/url/profile для worker action."""
+        return _inherit_browser_context(input_data)
 
 
 def _requested_browser_name(input_data: dict) -> str:
@@ -126,6 +131,65 @@ def _has_explicit_profile(input_data: dict) -> bool:
     )
 
 
+def _inherit_browser_context(input_data: dict) -> dict:
+    """Унаследовать browser_id/url/profile из предыдущих browser tool outputs.
+
+    Read-only DOM/table tools не должны внезапно открывать другой браузер или
+    automation-профиль, если пользователь уже работал в конкретном браузере с
+    активной сессией. Поэтому берём контекст из browser.open_browser/navigate,
+    но не наследуем OS fallback как режим исполнения: для DOM всё равно нужен CDP.
+    """
+    enriched = dict(input_data)
+    context = _inherited_browser_context(input_data)
+    if context is None:
+        return enriched
+    if not _requested_browser_name(enriched):
+        browser_id = str(
+            context.get("browser_id") or context.get("browser_name") or ""
+        ).strip()
+        if browser_id:
+            enriched["browser_id"] = browser_id
+    if not _has_explicit_profile(enriched) and (
+        context.get("used_default_profile") is True
+        or context.get("profile_mode") == "default"
+    ):
+        enriched["use_default_profile"] = True
+    if not str(enriched.get("url") or "").strip():
+        url = str(context.get("url") or "").strip()
+        if url:
+            enriched["url"] = url
+    return enriched
+
+
+def _inherited_browser_context(input_data: dict) -> dict | None:
+    """Найти последний browser output с browser_id/url/profile в tool_outputs."""
+    tool_outputs = input_data.get("tool_outputs")
+    if not isinstance(tool_outputs, dict):
+        return None
+    for tool_name in (
+        "browser.dump_page_source",
+        "browser.get_page_html",
+        "browser.extract_table",
+        "browser.navigate",
+        "browser.open_browser",
+        "browser.open_page",
+    ):
+        output = tool_outputs.get(tool_name)
+        if not isinstance(output, dict):
+            continue
+        browser_id = str(
+            output.get("browser_id") or output.get("browser_name") or ""
+        ).strip()
+        url = str(output.get("url") or "").strip()
+        has_profile = (
+            output.get("used_default_profile") is True
+            or bool(output.get("profile_mode"))
+        )
+        if browser_id or url or has_profile:
+            return output
+    return None
+
+
 def _worker_cache_key(browser_id: str, profile_options: dict[str, object]) -> str:
     """Стабильный cache key для browser/profile worker."""
     return "|".join(
@@ -145,6 +209,8 @@ _BROWSER_PROFILE_INPUT_PROPERTIES = {
 }
 
 _BROWSER_PROFILE_OUTPUT_PROPERTIES = {
+    "browser_id": {"type": "string"},
+    "browser_name": {"type": "string"},
     "profile_mode": {"type": "string"},
     "user_data_dir": {"type": "string"},
     "used_default_profile": {"type": "boolean"},
@@ -648,9 +714,10 @@ def _execute_browser_worker(
 ) -> ToolCallResult:
     """Выбрать worker нужного браузера и выполнить его action безопасно."""
     try:
-        worker = provider.get(input_data)
+        action_input = provider.input_for_worker(input_data)
+        worker = provider.get(action_input)
         action = getattr(worker, method_name)
-        output_data = action(input_data)
+        output_data = action(action_input)
     except BrowserCdpError as exc:
         return ToolCallResult(
             ok=False,

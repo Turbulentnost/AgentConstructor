@@ -436,6 +436,73 @@ def test_browser_extract_table_tool_uses_worker() -> None:
     ]
 
 
+def test_browser_extract_table_inherits_open_browser_context(monkeypatch) -> None:
+    """extract_table берёт browser_id/default profile/url из browser.open_browser."""
+    created: dict = {}
+
+    class ProviderWorker(FakeBrowserWorker):
+        pass
+
+    def fake_worker(config):
+        created["config"] = config
+        worker = ProviderWorker()
+        created["worker"] = worker
+        return worker
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.find_readable_browser",
+        lambda name: object() if name == "yandex" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.resolve_browser_executable",
+        lambda name: "C:/Yandex/browser.exe" if name == "yandex" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.web_tools.BrowserCdpWorker",
+        fake_worker,
+    )
+
+    result = BrowserExtractTableTool(FakeBrowserWorker()).execute(
+        {
+            "table_hint": "Приём заявок",
+            "tool_outputs": {
+                "browser.open_browser": {
+                    "browser_id": "yandex",
+                    "url": "https://com.roseltorg.ru/#com/procedure/index",
+                    "profile_mode": "default",
+                    "used_default_profile": True,
+                    "cdp_available": False,
+                }
+            },
+        }
+    )
+
+    assert result.ok is True
+    assert created["config"].browser_id == "yandex"
+    assert created["config"].use_default_profile is True
+    assert created["config"].profile_name is None
+    assert created["worker"].calls == [
+        (
+            "extract_table",
+            {
+                "table_hint": "Приём заявок",
+                "tool_outputs": {
+                    "browser.open_browser": {
+                        "browser_id": "yandex",
+                        "url": "https://com.roseltorg.ru/#com/procedure/index",
+                        "profile_mode": "default",
+                        "used_default_profile": True,
+                        "cdp_available": False,
+                    }
+                },
+                "browser_id": "yandex",
+                "use_default_profile": True,
+                "url": "https://com.roseltorg.ru/#com/procedure/index",
+            },
+        )
+    ]
+
+
 def test_browser_scroll_page_tool_uses_worker() -> None:
     """browser.scroll_page проксирует вызов в BrowserCdpWorker."""
     worker = FakeBrowserWorker()

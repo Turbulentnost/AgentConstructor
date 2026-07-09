@@ -158,7 +158,7 @@ def test_cdp_launch_uses_stable_profile_and_does_not_cleanup(
 def test_yandex_use_default_profile_uses_real_user_data_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Yandex default profile использует штатный User Data, а не automation dir."""
+    """Yandex default profile использует штатный User Data, не принудительный Default."""
     captured: dict = {}
 
     class FakeProcess:
@@ -188,7 +188,7 @@ def test_yandex_use_default_profile_uses_real_user_data_dir(
     command = captured["command"]
     expected_user_data = r"C:\Users\me\AppData\Local\Yandex\YandexBrowser\User Data"
     assert f"--user-data-dir={expected_user_data}" in command
-    assert "--profile-directory=Default" in command
+    assert not any(arg.startswith("--profile-directory=") for arg in command)
     assert not any("AgentConstructor" in arg for arg in command)
     assert worker.profile_output()["profile_mode"] == "default"
     assert worker.profile_output()["used_default_profile"] is True

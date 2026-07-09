@@ -123,7 +123,7 @@ def test_get_page_html_returns_truncated_html(monkeypatch: pytest.MonkeyPatch) -
 def test_yandex_vision_default_profile_uses_real_user_data_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """browser.navigate с use_default_profile использует штатный профиль Yandex."""
+    """browser.navigate с use_default_profile не навязывает профиль Default."""
     captured: dict = {}
 
     class FakeProcess:
@@ -153,7 +153,7 @@ def test_yandex_vision_default_profile_uses_real_user_data_dir(
     command = captured["command"]
     expected_user_data = r"C:\Users\me\AppData\Local\Yandex\YandexBrowser\User Data"
     assert f"--user-data-dir={expected_user_data}" in command
-    assert "--profile-directory=Default" in command
+    assert not any(arg.startswith("--profile-directory=") for arg in command)
     assert not any("browser_profiles" in arg for arg in command)
     assert worker.profile_output()["profile_mode"] == "default"
 

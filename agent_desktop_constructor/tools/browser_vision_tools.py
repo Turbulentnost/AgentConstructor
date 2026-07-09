@@ -200,6 +200,8 @@ _SCREENSHOT_OUTPUT = {
         "screenshot_base64": {"type": "string"},
         "viewport_width": {"type": "integer"},
         "viewport_height": {"type": "integer"},
+        "browser_id": {"type": "string"},
+        "browser_name": {"type": "string"},
         "profile_mode": {"type": "string"},
         "user_data_dir": {"type": "string"},
         "used_default_profile": {"type": "boolean"},
@@ -363,6 +365,8 @@ _PAGE_HTML_OUTPUT = {
         "html_length": {"type": "integer"},
         "truncated": {"type": "boolean"},
         "html_summary": {"type": "string"},
+        "browser_id": {"type": "string"},
+        "browser_name": {"type": "string"},
         "profile_mode": {"type": "string"},
         "user_data_dir": {"type": "string"},
         "used_default_profile": {"type": "boolean"},
@@ -427,6 +431,8 @@ _PAGE_SOURCE_OUTPUT = {
         "blocked_stylesheets": {"type": "array"},
         "html_summary": {"type": "string"},
         "dump_dir": {"type": "string"},
+        "browser_id": {"type": "string"},
+        "browser_name": {"type": "string"},
     },
 }
 
@@ -544,6 +550,8 @@ class BrowserDumpPageSourceTool(BaseTool):
                 "stylesheet_count": payload.get("stylesheet_count"),
                 "blocked_stylesheets": payload.get("blocked_stylesheets") or [],
                 "html_summary": html[:2000],
+                "browser_id": payload.get("browser_id") or "",
+                "browser_name": payload.get("browser_name") or "",
                 "note": (
                     "HTML и CSS сохранены в файлы. Не пересказывай большие таблицы "
                     "сам — напиши программу (code.write_python) для разбора "

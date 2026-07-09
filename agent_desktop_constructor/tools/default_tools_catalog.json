@@ -464,8 +464,7 @@
           "use_default_profile": {"type": "boolean"},
           "profile_name": {"type": "string"},
           "user_data_dir": {"type": "string"}
-        },
-        "required": ["url"]
+        }
       },
       "output_schema": {
         "type": "object",
@@ -524,6 +523,8 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "tables": {"type": "array"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
           "profile_mode": {"type": "string"},
           "user_data_dir": {"type": "string"},
           "used_default_profile": {"type": "boolean"},
@@ -545,7 +546,7 @@
       "examples": [
         "Извлечь таблицу статусов со страницы"
       ],
-      "planner_hint": "Используй, когда на странице есть таблица с документами, статусами, ценами, перечнями или результатами поиска."
+      "planner_hint": "Используй, когда на странице есть таблица с документами, статусами, ценами, перечнями или результатами поиска. Если браузер/страница уже открывались через browser.open_browser/browser.navigate/browser.dump_page_source, не выбирай другой браузер и не меняй профиль: инструмент автоматически унаследует browser_id, url и use_default_profile из tool_outputs. url можно не передавать, если он уже есть в tool_outputs; передавай только table_hint. Для авторизованных страниц нужен тот же browser_id и default profile; не уходи в automation/default другой сессии."
     },
     {
       "name": "browser.scroll_page",
@@ -1550,7 +1551,7 @@
         "Выгрузить HTML и CSS страницы с большой таблицей для анализа программой",
         "Сохранить исходный код страницы, чтобы разобрать его написанным скриптом"
       ],
-      "planner_hint": "Используй, когда с открытой страницы нужно выгрузить большой объём данных (например большую таблицу) для последующего разбора кодом, а не пересказывать вручную. Сохраняет page.html и styles.css в page_dumps/<имя>/ рабочей папки агента и возвращает пути. Требует CDP-доступ к DOM: OS fallback/обычное окно без CDP не позволяют получить HTML/CSS. Если до этого был browser.open_browser или browser.navigate с browser_id, инструмент сам унаследует browser_id/url и попробует тот же default-profile через CDP, но НЕ будет наследовать OS fallback. Для авторизованной страницы используй тот же browser_id и use_default_profile=true; если CDP не поднялся из-за уже открытого браузера, спроси человека закрыть окно и открой страницу через browser.navigate с тем же browser_id/use_default_profile=true. Если авторизация не нужна, можно открыть URL через browser.navigate без use_default_profile. После выгрузки напиши программу-парсер (code.write_python) и запусти её (code.run_python) — она прочитает файл по возвращённому html_path."
+      "planner_hint": "Используй, когда с открытой страницы нужно выгрузить большой объём данных (например большую таблицу) для последующего разбора кодом, а не пересказывать вручную. Сохраняет page.html и styles.css в page_dumps/<имя>/ рабочей папки агента и возвращает пути. Требует CDP-доступ к DOM: OS fallback/обычное окно без CDP не позволяют получить HTML/CSS. Если до этого был browser.open_browser или browser.navigate с browser_id, инструмент сам унаследует browser_id/url и попробует тот же default-profile через CDP, но НЕ будет наследовать OS fallback. Для авторизованной страницы используй тот же browser_id и use_default_profile=true; если CDP не поднялся из-за уже открытого браузера, спроси человека закрыть окно и открой страницу через browser.navigate с тем же browser_id/use_default_profile=true. Не указывай profile_name='Default' сам: активная пользовательская сессия может быть в другом профиле; profile_name передавай только если человек явно назвал профиль. Если авторизация не нужна, можно открыть URL через browser.navigate без use_default_profile. После выгрузки напиши программу-парсер (code.write_python) и запусти её (code.run_python) — она прочитает файл по возвращённому html_path."
     },
     {
       "name": "agent.wait",

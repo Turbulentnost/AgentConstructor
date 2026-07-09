@@ -454,6 +454,8 @@ class BrowserVisionWorker:
         else:
             available = cdp_available
         return {
+            "browser_id": self._config.browser_id or "",
+            "browser_name": self._config.browser_id or "",
             "profile_mode": self._profile_mode,
             "user_data_dir": self._user_data_dir or "",
             "used_default_profile": self._profile_mode == "default",

@@ -299,6 +299,8 @@ class BrowserCdpWorker:
         else:
             available = cdp_available
         return {
+            "browser_id": self._config.browser_id or "",
+            "browser_name": self._config.browser_id or "",
             "profile_mode": self._profile_mode,
             "user_data_dir": self._user_data_dir or "",
             "used_default_profile": self._profile_mode == "default",
@@ -534,8 +536,6 @@ def _resolved_profile_name(config: BrowserLaunchConfig) -> str | None:
     """Вернуть profile-directory, если его нужно явно передать Chromium."""
     if config.profile_name:
         return config.profile_name
-    if config.use_default_profile and config.browser_id:
-        return "Default"
     return None
 
 
@@ -601,9 +601,12 @@ def _next_action_hint(
         )
     if profile_mode == "default":
         return (
-            "Для пользовательской сессии открой URL через browser.open_browser без CDP; "
-            "для скриншотов/vision повтори с use_default_profile=false, чтобы "
-            "использовать automation profile."
+            "CDP недоступен для штатного профиля. Если нужна авторизация пользователя, "
+            "не переключайся на automation profile и не меняй браузер: попроси человека "
+            "закрыть уже открытые окна этого браузера, затем повтори действие с тем же "
+            "browser_id и use_default_profile=true. Для простого визуального управления "
+            "без DOM можно использовать browser.open_browser + OS fallback. Для HTML/CSS "
+            "или таблиц программно нужен именно CDP."
         )
     return (
         "CDP endpoint недоступен даже в automation profile: проверь установленный "

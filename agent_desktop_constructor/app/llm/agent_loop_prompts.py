@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from agent_desktop_constructor.app.context.manager import AgentContextManager
 from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
@@ -92,12 +93,15 @@ Runtime сам безопасно исполнит инструмент чере
 - Если для задачи нужно не просто прочитать текст страницы, а взаимодействовать с
   интерфейсом (нажать кнопку, ввести текст, перейти по элементу, открыть раздел),
   используй vision-инструменты браузера: browser.navigate (открыть URL),
-  browser.screenshot (обновить кадр), browser.click (клик по x,y),
-  browser.type_text (ввод текста в активное поле), browser.press_key
-  (enter/tab/escape/стрелки), browser.scroll (прокрутка).
+  browser.screenshot (обновить кадр), browser.get_page_html (HTML/DOM текущей
+  вкладки), browser.click (клик по x,y), browser.type_text (ввод текста в
+  активное поле), browser.press_key (enter/tab/escape/стрелки), browser.scroll
+  (прокрутка).
 - К твоему сообщению прикладывается АКТУАЛЬНЫЙ СКРИНШОТ текущей вкладки, если он
   есть. Определяй координаты клика по скриншоту в пикселях от левого-верхнего угла;
   размеры viewport указаны в screen_context.
+- browser.get_page_html — когда нужна разметка/селекторы/скрытый текст, а не
+  картинка; для визуальных кликов по UI используй screenshot.
 - Действуй пошагово: сделай одно действие, посмотри на новый скриншот, реши следующее.
 - Не вводи пароли, коды из SMS и 2FA — если сайт требует ручной вход, верни ask_human.
 Ответ верни только JSON по схеме решения.
@@ -118,9 +122,21 @@ Runtime сам безопасно исполнит инструмент чере
         }
         for record in runtime_state.tool_results
     ]
+    try:
+        agent_context = AgentContextManager().build_llm_context(
+            agent_spec=agent_spec,
+            runtime_state=runtime_state,
+        )
+    except Exception as exc:
+        agent_context = {
+            "error": f"Не удалось собрать AgentContext: {exc}",
+            "sections": {},
+            "usage": None,
+        }
 
     user_payload = {
         "temporal_context": build_temporal_context(),
+        "agent_context": agent_context,
         "user_request": runtime_state.variables.get("user_request"),
         "goal": agent_spec.goal.model_dump(mode="json"),
         "available_tools": tools_context,
@@ -150,6 +166,23 @@ Runtime сам безопасно исполнит инструмент чере
             "note": (
                 "К этому сообщению приложен скриншот текущей вкладки. Координаты "
                 "для browser.click указывай в пикселях viewport по этому скриншоту."
+            ),
+        }
+    last_page_html = runtime_state.variables.get("last_page_html")
+    if isinstance(last_page_html, dict) and (
+        last_page_html.get("html_summary") or last_page_html.get("html")
+    ):
+        user_payload["page_html_context"] = {
+            "url": last_page_html.get("url"),
+            "title": last_page_html.get("title"),
+            "html_length": last_page_html.get("html_length"),
+            "truncated": last_page_html.get("truncated"),
+            "html_summary": last_page_html.get("html_summary")
+            or str(last_page_html.get("html") or "")[:4000],
+            "note": (
+                "Сырой html убран из collected_data/tool_outputs, чтобы не раздувать "
+                "контекст. Для DOM/селекторов используй html_summary; при необходимости "
+                "вызови browser.get_page_html снова."
             ),
         }
     user_prompt = (
@@ -225,17 +258,28 @@ def _recent_reasoning(runtime_state: AgentRuntimeState, limit: int = 8) -> list[
 
 
 def _sanitize_collected_data(collected_data: dict) -> dict:
-    """Убрать тяжёлые base64-скриншоты из данных, отправляемых текстом в промпт."""
+    """Убрать тяжёлые base64/HTML из данных, отправляемых текстом в промпт."""
     if not isinstance(collected_data, dict):
         return collected_data
     sanitized: dict = {}
     for tool_name, output in collected_data.items():
-        if isinstance(output, dict) and "screenshot_base64" in output:
-            trimmed = {k: v for k, v in output.items() if k != "screenshot_base64"}
-            trimmed["screenshot_captured"] = True
-            sanitized[tool_name] = trimmed
-        else:
+        if not isinstance(output, dict):
             sanitized[tool_name] = output
+            continue
+        trimmed = dict(output)
+        if "screenshot_base64" in trimmed:
+            trimmed.pop("screenshot_base64", None)
+            trimmed["screenshot_captured"] = True
+        if "html" in trimmed and isinstance(trimmed.get("html"), str):
+            html = trimmed.pop("html")
+            trimmed["html_captured"] = True
+            if "html_length" not in trimmed:
+                trimmed["html_length"] = len(html)
+            if "html_summary" not in trimmed:
+                trimmed["html_summary"] = html[:4000]
+            if "truncated" not in trimmed:
+                trimmed["truncated"] = len(html) > 4000
+        sanitized[tool_name] = trimmed
     return sanitized
 
 

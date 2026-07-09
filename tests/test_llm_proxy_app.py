@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from llm_proxy_service import app as proxy_app  # noqa: E402
 from llm_proxy_service.config import (  # noqa: E402
+    STYLE_ANTHROPIC,
     STYLE_OPENAI_RESPONSES,
     BackendConfig,
     ProxyConfig,
@@ -127,6 +128,104 @@ def test_models_endpoint_returns_selectable_models() -> None:
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
     assert ids == ["chatgpt", "chatgpt:internal", "chatgpt:reason", "lmstudio"]
+
+
+def test_models_endpoint_discovers_claude_models() -> None:
+    """Claude-модели подтягиваются из Anthropic /v1/models для селекта."""
+    config = ProxyConfig(
+        host="127.0.0.1",
+        port=8080,
+        chain=[
+            BackendConfig(
+                name="claude",
+                style=STYLE_ANTHROPIC,
+                base_url="https://api.anthropic.com",
+                model="claude-sonnet-4-6",
+                api_key="sk-ant-test",
+                timeout_seconds=5.0,
+                display_name="Claude",
+                supports_reasoning=True,
+                discover_models=True,
+            )
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).endswith("/v1/models")
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "claude-sonnet-4-6",
+                        "display_name": "Claude Sonnet 4.6",
+                    },
+                    {
+                        "id": "claude-opus-4-1",
+                        "display_name": "Claude Opus 4.1",
+                    },
+                ]
+            },
+        )
+
+    with TestClient(proxy_app.create_app(config)) as client:
+        client.app.state.http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        try:
+            response = client.get("/v1/models")
+        finally:
+            import asyncio
+
+            asyncio.run(client.app.state.http_client.aclose())
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    assert ids == [
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-6:internal",
+        "claude-sonnet-4-6:reason",
+        "claude-opus-4-1",
+        "claude-opus-4-1:internal",
+        "claude-opus-4-1:reason",
+    ]
+
+
+def test_models_endpoint_uses_configured_claude_models_without_discovery() -> None:
+    """Если Claude discovery недоступен, показываем настроенные модели, не заглушку."""
+    config = ProxyConfig(
+        host="127.0.0.1",
+        port=8080,
+        chain=[
+            BackendConfig(
+                name="claude",
+                style=STYLE_ANTHROPIC,
+                base_url="https://api.anthropic.com",
+                model="claude-sonnet-4-6",
+                api_key=None,
+                timeout_seconds=5.0,
+                display_name="Claude",
+                supports_reasoning=True,
+                discover_models=True,
+                configured_models=("claude-sonnet-4-6", "claude-opus-4-1"),
+            )
+        ],
+    )
+
+    with TestClient(proxy_app.create_app(config)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    ids = [item["id"] for item in response.json()["data"]]
+    assert "claude" not in ids
+    assert ids == [
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-6:internal",
+        "claude-sonnet-4-6:reason",
+        "claude-opus-4-1",
+        "claude-opus-4-1:internal",
+        "claude-opus-4-1:reason",
+    ]
 
 
 def test_selected_model_routes_to_that_backend(
@@ -252,6 +351,44 @@ def test_openai_reasoning_variant_adds_reasoning_payload() -> None:
 
     result = asyncio.run(run())
 
+    assert result["choices"][0]["message"]["content"] == "ok"
+
+
+def test_selected_claude_model_routes_to_anthropic_messages() -> None:
+    """Выбранная Claude-модель из селекта уходит в Anthropic messages payload."""
+    import asyncio
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.read().decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}]},
+        )
+
+    backend = BackendConfig(
+        name="claude",
+        style=STYLE_ANTHROPIC,
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        api_key="sk-ant-test",
+        timeout_seconds=5.0,
+        display_name="Claude",
+        supports_reasoning=True,
+    ).with_model("claude-opus-4-1").with_reasoning("reason")
+
+    async def run() -> dict:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await call_backend(client, backend, _payload())
+
+    result = asyncio.run(run())
+
+    assert captured["url"].endswith("/v1/messages")
+    assert captured["json"]["model"] == "claude-opus-4-1"
+    assert "thinking" in captured["json"]
     assert result["choices"][0]["message"]["content"] == "ok"
 
 

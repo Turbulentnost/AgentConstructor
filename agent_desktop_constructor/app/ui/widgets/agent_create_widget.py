@@ -58,6 +58,8 @@ from agent_desktop_constructor.app.core.bootstrap import (
     ApplicationContainer,
     build_application_container,
 )
+from agent_desktop_constructor.app.core.settings import save_llm_model_name
+from agent_desktop_constructor.app.ui.widgets.context_indicator import ContextIndicator
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
     collect_produced_files,
@@ -186,14 +188,16 @@ def _split_model_mode(model_id: str) -> tuple[str, str | None]:
 
 
 def _merge_default_model_options(options: list[UiModelOption]) -> list[UiModelOption]:
-    """Гарантировать, что в селекте всегда есть Chat-GPT 5.5 и LM Studio."""
+    """Гарантировать базовые модели и добавить discovery-модели из прокси."""
     merged: dict[str, UiModelOption] = {
         option.model_id: option for option in DEFAULT_UI_MODEL_OPTIONS
     }
+    order = ["chatgpt", "lmstudio"]
     for option in options:
-        if option.model_id in merged:
-            merged[option.model_id] = option
-    return [merged["chatgpt"], merged["lmstudio"]]
+        if option.model_id not in merged:
+            order.append(option.model_id)
+        merged[option.model_id] = option
+    return [merged[model_id] for model_id in order if model_id in merged]
 
 # Порядок стадий пошаговой ленты выполнения.
 STAGE_REQUEST = "request"
@@ -266,6 +270,14 @@ def _short(text: object, max_len: int = 90) -> str:
     if len(value) <= max_len:
         return value
     return value[: max_len - 1] + "…"
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    """Отформатировать elapsed time как HH:MM:SS."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 class NeonStepIndicator(QWidget):
@@ -1021,12 +1033,13 @@ class PlanStepRow(QFrame):
         self.setObjectName("planStepRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(54)
-        self.setMaximumHeight(58)
+        self.setMaximumHeight(72)
 
         self._number = PlanNumberCircle(index)
         self._title = QLabel(title)
         self._title.setObjectName("planStepTitle")
-        self._title.setWordWrap(False)
+        self._title.setWordWrap(True)
+        self._title.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self._status_icon = PlanStatusIcon()
 
         row = QHBoxLayout(self)
@@ -1122,36 +1135,31 @@ class PlanStepsList(QWidget):
         self._layout.addWidget(row)
         self.update()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self.update()
-
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         if len(self._rows) < 2:
             return
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#2563eb"), 1.2)
+        # Без Antialiasing: пунктирная линия дешёвая и не даёт лагов при resize.
+        pen = QPen(QColor("#2563eb"), 1)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setDashPattern([2.5, 3.5])
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
+        # Фиксированный x по первому кругу — без mapTo на каждый resize/paint.
+        first_number = self._rows[0]._number
+        x = first_number.x() + first_number.width() / 2
+        radius = 16.0
         for index in range(len(self._rows) - 1):
             top_row = self._rows[index]
             bottom_row = self._rows[index + 1]
-            top_center = top_row._number.mapTo(
-                self,
-                QPointF(top_row._number.width() / 2, top_row._number.height() / 2),
+            start_y = top_row.y() + top_row._number.y() + top_row._number.height() / 2 + radius
+            end_y = (
+                bottom_row.y()
+                + bottom_row._number.y()
+                + bottom_row._number.height() / 2
+                - radius
             )
-            bottom_center = bottom_row._number.mapTo(
-                self,
-                QPointF(bottom_row._number.width() / 2, bottom_row._number.height() / 2),
-            )
-            radius = 16.0
-            x = top_center.x()
-            start_y = top_center.y() + radius
-            end_y = bottom_center.y() - radius
             if end_y > start_y:
                 painter.drawLine(QPointF(x, start_y), QPointF(x, end_y))
 
@@ -1394,83 +1402,6 @@ class ComposerIconButton(QPushButton):
             painter.drawLine(QPointF(22, 20), QPointF(20, 20))
 
 
-class WorkflowStepIcon(QWidget):
-    """Line-icon для нижней панели шагов workflow."""
-
-    def __init__(self, kind: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._kind = kind
-        self._active = False
-        self.setFixedSize(16, 16)
-
-    def set_active(self, active: bool) -> None:
-        self._active = active
-        self.update()
-
-    def _color(self) -> QColor:
-        return QColor("#3b82f6") if self._active else QColor("#64748b")
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = self._color()
-        pen = QPen(color, 1.35)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._kind == "request":
-            painter.drawRoundedRect(QRectF(1.5, 2.5, 11, 9), 3, 3)
-            painter.drawLine(QPointF(4.5, 11.5), QPointF(6.5, 14))
-            for y in (5.5, 7.5, 9.5):
-                painter.drawLine(QPointF(4, y), QPointF(10, y))
-        elif self._kind == "plan":
-            painter.drawRect(QRectF(2.5, 2.5, 11, 11))
-            painter.drawLine(QPointF(8, 2.5), QPointF(8, 13.5))
-            painter.drawLine(QPointF(2.5, 8), QPointF(13.5, 8))
-        elif self._kind == "tools":
-            painter.drawEllipse(QRectF(2.5, 4.5, 5, 5))
-            painter.drawEllipse(QRectF(8.5, 6.5, 5, 5))
-        elif self._kind == "graph":
-            for x, y in ((3, 3), (12, 3), (3, 12), (12, 12)):
-                painter.drawEllipse(QRectF(x - 1.2, y - 1.2, 2.4, 2.4))
-            painter.drawLine(QPointF(4.2, 4.2), QPointF(10.8, 4.2))
-            painter.drawLine(QPointF(4.2, 11.8), QPointF(10.8, 11.8))
-            painter.drawLine(QPointF(4.2, 4.2), QPointF(4.2, 11.8))
-            painter.drawLine(QPointF(10.8, 4.2), QPointF(10.8, 11.8))
-        elif self._kind == "check":
-            path = QPainterPath(QPointF(8, 2.2))
-            path.lineTo(QPointF(12.8, 4.2))
-            path.lineTo(QPointF(11.8, 12.2))
-            path.lineTo(QPointF(4.2, 12.2))
-            path.lineTo(QPointF(3.2, 4.2))
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.drawLine(QPointF(6.2, 8.2), QPointF(7.8, 9.8))
-            painter.drawLine(QPointF(7.8, 9.8), QPointF(10.2, 6.8))
-        elif self._kind == "launch":
-            painter.drawEllipse(QRectF(2.5, 2.5, 11, 11))
-            painter.drawLine(QPointF(8, 5), QPointF(8, 11))
-            painter.drawLine(QPointF(5, 8), QPointF(11, 8))
-        elif self._kind == "quality":
-            painter.drawEllipse(QRectF(5, 2.2, 6, 6))
-            path = QPainterPath(QPointF(4.5, 8.2))
-            path.lineTo(QPointF(11.5, 8.2))
-            path.lineTo(QPointF(10, 13.5))
-            path.lineTo(QPointF(6, 13.5))
-            path.closeSubpath()
-            painter.drawPath(path)
-        else:
-            path = QPainterPath(QPointF(8, 2.5))
-            path.lineTo(QPointF(13, 8))
-            path.lineTo(QPointF(8, 13.5))
-            path.lineTo(QPointF(3, 8))
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.drawLine(QPointF(8, 4.5), QPointF(8, 12.5))
-
-
 class MetricChipIcon(QWidget):
     """Line-icon для метрик шапки timeline (часы, шаг, ETA)."""
 
@@ -1514,177 +1445,6 @@ class MetricChipIcon(QWidget):
             painter.drawLine(QPointF(8, 8), QPointF(10.4, 8))
 
 
-class WorkflowStepConnector(QWidget):
-    """Короткая пунктирная линия между вкладками workflow."""
-
-    _WIDTH = 18
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(self._WIDTH, 32)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#2563eb"), 1.2)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([2.5, 3.5])
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        y = self.height() / 2
-        painter.drawLine(QPointF(1, y), QPointF(self.width() - 1, y))
-
-
-class WorkflowStepTab(QFrame):
-    """Вкладка нижней панели workflow с иконкой и подписью."""
-
-    clicked = Signal(str)
-
-    def __init__(
-        self,
-        stage_id: str,
-        label: str,
-        icon_kind: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.stage_id = stage_id
-        self._active = False
-        self.setObjectName("workflowStepTab")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(32)
-        self.setMaximumHeight(34)
-
-        self._icon = WorkflowStepIcon(icon_kind)
-        self._label = QLabel(label)
-        self._label.setObjectName("workflowStepLabel")
-
-        self._row = QHBoxLayout(self)
-        self._row.setContentsMargins(10, 6, 10, 6)
-        self._row.setSpacing(6)
-        self._row.addWidget(self._icon, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._row.addWidget(self._label, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._apply_style()
-
-    def set_content_padding(self, horizontal: int) -> None:
-        """Слегка расширить вкладку, если между шагами слишком большие промежутки."""
-        self._row.setContentsMargins(horizontal, 6, horizontal, 6)
-
-    def set_active(self, active: bool) -> None:
-        self._active = active
-        self._icon.set_active(active)
-        self._apply_style()
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        self.clicked.emit(self.stage_id)
-        super().mousePressEvent(event)
-
-    def _apply_style(self) -> None:
-        if self._active:
-            bg = "#0f2340"
-            border = "#3b82f6"
-            text = "#eef5ff"
-        else:
-            bg = "rgba(17, 24, 39, 0.55)"
-            border = "#1e293b"
-            text = "#64748b"
-        self.setStyleSheet(
-            "#workflowStepTab {"
-            f"background:{bg}; border:1px solid {border}; border-radius:8px;"
-            "}"
-            "#workflowStepTab:hover { background:#172338; border-color:#334155; }"
-            f"#workflowStepLabel {{ color:{text}; font-size:11px; font-weight:600; }}"
-        )
-
-
-class WorkflowStepBar(QFrame):
-    """Горизонтальная панель шагов workflow как в референсе."""
-
-    stageSelected = Signal(str)
-    _TAB_PADDING_BASE = 10
-    _TAB_PADDING_MAX = 14
-
-    def __init__(
-        self,
-        on_select: Callable[[str], None],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._on_select = on_select
-        self._tabs: dict[str, WorkflowStepTab] = {}
-        self._connectors: list[WorkflowStepConnector] = []
-        self.setObjectName("workflowStepBar")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 6, 0, 6)
-        row.setSpacing(0)
-        for index, (stage_id, label, icon_kind) in enumerate(WORKFLOW_TABS):
-            if index > 0:
-                connector = WorkflowStepConnector(self)
-                self._connectors.append(connector)
-                row.addWidget(connector, 0)
-            tab = WorkflowStepTab(stage_id, label, icon_kind, self)
-            tab.clicked.connect(self._on_select)
-            self._tabs[stage_id] = tab
-            row.addWidget(tab, 0)
-        self.setStyleSheet(
-            "#workflowStepBar {"
-            "background:transparent; border:none;"
-            "}"
-        )
-        self._sync_tab_padding()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._sync_tab_padding()
-
-    def _sync_layout_metrics(self) -> None:
-        """Распределить шаги по всей ширине панели (90% родителя)."""
-        if not self._tabs:
-            return
-        margins = self.layout().contentsMargins()
-        inner_width = self.width() - margins.left() - margins.right()
-        for connector in self._connectors:
-            connector.setFixedWidth(WorkflowStepConnector._WIDTH)
-        for tab in self._tabs.values():
-            tab.set_content_padding(self._TAB_PADDING_BASE)
-
-        compact_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
-        compact_width += len(self._connectors) * WorkflowStepConnector._WIDTH
-        surplus = max(0, inner_width - compact_width)
-
-        boost = min(
-            self._TAB_PADDING_MAX - self._TAB_PADDING_BASE,
-            surplus // max(1, len(self._tabs) * 18),
-        )
-        horizontal = self._TAB_PADDING_BASE + boost
-        for tab in self._tabs.values():
-            tab.set_content_padding(horizontal)
-
-        padded_width = sum(tab.sizeHint().width() for tab in self._tabs.values())
-        padded_width += len(self._connectors) * WorkflowStepConnector._WIDTH
-        connector_surplus = max(0, inner_width - padded_width)
-        if not self._connectors:
-            return
-        extra = connector_surplus // len(self._connectors)
-        remainder = connector_surplus % len(self._connectors)
-        for index, connector in enumerate(self._connectors):
-            connector.setFixedWidth(
-                WorkflowStepConnector._WIDTH + extra + (1 if index < remainder else 0)
-            )
-
-    def _sync_tab_padding(self) -> None:
-        self._sync_layout_metrics()
-
-    def set_active_stage(self, stage_id: str) -> None:
-        if stage_id not in self._tabs:
-            return
-        for sid, tab in self._tabs.items():
-            tab.set_active(sid == stage_id)
-
-
 class AgentCreateWidget(QWidget):
     """Пошаговый экран создания и проверки агента.
 
@@ -1709,7 +1469,6 @@ class AgentCreateWidget(QWidget):
         self._worker: CreateFlowWorker | None = None
         self._action_buttons: list[QPushButton] = []
         self._plan_step_cards: dict[str, PlanStepRow] = {}
-        self._workflow_step_bar: WorkflowStepBar | None = None
         self._launch_stop_action = None
         self._request_min_height = 22
         self._request_max_height = 120
@@ -1719,11 +1478,19 @@ class AgentCreateWidget(QWidget):
         self._human_radios: list[tuple[QRadioButton, str | None]] = []
         self._attachment_paths: list[str] = []
         self._model_options: list[UiModelOption] = []
+        self.context_indicator: ContextIndicator | None = None
+        self.open_workspace_button: QPushButton | None = None
         self._run_started_at: float | None = None
         self._run_elapsed_seconds = 0.0
         self._run_timer = QTimer(self)
         self._run_timer.setInterval(1000)
         self._run_timer.timeout.connect(self._refresh_run_header)
+        self._main_splitter: QSplitter | None = None
+        self._resize_sync_timer = QTimer(self)
+        self._resize_sync_timer.setSingleShot(True)
+        self._resize_sync_timer.setInterval(48)
+        self._resize_sync_timer.timeout.connect(self._apply_deferred_resize_sync)
+        self._request_height_sync_pending = False
 
         self._build_ui()
         self._connect_signals()
@@ -1737,13 +1504,27 @@ class AgentCreateWidget(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(self._build_center())
         splitter.addWidget(self._build_details_panel())
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 2)
+        # Центр доминирует; правая колонка узкая и почти не растягивается.
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 1)
         splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
+        self._main_splitter = splitter
+        QTimer.singleShot(0, self._apply_default_splitter_sizes)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(splitter)
+
+    def _apply_default_splitter_sizes(self) -> None:
+        """Задать начальные размеры: центр шире, план справа уже."""
+        splitter = self._main_splitter
+        if splitter is None:
+            return
+        total = max(splitter.width(), 900)
+        right = min(300, max(260, total // 4))
+        left = max(total - right, total - 320)
+        splitter.setSizes([left, right])
 
     def _build_center(self) -> QWidget:
         """Центральная рабочая область в стиле run timeline из референса."""
@@ -1760,9 +1541,13 @@ class AgentCreateWidget(QWidget):
         title.setObjectName("screenTitle")
         self.run_status_badge = QLabel("○ Ожидает")
         self.run_status_badge.setObjectName("runStatusBadge")
+        self.open_workspace_button = QPushButton("Открыть папку агента")
+        self.open_workspace_button.setObjectName("workspaceButton")
+        self.open_workspace_button.setEnabled(False)
+        self.open_workspace_button.clicked.connect(self.open_agent_workspace)
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.run_status_badge, 0, Qt.AlignmentFlag.AlignVCenter)
-        title_row.addStretch(1)
+        title_row.addWidget(self.open_workspace_button, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(title_row)
 
         summary = QHBoxLayout()
@@ -1854,6 +1639,11 @@ class AgentCreateWidget(QWidget):
             "border:1px solid rgba(255,255,255,0.07);"
             "border-radius:9px; padding:3px 9px; font-size:10px; font-weight:700;"
             "}"
+            "#workspaceButton {"
+            "background:#182338; color:#b9d7ff; border:1px solid #2b4c7a;"
+            "border-radius:9px; padding:5px 10px; font-size:11px; font-weight:700;"
+            "}"
+            "#workspaceButton:disabled { color:#526075; border-color:#263247; }"
             f"#runProgress {{ background:{REF_PANEL_ALT}; border:none; border-radius:3px; }}"
             f"#runProgress::chunk {{ background:{REF_BLUE}; border-radius:3px; }}"
             "#runProgressGroup { background:transparent; }"
@@ -1942,7 +1732,9 @@ class AgentCreateWidget(QWidget):
         self._init_model_controls()
         toolbar.addSpacing(4)
         toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
-        toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.context_indicator = ContextIndicator()
+        toolbar.addWidget(self.context_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.attach_clear_button = QPushButton("Очистить вложения")
         self.attach_clear_button.clicked.connect(self.clear_attachments)
@@ -1991,16 +1783,40 @@ class AgentCreateWidget(QWidget):
         return composer
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # На каждом Resize пересчёт document height даёт layout thrashing при scale.
         if obj is self.request_edit and event.type() == QEvent.Type.Resize:
-            self._sync_request_edit_height()
+            self._schedule_request_edit_height_sync()
+            return False
         return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_request_edit_height_sync()
+
+    def _schedule_request_edit_height_sync(self) -> None:
+        """Отложить пересчёт высоты поля запроса до конца серии resize/scale."""
+        self._request_height_sync_pending = True
+        self._resize_sync_timer.start()
+
+    def _apply_deferred_resize_sync(self) -> None:
+        if not self._request_height_sync_pending:
+            return
+        self._request_height_sync_pending = False
+        self._sync_request_edit_height()
 
     def _sync_request_edit_height(self) -> None:
         """Подстраивать высоту поля запроса под число строк без обрезки текста."""
-        edit = self.request_edit
+        edit = getattr(self, "request_edit", None)
+        if edit is None:
+            return
         viewport_width = max(40, edit.viewport().width())
-        edit.document().setTextWidth(viewport_width)
-        doc_height = edit.document().size().height()
+        document = edit.document()
+        if abs(document.textWidth() - viewport_width) < 1.0 and edit.height() > 0:
+            # Ширина не изменилась — не трогаем layout во время непрерывного resize.
+            doc_height = document.size().height()
+        else:
+            document.setTextWidth(viewport_width)
+            doc_height = document.size().height()
         frame = edit.frameWidth() * 2
         margins = edit.contentsMargins()
         target = int(doc_height + frame + margins.top() + margins.bottom() + 2)
@@ -2207,7 +2023,6 @@ class AgentCreateWidget(QWidget):
     def _build_details_panel(self) -> QWidget:
         """Правая панель плана и текущего шага без отдельной карточки-обёртки."""
         panel = QWidget()
-        panel.setObjectName("detailsPanel")
         panel.setMinimumWidth(400)
         panel.setMaximumWidth(440)
         layout = QVBoxLayout(panel)
@@ -2319,9 +2134,7 @@ class AgentCreateWidget(QWidget):
         self.dev_toggle.toggled.connect(self._toggle_dev)
         self.refresh_models_button.clicked.connect(self._reload_model_options)
         self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
-        self.reason_combo.currentIndexChanged.connect(
-            lambda _index: self._fit_combo_to_contents(self.reason_combo)
-        )
+        self.reason_combo.currentIndexChanged.connect(self._on_reason_combo_changed)
 
     def _toggle_dev(self, checked: bool) -> None:
         """Показать или скрыть раздел разработчика."""
@@ -2336,6 +2149,7 @@ class AgentCreateWidget(QWidget):
         options = _merge_default_model_options(self._load_proxy_model_options())
         self._model_options = options
         self.model_combo.blockSignals(True)
+        self.reason_combo.blockSignals(True)
         self.model_combo.clear()
         for option in options:
             self.model_combo.addItem(option.label, option.model_id)
@@ -2348,12 +2162,14 @@ class AgentCreateWidget(QWidget):
         self.model_combo.setCurrentIndex(selected_index)
         self.model_combo.blockSignals(False)
         self._sync_reason_combo()
-        self._fit_combo_to_contents(self.model_combo)
-        self._fit_combo_to_contents(self.reason_combo)
         if mode:
             reason_index = self.reason_combo.findData(mode)
             if reason_index >= 0:
                 self.reason_combo.setCurrentIndex(reason_index)
+        self.reason_combo.blockSignals(False)
+        self._sync_reason_combo()
+        self._fit_combo_to_contents(self.model_combo)
+        self._fit_combo_to_contents(self.reason_combo)
 
     def _load_proxy_model_options(self) -> list[UiModelOption]:
         """Получить модели через /v1/models, если настроен LLM proxy URL."""
@@ -2380,7 +2196,9 @@ class AgentCreateWidget(QWidget):
             if not model_id:
                 continue
             base_model, mode = _split_model_mode(model_id)
-            if base_model not in {"chatgpt", "lmstudio"}:
+            if base_model == "claude":
+                # Старый прокси мог отдавать общий пункт "Claude"; в селекте
+                # должны быть только конкретные Claude-модели (`claude-...`).
                 continue
             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             entry = by_base.setdefault(
@@ -2421,6 +2239,12 @@ class AgentCreateWidget(QWidget):
         """Обновить reason-селект и ширину pill-комбобоксов после смены модели."""
         self._sync_reason_combo()
         self._fit_combo_to_contents(self.model_combo)
+        self._persist_selected_model_choice()
+
+    def _on_reason_combo_changed(self, _index: int) -> None:
+        """Сохранить смену reasoning-режима."""
+        self._fit_combo_to_contents(self.reason_combo)
+        self._persist_selected_model_choice()
 
     def _sync_reason_combo(self) -> None:
         """Включить/выключить селект reason в зависимости от выбранной модели."""
@@ -2435,7 +2259,10 @@ class AgentCreateWidget(QWidget):
         mode = self.reason_combo.currentData()
         allowed = set(option.modes or ("internal", "reason"))
         if mode not in allowed:
-            self.reason_combo.setCurrentIndex(0)
+            for index in range(self.reason_combo.count()):
+                if self.reason_combo.itemData(index) in allowed:
+                    self.reason_combo.setCurrentIndex(index)
+                    break
         self._fit_combo_to_contents(self.reason_combo)
 
     def _selected_model_id(self) -> str:
@@ -2455,6 +2282,7 @@ class AgentCreateWidget(QWidget):
         if config is None:
             return
         selected_model = self._selected_model_id()
+        self._persist_selected_model_choice(selected_model)
         if selected_model == config.llm_model_name:
             return
         self._append_log(f"⚙ Переключаю LLM-модель на {selected_model}…")
@@ -2463,6 +2291,15 @@ class AgentCreateWidget(QWidget):
         )
         self._container = build_application_container(new_config)
         self._preview_agent = None
+        self._update_workspace_button()
+
+    def _persist_selected_model_choice(self, model_name: str | None = None) -> None:
+        """Запомнить выбранный model id в локальных настройках."""
+        selected_model = model_name or self._selected_model_id()
+        try:
+            save_llm_model_name(selected_model)
+        except (OSError, ValueError) as exc:
+            self._append_log(f"⚠ Не удалось сохранить выбранную LLM-модель: {exc}")
 
     # ---------------------------------------------------- background flow
 
@@ -2472,6 +2309,14 @@ class AgentCreateWidget(QWidget):
 
     def _append_log(self, message: str) -> None:
         """Добавить строку в живой лог хода выполнения."""
+        if message.startswith("CTX_USAGE:"):
+            try:
+                usage = json.loads(message.removeprefix("CTX_USAGE:"))
+            except json.JSONDecodeError:
+                return
+            if self.context_indicator is not None:
+                self.context_indicator.set_usage(usage)
+            return
         self.live_log.append(message)
         scrollbar = self.live_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
@@ -2479,17 +2324,38 @@ class AgentCreateWidget(QWidget):
         self._refresh_run_header()
 
     def _start_run_tracking(self) -> None:
-        """Запустить отсчёт времени выполнения для шапки."""
-        self._run_started_at = time.monotonic()
-        self._run_elapsed_seconds = 0.0
+        """Start or resume the run header timer."""
+        if self._run_started_at is None:
+            self._run_started_at = time.monotonic()
         self._run_timer.start()
         self._refresh_run_header()
 
     def _stop_run_tracking(self) -> None:
-        """Остановить таймер и зафиксировать итоговое время."""
+        """Stop the timer and keep accumulated elapsed time."""
         if self._run_started_at is not None:
-            self._run_elapsed_seconds = time.monotonic() - self._run_started_at
+            self._run_elapsed_seconds = self._current_elapsed_seconds()
             self._run_started_at = None
+        self._run_timer.stop()
+        self._refresh_run_header()
+
+    def _start_elapsed_timer(self, *, reset: bool) -> None:
+        """Compatibility wrapper for the local elapsed-time flow."""
+        if reset:
+            self._run_elapsed_seconds = 0.0
+            self._run_started_at = time.monotonic()
+        elif self._run_started_at is None:
+            self._run_started_at = time.monotonic()
+        self._run_timer.start()
+        self._refresh_run_header()
+
+    def _pause_elapsed_timer(self) -> None:
+        """Pause the timer and keep accumulated elapsed time."""
+        self._stop_run_tracking()
+
+    def _reset_elapsed_timer(self) -> None:
+        """Reset elapsed time for a new run or clear action."""
+        self._run_started_at = None
+        self._run_elapsed_seconds = 0.0
         self._run_timer.stop()
         self._refresh_run_header()
 
@@ -2509,7 +2375,7 @@ class AgentCreateWidget(QWidget):
 
     def _current_elapsed_seconds(self) -> float:
         if self._run_started_at is not None:
-            return time.monotonic() - self._run_started_at
+            return self._run_elapsed_seconds + (time.monotonic() - self._run_started_at)
         return self._run_elapsed_seconds
 
     def _resolve_active_stage_id(self) -> str:
@@ -2696,12 +2562,16 @@ class AgentCreateWidget(QWidget):
         self._stop_run_tracking()
 
     def request_stop(self) -> None:
-        """Запросить остановку выполняющегося агента (кооперативно, между шагами)."""
+        """Запросить остановку: прерывает ожидание ответа LLM и шаги цикла."""
         if not self._is_busy():
             return
         self._cancel_event.set()
         self.stop_button.setEnabled(False)
-        self._append_log("⏹ Запрошена остановка агента. Останавливаю после текущего шага…")
+        if self._launch_stop_action is not None:
+            self._launch_stop_action.setEnabled(False)
+        self._append_log(
+            "⏹ Запрошена остановка агента. Прерываю текущий запрос к модели…"
+        )
 
     # -------------------------------------------------------------- actions
 
@@ -2715,18 +2585,24 @@ class AgentCreateWidget(QWidget):
             return
 
         self._reset_stages()
+        self._start_elapsed_timer(reset=True)
         self.live_log.clear()
         self._ensure_selected_model_container()
+        self._cancel_event.clear()
         self._last_request = user_request
         self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
         self._set_running(STAGE_PLAN)
         self.select_stage(STAGE_PLAN)
 
         service = self._container.agent_service
+        cancel_event = self._cancel_event
 
         def job(progress: Callable[[str], None]) -> object:
             progress("🧩 Строю план агента через LLM…")
-            spec = service.build_preview(user_request)
+            spec = service.build_preview(
+                user_request,
+                cancel_callback=cancel_event.is_set,
+            )
             progress("✅ План построен.")
             return spec
 
@@ -2736,14 +2612,17 @@ class AgentCreateWidget(QWidget):
         """Отобразить построенный preview AgentSpec."""
         assert isinstance(spec, AgentSpec)
         self._preview_agent = spec
+        self._update_workspace_button()
         self._render_preview(spec)
         self._render_plan_stages(spec)
         self.select_stage(STAGE_PLAN)
+        self._pause_elapsed_timer()
 
     def _on_preview_failed(self, message: str) -> None:
         """Показать ошибку построения плана."""
         self._set_stage(STAGE_PLAN, "failed", "Не удалось построить план", message)
         self._append_log(f"⚠ Ошибка предпросмотра: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка предпросмотра", message)
 
     def check_tools(self) -> None:
@@ -2808,7 +2687,12 @@ class AgentCreateWidget(QWidget):
         existing_spec = self._preview_agent
         if existing_spec is None:
             self._reset_stages()
+            self._start_elapsed_timer(reset=True)
             self._set_stage(STAGE_REQUEST, "passed", _short(request), request)
+        elif self._run_started_at is None and self._run_elapsed_seconds == 0.0:
+            self._start_elapsed_timer(reset=True)
+        else:
+            self._start_elapsed_timer(reset=False)
         self.live_log.clear()
         self._ensure_selected_model_container()
         existing_spec = self._preview_agent
@@ -2840,16 +2724,19 @@ class AgentCreateWidget(QWidget):
         """Отобразить результат пробной проверки агента."""
         spec, validation = result
         self._preview_agent = spec
+        self._update_workspace_button()
         self._render_preview(spec)
         self._render_plan_stages(spec)
         self._apply_validation(validation)
         self.select_stage(STAGE_RESULT)
+        self._pause_elapsed_timer()
         show_info(self, "Проверка агента", validation.summary)
 
     def _on_validate_failed(self, message: str) -> None:
         """Показать ошибку пробного запуска."""
         self._set_stage(STAGE_TRIAL, "failed", "Ошибка пробного запуска", message)
         self._append_log(f"⚠ Ошибка проверки агента: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка проверки агента", message)
 
     def create_validate_and_run(self) -> None:
@@ -2862,6 +2749,7 @@ class AgentCreateWidget(QWidget):
             return
 
         self._reset_stages()
+        self._start_elapsed_timer(reset=True)
         self.live_log.clear()
         self._ensure_selected_model_container()
         self.files_label.setVisible(False)
@@ -2893,6 +2781,7 @@ class AgentCreateWidget(QWidget):
         """Отобразить результат «собрать, проверить и запустить»."""
         agent_spec, validation, state = result
         self._preview_agent = agent_spec
+        self._update_workspace_button()
         self._render_preview(agent_spec)
         self._render_plan_stages(agent_spec)
         self._apply_validation(validation)
@@ -2908,13 +2797,16 @@ class AgentCreateWidget(QWidget):
             return
         if state is None:
             self._hide_human_panel()
+            self._pause_elapsed_timer()
             show_info(self, "Агент не запущен", validation.summary)
             return
+        self._update_context_indicator(state)
         if self._is_awaiting_human(state):
             self._prompt_human(agent_spec, state)
             return
         self._hide_human_panel()
         self._show_produced_files(agent_spec, state)
+        self._pause_elapsed_timer()
         show_info(
             self,
             "Агент запущен",
@@ -2935,6 +2827,15 @@ class AgentCreateWidget(QWidget):
         else:
             self.files_label.setVisible(False)
 
+    def _update_context_indicator(self, state: object | None) -> None:
+        """Обновить круговой индикатор из context_snapshot runtime state."""
+        if self.context_indicator is None:
+            return
+        variables = getattr(state, "variables", {}) or {}
+        snapshot = variables.get("context_snapshot") if isinstance(variables, dict) else None
+        usage = snapshot.get("usage") if isinstance(snapshot, dict) else None
+        self.context_indicator.set_usage(usage)
+
     @staticmethod
     def _is_awaiting_human(state: object) -> bool:
         """Проверить, приостановлен ли запуск и ждёт участия человека."""
@@ -2953,7 +2854,8 @@ class AgentCreateWidget(QWidget):
         return summary in {
             "выполнение остановлено пользователем.",
             "пробный запуск остановлен пользователем.",
-        }
+            "построение плана остановлено пользователем.",
+        } or "остановлено пользователем" in summary
 
     def _prompt_human(self, agent_spec: AgentSpec, state: object) -> None:
         """Показать панель участия человека по приостановленному состоянию."""
@@ -2981,6 +2883,7 @@ class AgentCreateWidget(QWidget):
         self.human_custom_edit.clear()
         self.human_continue_button.setEnabled(True)
         self._human_panel.setVisible(True)
+        self._pause_elapsed_timer()
         self._append_log("⏸ Агент ожидает вашего ответа/действия. Ответьте и нажмите «Продолжить».")
         self._refresh_run_header()
 
@@ -3067,6 +2970,7 @@ class AgentCreateWidget(QWidget):
         state = self._paused_state
         self._human_panel.setVisible(False)
         self._cancel_event.clear()
+        self._start_elapsed_timer(reset=False)
         self._set_running(STAGE_TRIAL)
         self.select_stage(STAGE_TRIAL)
         self._append_log(f"▶ Продолжаю после ответа человека: {answer}")
@@ -3094,6 +2998,7 @@ class AgentCreateWidget(QWidget):
         """Показать ошибку сборки/проверки/запуска."""
         self._set_stage(STAGE_PLAN, "failed", "Не удалось собрать агента", message)
         self._append_log(f"⚠ Ошибка проверки и запуска: {message}")
+        self._pause_elapsed_timer()
         show_error(self, "Ошибка проверки и запуска", message)
 
     def save_agent(self) -> None:
@@ -3119,6 +3024,7 @@ class AgentCreateWidget(QWidget):
                 service.save_agent(agent_spec)
             self._preview_agent = agent_spec
             self._last_request = request
+            self._update_workspace_button()
             self._render_preview(agent_spec)
             self._render_plan_stages(agent_spec)
         except Exception as exc:
@@ -3130,6 +3036,30 @@ class AgentCreateWidget(QWidget):
             "Агент сохранён",
             f"«{agent_spec.name}» сохранён в каталоге.",
         )
+
+    def open_agent_workspace(self) -> None:
+        """Открыть папку документов текущего preview/созданного агента."""
+        if self._preview_agent is None:
+            show_info(
+                self,
+                "Папка агента пока недоступна",
+                "Сначала создайте preview или сохраните агента.",
+            )
+            return
+        service = self._container.agent_service
+        if not hasattr(service, "agent_workspace_dir"):
+            show_error(self, "Папка недоступна", "Сервис не поддерживает workspace агента.")
+            return
+        folder = service.agent_workspace_dir(self._preview_agent.agent_id)
+        if not folder:
+            show_error(self, "Папка недоступна", "Не удалось определить папку агента.")
+            return
+        open_local_path(folder)
+
+    def _update_workspace_button(self) -> None:
+        """Обновить доступность кнопки папки агента."""
+        if self.open_workspace_button is not None:
+            self.open_workspace_button.setEnabled(self._preview_agent is not None)
 
     def attach_files(self) -> None:
         """Выбрать файлы, которые агент прочитает и получит в свою рабочую папку."""
@@ -3170,11 +3100,14 @@ class AgentCreateWidget(QWidget):
             return
         self._preview_agent = None
         self._last_request = ""
+        self._update_workspace_button()
         self.clear_attachments()
         self._hide_human_panel()
         self.request_edit.clear()
         self.live_log.clear()
         self.files_label.setVisible(False)
+        self._update_context_indicator(None)
+        self._reset_elapsed_timer()
         self.general_output.clear()
         self.json_output.clear()
         set_table_rows(self.data_table, [], self._data_headers())
@@ -3289,8 +3222,6 @@ class AgentCreateWidget(QWidget):
             card.set_selected(other_id == stage_id)
         for other_id, card in self._plan_step_cards.items():
             card.set_active(other_id == stage_id)
-        if self._workflow_step_bar is not None:
-            self._workflow_step_bar.set_active_stage(stage_id)
         self._refresh_current_step_card()
         if stage_id == STAGE_DEV:
             self.dev_toggle.setChecked(True)

@@ -16,6 +16,7 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
 )
+from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
 
 
 TASK_CONTROL_REQUEST = "создай агента контроля поручений"
@@ -108,6 +109,22 @@ def test_create_agent_from_request_save_true_saves_agent() -> None:
     agent_spec = service.create_agent_from_request(TASK_CONTROL_REQUEST, save=True)
 
     assert service.get_agent(agent_spec.agent_id) == agent_spec
+
+
+def test_save_agent_creates_workspace_folder(tmp_path) -> None:
+    """При сохранении агента создаётся его рабочая папка."""
+    service = AgentApplicationService(
+        agent_builder=AgentBuilder(),
+        runtime=FakeRuntime(),
+        workspace_resolver=AgentWorkspaceResolver(tmp_path),
+    )
+    agent_spec = service.build_preview(TASK_CONTROL_REQUEST)
+
+    service.save_agent(agent_spec)
+
+    folder = service.agent_workspace_dir(agent_spec.agent_id)
+    assert folder is not None
+    assert (tmp_path / agent_spec.agent_id).exists()
 
 
 def test_list_agents_returns_saved_agent() -> None:

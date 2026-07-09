@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Event
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -46,7 +46,6 @@ _PAUSED_STATUSES = {
 }
 
 GRID_COLUMNS = 3
-RUN_PANEL_DEFAULT_WIDTH = 300
 MOCK_DESCRIPTION = "описание"
 
 
@@ -175,8 +174,6 @@ class AgentListWidget(QWidget):
         self._cancel_event = Event()
         self._thread: QThread | None = None
         self._worker: CreateFlowWorker | None = None
-        self._splitter: QSplitter | None = None
-        self._splitter_sizes_applied = False
 
         self._build_ui()
         self._wire_signals()
@@ -221,36 +218,14 @@ class AgentListWidget(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
-        run_panel = self._build_run_panel()
-        run_panel.setMinimumWidth(260)
-        splitter.addWidget(run_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setHandleWidth(1)
-        self._splitter = splitter
+        splitter.addWidget(self._build_run_panel())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 4)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
         self.setStyleSheet("background:#14161c; color:#e6e9ef;")
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if not self._splitter_sizes_applied:
-            QTimer.singleShot(0, self._apply_default_splitter_sizes)
-
-    def _apply_default_splitter_sizes(self) -> None:
-        """Задать стартовую ширину правой панели запуска."""
-        if self._splitter_sizes_applied or self._splitter is None:
-            return
-        total = self._splitter.width()
-        if total <= 0:
-            return
-        handle = self._splitter.handleWidth()
-        right_width = RUN_PANEL_DEFAULT_WIDTH
-        left_width = max(240, total - right_width - handle)
-        self._splitter.setSizes([left_width, right_width])
-        self._splitter_sizes_applied = True
 
     def _build_run_panel(self) -> QWidget:
         """Правая панель: запуск выбранного агента и история его запусков."""
@@ -264,11 +239,14 @@ class AgentListWidget(QWidget):
         self.run_button.setEnabled(False)
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setEnabled(False)
+        self.open_workspace_button = QPushButton("Открыть папку")
+        self.open_workspace_button.setEnabled(False)
         self.delete_button = QPushButton("Удалить")
         self.delete_button.setEnabled(False)
         actions = QHBoxLayout()
         actions.addWidget(self.run_button)
         actions.addWidget(self.stop_button)
+        actions.addWidget(self.open_workspace_button)
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
 
@@ -320,6 +298,7 @@ class AgentListWidget(QWidget):
         """Подключить обработчики кнопок и панели человека."""
         self.run_button.clicked.connect(self.run_current_agent)
         self.stop_button.clicked.connect(self.request_stop)
+        self.open_workspace_button.clicked.connect(self.open_selected_agent_workspace)
         self.delete_button.clicked.connect(self.delete_current_agent)
         self.human_panel.continue_requested.connect(self.continue_after_human)
         self.history_list.itemSelectionChanged.connect(self._show_selected_run_events)
@@ -386,6 +365,7 @@ class AgentListWidget(QWidget):
             agent.short_description or agent.description or agent.goal.main_goal
         )
         self.run_button.setEnabled(True)
+        self.open_workspace_button.setEnabled(True)
         self.delete_button.setEnabled(True)
         self.live_log.clear()
         self.live_log.append(
@@ -418,11 +398,27 @@ class AgentListWidget(QWidget):
             self.panel_title.setText("Выберите агента слева")
             self.panel_subtitle.clear()
             self.run_button.setEnabled(False)
+            self.open_workspace_button.setEnabled(False)
             self.delete_button.setEnabled(False)
             self.live_log.clear()
             self.history_list.clear()
             self._highlight_card(None)
         self.refresh()
+
+    def open_selected_agent_workspace(self) -> None:
+        """Открыть папку документов выбранного агента."""
+        if self._selected_agent is None:
+            show_info(self, "Агент не выбран", "Сначала выберите агента.")
+            return
+        service = self._container.agent_service
+        if not hasattr(service, "agent_workspace_dir"):
+            show_error(self, "Папка недоступна", "Сервис не поддерживает workspace агента.")
+            return
+        folder = service.agent_workspace_dir(self._selected_agent.agent_id)
+        if not folder:
+            show_error(self, "Папка недоступна", "Не удалось определить папку агента.")
+            return
+        open_local_path(folder)
 
     # ------------------------------------------------------------- history
     def _load_history(self, agent_id: str) -> None:
@@ -580,12 +576,14 @@ class AgentListWidget(QWidget):
         return self._thread is not None
 
     def request_stop(self) -> None:
-        """Кооперативно остановить выполняющегося агента."""
+        """Остановить агента: прерывает ожидание ответа LLM и шаги цикла."""
         if not self._is_busy():
             return
         self._cancel_event.set()
         self.stop_button.setEnabled(False)
-        self.live_log.append("⏹ Запрошена остановка. Останавливаю после текущего шага…")
+        self.live_log.append(
+            "⏹ Запрошена остановка. Прерываю текущий запрос к модели…"
+        )
 
     def _append_log(self, message: str) -> None:
         """Добавить строку в живой лог."""

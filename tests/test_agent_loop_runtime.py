@@ -1,5 +1,6 @@
 """Тесты LLMAgentLoopRuntime: LLM сама ведёт инструменты и делает вывод."""
 
+from agent_desktop_constructor.app.llm.errors import LLMCancelledError
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
@@ -37,6 +38,41 @@ class ScriptedPlanner:
             decision_type=SupervisorDecisionType.FINISH_FAILED,
             reason="Сценарий исчерпан",
         )
+
+
+class CancellingPlanner:
+    """Планировщик, имитирующий прерывание HTTP-запроса к LLM."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decide(self, agent_spec, runtime_state, executed_signatures=None, repeat_notes=None):
+        self.calls += 1
+        raise LLMCancelledError("Запрос к LLM отменён пользователем")
+
+
+class PlannerWithCancellableClient:
+    """Планировщик с LLM-клиентом, принимающим set_cancel_callback."""
+
+    def __init__(self) -> None:
+        self._llm_client = _FakeCancellableClient()
+        self.calls = 0
+
+    def decide(self, agent_spec, runtime_state, executed_signatures=None, repeat_notes=None):
+        self.calls += 1
+        return SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="ok",
+            final_message="готово",
+        )
+
+
+class _FakeCancellableClient:
+    def __init__(self) -> None:
+        self.cancel_callback = None
+
+    def set_cancel_callback(self, callback) -> None:
+        self.cancel_callback = callback
 
 
 def make_runtime(planner) -> LLMAgentLoopRuntime:
@@ -203,6 +239,32 @@ def test_llm_loop_cancel_after_first_step() -> None:
 
     assert state.status == AgentRunStatus.CANCELLED
     assert planner.calls == 1
+
+
+def test_llm_loop_cancels_when_planner_raises_cancelled() -> None:
+    """Если HTTP к модели прерван, цикл помечает run как CANCELLED, а не FAILED."""
+    planner = CancellingPlanner()
+    runtime = make_runtime(planner)
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "распланировать график"})
+
+    assert state.status == AgentRunStatus.CANCELLED
+    assert planner.calls == 1
+    assert state.variables.get("cancel_reason")
+
+
+def test_set_cancel_callback_wires_llm_client() -> None:
+    """set_cancel_callback пробрасывает колбэк в LLM-клиент планировщика."""
+    planner = PlannerWithCancellableClient()
+    runtime = make_runtime(planner)
+    cb = lambda: False
+    runtime.set_cancel_callback(cb)
+    assert planner._llm_client.cancel_callback is cb
+    runtime.set_cancel_callback(None)
+    assert planner._llm_client.cancel_callback is None
 
 
 def test_llm_loop_ask_human_pauses_and_resumes_without_restart() -> None:

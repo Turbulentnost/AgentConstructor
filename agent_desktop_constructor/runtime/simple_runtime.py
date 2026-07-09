@@ -378,6 +378,9 @@ class SimpleAgentRuntime:
             self._move_to_next_node(state, node.next_on_success)
             return
 
+        if result.output_data is not None:
+            tool_outputs = state.variables.setdefault("tool_outputs", {})
+            tool_outputs[node.tool_name] = result.output_data
         state.add_error(result.error_message or result.error_type or "Ошибка инструмента")
         self._add_run_event(
             state,

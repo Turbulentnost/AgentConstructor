@@ -332,7 +332,7 @@
     {
       "name": "browser.list_installed_browsers",
       "title": "Список браузеров на устройстве",
-      "description": "Определяет установленные на компьютере браузеры (Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, Firefox): имя, путь, версию и поддержку чтения страниц через CDP.",
+      "description": "Определяет установленные на компьютере браузеры (Edge, Chrome, Brave, Yandex, Opera, Vivaldi, Chromium, Firefox): id/name, путь, версию и поддержку чтения страниц через CDP.",
       "category": "browser",
       "side_effect_level": "read",
       "execution_mode": "local",
@@ -357,9 +357,54 @@
       ],
       "examples": [
         "Какие браузеры установлены на компьютере",
-        "Проверить, установлен ли Edge/Chrome"
+        "Проверить, установлен ли Edge/Chrome/Yandex"
       ],
-      "planner_hint": "Используй, когда нужно узнать, какие браузеры есть на устройстве, или в каком браузере можно читать страницы. Верни поле browser в browser.open_page/click_link/scroll_page/extract_table, чтобы работать в конкретном браузере (например edge или chrome). Для чтения подходят только Chromium-браузеры (supports_cdp=true)."
+      "planner_hint": "Используй, когда нужно узнать, какие браузеры есть на устройстве, или пользователь явно назвал браузер (например Яндекс/Yandex, Chrome, Edge). Сначала получи список id/name/path, затем передай выбранный id в browser.open_browser или поле browser/browser_id в browser.navigate/open_page/click_link/scroll_page/extract_table. Для запроса 'открой Яндекс' выбери Yandex Browser (id=yandex), если он есть; если нет — сообщи доступные браузеры."
+    },
+    {
+      "name": "browser.open_browser",
+      "title": "Открыть конкретный браузер",
+      "description": "Открывает установленный браузер по browser_id/browser_name (например yandex, edge, chrome), а не системный браузер по умолчанию. Может сразу открыть URL. Запускает обычный профиль браузера без --user-data-dir, чтобы сохранить пользовательские логины и сессии.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "browser": {"type": "string"},
+          "url": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "path": {"type": "string"},
+          "url": {"type": "string"},
+          "pid": {"type": "integer"},
+          "available_browsers": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Открыть Яндекс браузер",
+        "Открыть yandex.ru в Yandex Browser",
+        "Открыть Chrome"
+      ],
+      "planner_hint": "Используй, когда пользователь просит открыть конкретный браузер по названию: 'Яндекс', 'Yandex Browser', 'Chrome', 'Edge', или когда нужна существующая пользовательская сессия без скриншотов/CDP. Если браузер явно назван, сначала вызови browser.list_installed_browsers и выбери matching id; для 'Яндекс' используй browser_id='yandex'. browser.open_browser не передаёт --user-data-dir/--remote-debugging-port и открывает штатный профиль браузера, поэтому существующая авторизация сохраняется. В output проверяй profile_mode=default и command_args_summary. Для управляемого vision/CDP используй browser.navigate без use_default_profile, чтобы получить profile_mode=automation."
     },
     {
       "name": "browser.search_web",
@@ -413,7 +458,12 @@
         "properties": {
           "url": {"type": "string"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -423,7 +473,16 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "links": {"type": "array"}
+          "links": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"},
+          "cdp_available": {"type": "boolean"},
+          "cdp_url": {"type": "string"},
+          "fallback_used": {"type": "boolean"},
+          "fallback_reason": {"type": "string"},
+          "next_action_hint": {"type": "string"}
         }
       },
       "allowed_for_agent_types": [
@@ -435,7 +494,7 @@
       "examples": [
         "Прочитать указанную web-страницу"
       ],
-      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
+      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы через CDP. Если пользователь явно назвал браузер, сначала получи browser.list_installed_browsers и передай browser/browser_id (например yandex). По умолчанию CDP использует profile_mode=automation; это надёжнее для чтения/скриншотов. Для существующей пользовательской сессии без CDP используй browser.open_browser; use_default_profile=true может не дать CDP, если штатный профиль уже открыт. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
     },
     {
       "name": "browser.extract_table",
@@ -450,14 +509,31 @@
         "properties": {
           "url": {"type": "string"},
           "table_hint": {"type": "string"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "tables": {"type": "array"}
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "tables": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"},
+          "cdp_available": {"type": "boolean"},
+          "cdp_url": {"type": "string"},
+          "fallback_used": {"type": "boolean"},
+          "fallback_reason": {"type": "string"},
+          "next_action_hint": {"type": "string"},
+          "warning": {"type": "string"}
         }
       },
       "allowed_for_agent_types": [
@@ -486,7 +562,12 @@
           "direction": {"type": "string"},
           "pixels": {"type": "integer"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -496,7 +577,17 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "scroll_y": {"type": "integer"}
+          "scroll_y": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"},
+          "cdp_available": {"type": "boolean"},
+          "cdp_url": {"type": "string"},
+          "fallback_used": {"type": "boolean"},
+          "fallback_reason": {"type": "string"},
+          "next_action_hint": {"type": "string"},
+          "warning": {"type": "string"}
         }
       },
       "allowed_for_agent_types": [
@@ -525,7 +616,12 @@
           "link_text": {"type": "string"},
           "href": {"type": "string"},
           "max_chars": {"type": "integer"},
-          "browser": {"type": "string"}
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["url"]
       },
@@ -535,7 +631,11 @@
           "url": {"type": "string"},
           "title": {"type": "string"},
           "text": {"type": "string"},
-          "links": {"type": "array"}
+          "links": {"type": "array"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -553,14 +653,24 @@
     {
       "name": "browser.navigate",
       "title": "Открыть страницу в браузере (UI)",
-      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам.",
+      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам. По умолчанию использует стабильный automation-профиль; для пользовательских сессий штатного профиля передай use_default_profile=true.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"url": {"type": "string"}},
+        "properties": {
+          "url": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_open_browser_fallback": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["url"]
       },
       "output_schema": {
@@ -570,7 +680,17 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"},
+          "cdp_available": {"type": "boolean"},
+          "cdp_url": {"type": "string"},
+          "fallback_used": {"type": "boolean"},
+          "fallback_reason": {"type": "string"},
+          "next_action_hint": {"type": "string"},
+          "warning": {"type": "string"}
         }
       },
       "allowed_for_agent_types": [
@@ -583,19 +703,28 @@
         "Открыть веб-версию сервиса и посмотреть UI",
         "Открыть страницу, где нужно взаимодействовать с элементами"
       ],
-      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. После него смотри скриншот и решай, куда кликать (browser.click), что вводить (browser.type_text), какие клавиши нажимать (browser.press_key)."
+      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. Если пользователь явно назвал браузер (например Яндекс/Yandex), сначала вызови browser.list_installed_browsers и передай browser_id='yandex' или выбранный id. По умолчанию используется profile_mode=automation — это отдельный стабильный профиль без пользовательских логинов и надёжным CDP. Если нужно только открыть пользовательскую сессию без управления, используй browser.open_browser. Если после browser.open_browser нужно продолжить смотреть/кликать в той же пользовательской сессии, вызывай browser.screenshot/browser.click/type_text без нового browser_id/profile: инструменты наследуют browser.open_browser из tool_outputs и используют OS fallback. Если нужна существующая сессия штатного профиля и дальнейшее UI-управление, можно передать use_default_profile=true: если CDP недоступен из-за уже открытого профиля, инструмент перейдёт в OS fallback (fallback_used=true, cdp_available=false) и вернёт скриншот видимого экрана. После этого продолжай browser.screenshot/browser.click/browser.type_text/browser.press_key/browser.scroll; координаты будут по видимому экрану из скриншота, а не по CDP viewport. Не переключайся на automation profile, если нужна текущая авторизация пользователя. Для Yandex штатный профиль использует %LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data. Не используй временный user-data-dir."
     },
     {
       "name": "browser.screenshot",
       "title": "Скриншот страницы браузера",
-      "description": "Делает скриншот текущей вкладки браузера (base64 PNG), чтобы LLM увидела актуальное состояние UI.",
+      "description": "Делает скриншот текущей вкладки браузера (base64 PNG), чтобы LLM увидела актуальное состояние UI. Если штатный профиль открыт без CDP после fallback, делает скриншот видимого экрана.",
       "category": "browser",
       "side_effect_level": "read",
       "execution_mode": "browser_worker",
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"url": {"type": "string"}}
+        "properties": {
+          "url": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        }
       },
       "output_schema": {
         "type": "object",
@@ -604,7 +733,11 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -617,12 +750,67 @@
         "Посмотреть текущее состояние страницы",
         "Обновить скриншот после действия"
       ],
-      "planner_hint": "Используй, чтобы увидеть текущее состояние UI, если после действия нужен свежий кадр. Скриншот автоматически прикладывается к твоему контексту."
+      "planner_hint": "Используй, чтобы увидеть текущее состояние UI, если после действия нужен свежий кадр. Скриншот автоматически прикладывается к твоему контексту. Если ранее был browser.open_browser с пользовательской сессией, screenshot наследует этот браузер из tool_outputs и работает через OS fallback, не создавая новый automation-профиль. Если предыдущий browser.navigate вернул fallback_used=true и cdp_available=false, screenshot тоже работает через OS fallback: координаты на скриншоте считай экранными."
+    },
+    {
+      "name": "browser.get_page_html",
+      "title": "HTML текущей страницы браузера",
+      "description": "Возвращает HTML текущей вкладки через CDP (document.documentElement.outerHTML): url, title, html с лимитом, html_length, truncated, html_summary. Для структуры DOM, селекторов, текста форм и скрытого контента.",
+      "category": "browser",
+      "side_effect_level": "read",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "max_chars": {"type": "integer"},
+          "summary_chars": {"type": "integer"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "html": {"type": "string"},
+          "html_length": {"type": "integer"},
+          "truncated": {"type": "boolean"},
+          "html_summary": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"},
+          "cdp_available": {"type": "boolean"},
+          "cdp_url": {"type": "string"},
+          "fallback_used": {"type": "boolean"},
+          "fallback_reason": {"type": "string"},
+          "next_action_hint": {"type": "string"},
+          "warning": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Получить HTML открытой страницы",
+        "Посмотреть DOM и селекторы формы без скриншота"
+      ],
+      "planner_hint": "Используй вместо browser.screenshot, когда нужна структура DOM/HTML: селекторы, атрибуты, текст полей форм, скрытый контент, разметка — а не визуальный вид UI. Требует активную CDP-вкладку (после browser.navigate с cdp_available=true). Для больших страниц смотри html_summary + html_length/truncated; raw html ограничен max_chars (по умолчанию до ~80k, максимум 100k). Не дублируй screenshot, если достаточно HTML. Для простого чтения видимого текста без vision предпочитай browser.open_page."
     },
     {
       "name": "browser.click",
       "title": "Клик по координатам в браузере",
-      "description": "Кликает по координатам (x, y) в пикселях viewport текущей вкладки и возвращает новый скриншот.",
+      "description": "Кликает по координатам (x, y) со скриншота и возвращает новый скриншот. В CDP-режиме координаты viewport; в OS fallback — координаты видимого экрана.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
@@ -632,7 +820,14 @@
         "properties": {
           "x": {"type": "number"},
           "y": {"type": "number"},
-          "button": {"type": "string"}
+          "button": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         },
         "required": ["x", "y"]
       },
@@ -643,7 +838,11 @@
           "title": {"type": "string"},
           "screenshot_base64": {"type": "string"},
           "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"}
+          "viewport_height": {"type": "integer"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -656,19 +855,28 @@
         "Кликнуть по кнопке на скриншоте",
         "Поставить фокус в поле ввода"
       ],
-      "planner_hint": "Определи координаты нужного элемента по приложенному скриншоту (пиксели от левого-верхнего угла, размеры viewport указаны в контексте) и передай x,y. После клика придёт новый скриншот."
+      "planner_hint": "Определи координаты нужного элемента по приложенному скриншоту и передай x,y. В CDP-режиме это пиксели viewport; если cdp_available=false/fallback_used=true — это пиксели видимого экрана. После клика придёт новый скриншот."
     },
     {
       "name": "browser.type_text",
       "title": "Ввод текста в браузере",
-      "description": "Вводит текст в активный элемент страницы (сначала кликни в поле) и возвращает скриншот.",
+      "description": "Вводит текст в активный элемент страницы (сначала кликни в поле) и возвращает скриншот. В OS fallback вставляет текст в активное окно через clipboard.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"text": {"type": "string"}},
+        "properties": {
+          "text": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["text"]
       },
       "output_schema": {
@@ -676,7 +884,11 @@
         "properties": {
           "url": {"type": "string"},
           "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"}
+          "screenshot_base64": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -689,19 +901,28 @@
         "Ввести запрос в поле поиска",
         "Заполнить текстовое поле формы"
       ],
-      "planner_hint": "Перед вводом кликни в нужное поле через browser.click, затем передай text. Не вводи пароли и коды — авторизацию по номеру/паролю/2FA выполняет человек (верни ask_human)."
+      "planner_hint": "Перед вводом кликни в нужное поле через browser.click, затем передай text. В OS fallback текст вставляется в активное окно, поэтому сначала обязательно сфокусируй поле кликом. Не вводи пароли и коды — авторизацию по номеру/паролю/2FA выполняет человек (верни ask_human)."
     },
     {
       "name": "browser.press_key",
       "title": "Нажатие клавиши в браузере",
-      "description": "Нажимает спец-клавишу (enter, tab, escape, backspace, стрелки) и возвращает скриншот.",
+      "description": "Нажимает спец-клавишу (enter, tab, escape, backspace, стрелки) и возвращает скриншот. В OS fallback нажимает клавишу в активном окне.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
       "requires_human_approval": false,
       "input_schema": {
         "type": "object",
-        "properties": {"key": {"type": "string"}},
+        "properties": {
+          "key": {"type": "string"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
+        },
         "required": ["key"]
       },
       "output_schema": {
@@ -709,7 +930,11 @@
         "properties": {
           "url": {"type": "string"},
           "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"}
+          "screenshot_base64": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -727,7 +952,7 @@
     {
       "name": "browser.scroll",
       "title": "Прокрутка браузера (UI)",
-      "description": "Прокручивает нужную область управляемой вкладки (не только всю страницу, но и внутренние списки/панели) и возвращает скриншот с метриками прокрутки: сдвинулась ли область (scrolled) и достигнут ли край (at_bottom/at_top).",
+      "description": "Прокручивает нужную область управляемой вкладки (не только всю страницу, но и внутренние списки/панели) и возвращает скриншот с метриками прокрутки. В OS fallback прокручивает активное окно системным wheel-событием.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
@@ -738,7 +963,14 @@
           "direction": {"type": "string", "enum": ["down", "up", "left", "right"]},
           "pixels": {"type": "integer"},
           "x": {"type": "integer"},
-          "y": {"type": "integer"}
+          "y": {"type": "integer"},
+          "browser": {"type": "string"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"},
+          "allow_os_fallback": {"type": "boolean"},
+          "profile_name": {"type": "string"},
+          "user_data_dir": {"type": "string"}
         }
       },
       "output_schema": {
@@ -753,7 +985,11 @@
           "client_height": {"type": "integer"},
           "at_bottom": {"type": "boolean"},
           "at_top": {"type": "boolean"},
-          "scroll_target": {"type": "string"}
+          "scroll_target": {"type": "string"},
+          "profile_mode": {"type": "string"},
+          "user_data_dir": {"type": "string"},
+          "used_default_profile": {"type": "boolean"},
+          "command_args_summary": {"type": "array"}
         }
       },
       "allowed_for_agent_types": [
@@ -1151,6 +1387,59 @@
         "Изменить значение ячейки в отчёте"
       ],
       "planner_hint": "Редактирует существующий .xlsx в папке агента. operations — список: append_row (values), set_cell (cell='B2', value), add_sheet (name), delete_sheet (name). Файл должен уже существовать (создай через excel.create_workbook)."
+    },
+    {
+      "name": "workspace.powershell_run",
+      "title": "PowerShell в папке агента",
+      "description": "Запускает PowerShell-команду только в личной рабочей папке агента и возвращает stdout/stderr.",
+      "category": "workspace",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Команда PowerShell для выполнения внутри workspace агента"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Таймаут выполнения, максимум 300 секунд"
+          },
+          "working_subdir": {
+            "type": "string",
+            "description": "Необязательная подпапка внутри workspace агента"
+          }
+        },
+        "required": ["command"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {"type": "boolean"},
+          "exit_code": {"type": "integer"},
+          "stdout": {"type": "string"},
+          "stderr": {"type": "string"},
+          "stdout_summary": {"type": "string"},
+          "stderr_summary": {"type": "string"},
+          "cwd": {"type": "string"},
+          "command": {"type": "string"},
+          "timed_out": {"type": "boolean"}
+        }
+      },
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
+      "examples": [
+        "Посмотреть список файлов в папке агента",
+        "Запустить python --version в workspace агента",
+        "Выполнить скрипт анализа файла из папки агента"
+      ],
+      "planner_hint": "Используй, когда нужно выполнить локальную PowerShell-команду над файлами в рабочей папке агента: посмотреть файлы (Get-ChildItem), прочитать небольшой текстовый файл, проверить версию утилиты или запустить скрипт. Команда всегда выполняется только в sandbox папке агента; working_subdir не может выйти наружу. Команды удаления или разрушительной перезаписи (Remove-Item/rm/del/rmdir/Clear-Content/Set-Content и aliases) требуют отдельного подтверждения человека."
     },
     {
       "name": "agent.wait",

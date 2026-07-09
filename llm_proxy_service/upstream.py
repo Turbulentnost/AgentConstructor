@@ -48,7 +48,7 @@ async def _call_openai(
     """Проксировать запрос в OpenAI-compatible chat/completions."""
     url = backend.base_url.rstrip("/") + "/v1/chat/completions"
     payload = dict(body)
-    payload["model"] = backend.model
+    payload["model"] = backend.upstream_model
     _adapt_response_format(payload, backend)
     _apply_reasoning_mode(payload, backend)
 
@@ -112,7 +112,7 @@ async def _call_openai_responses(
         raise UpstreamError("upstream вернул невалидный JSON") from exc
 
     text = _extract_responses_text(data)
-    return build_openai_response(text, backend.model)
+    return build_openai_response(text, backend.upstream_model)
 
 
 async def _call_anthropic(
@@ -150,7 +150,7 @@ async def _call_anthropic(
         raise UpstreamError("upstream вернул невалидный JSON") from exc
 
     text = _extract_anthropic_text(data)
-    return build_openai_response(text, backend.model)
+    return build_openai_response(text, backend.upstream_model)
 
 
 def build_openai_response(text: str, model: str) -> dict[str, Any]:
@@ -223,7 +223,7 @@ def _openai_to_responses_payload(
     # temperature намеренно не отправляем: reasoning-модели
     # отклоняют её с HTTP 400 "Unsupported parameter: 'temperature'".
     payload: dict[str, Any] = {
-        "model": backend.model,
+        "model": backend.upstream_model,
         "input": input_items,
     }
     _apply_reasoning_mode(payload, backend)
@@ -310,7 +310,7 @@ def _openai_to_anthropic_payload(
         )
 
     payload: dict[str, Any] = {
-        "model": backend.model,
+        "model": backend.upstream_model,
         "max_tokens": body.get("max_tokens") or 4096,
         "temperature": body.get("temperature", 0.2),
         "messages": conversation,

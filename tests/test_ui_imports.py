@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +74,7 @@ def test_ui_modules_import() -> None:
         "agent_desktop_constructor.app.ui.widgets.run_events_widget",
         "agent_desktop_constructor.app.ui.widgets.approval_queue_widget",
         "agent_desktop_constructor.app.ui.widgets.log_panel_widget",
+        "agent_desktop_constructor.app.ui.widgets.context_indicator",
     ]
 
     for module_name in module_names:
@@ -116,6 +119,7 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     assert widget.request_edit is not None
     assert isinstance(widget.model_combo, BadgeSelect)
     assert isinstance(widget.reason_combo, BadgeSelect)
+    assert widget.context_indicator is not None
     assert "border-radius: 9px" in MODEL_BADGE_STYLE
     assert widget.model_combo.isEnabled()
     assert widget.model_combo.count() >= 2
@@ -155,6 +159,252 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     qt_app.processEvents()
     assert changed_index is not None
     widget.model_combo.hidePopup()
+
+
+def test_agent_create_layout_narrow_sidebar_without_workflow_bar(
+    qt_app, fake_container
+) -> None:
+    """Правая панель уже, нижний workflow-stepper отсутствует."""
+    from PySide6.QtWidgets import QSplitter, QWidget
+
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+        STAGE_PLAN,
+    )
+
+    widget = AgentCreateWidget(fake_container)
+    widget.resize(1100, 760)
+    widget.show()
+    qt_app.processEvents()
+    widget._apply_default_splitter_sizes()
+    qt_app.processEvents()
+
+    assert not hasattr(widget, "_workflow_step_bar")
+    assert widget.findChild(QWidget, "workflowStepBar") is None
+    assert widget.findChild(QWidget, "workflowStepHost") is None
+
+    details = widget.findChild(QWidget, "detailsPanel")
+    assert details is not None
+    assert details.maximumWidth() <= 320
+    assert details.minimumWidth() >= 240
+
+    splitter = widget._main_splitter
+    assert isinstance(splitter, QSplitter)
+    sizes = splitter.sizes()
+    assert len(sizes) == 2
+    assert sizes[0] > sizes[1]
+    assert sizes[1] <= 320
+
+    widget.select_stage(STAGE_PLAN)
+    qt_app.processEvents()
+    assert widget._selected_stage == STAGE_PLAN
+    assert widget._plan_step_cards[STAGE_PLAN]._active is True
+
+    # Resize/scale smoke: debounce не должен падать и должен пересчитать высоту.
+    widget.resize(900, 640)
+    qt_app.processEvents()
+    widget.resize(1000, 700)
+    qt_app.processEvents()
+    widget._resize_sync_timer.stop()
+    widget._apply_deferred_resize_sync()
+    assert widget.request_edit.height() >= widget._request_min_height
+
+
+def test_context_indicator_accepts_usage(qt_app) -> None:
+    """ContextIndicator принимает usage payload и обновляет tooltip."""
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        ContextIndicator,
+    )
+
+    indicator = ContextIndicator()
+    indicator.set_usage(
+        {
+            "total_chars": 120,
+            "total_limit": 1000,
+            "total_percent": 12.0,
+            "section_chars": {"creation": 40, "tool_results": 80},
+            "section_percent": {"creation": 5.0, "tool_results": 10.0},
+        }
+    )
+    indicator.show()
+    qt_app.processEvents()
+
+    assert "12.0%" in indicator.toolTip()
+    assert "разбивку по секциям" in indicator.toolTip()
+    assert indicator.width() == 34
+
+
+def test_context_indicator_popover_position_prefers_above() -> None:
+    """Popover открывается над индикатором, если сверху достаточно места."""
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        POPOVER_MARGIN,
+        _popover_position,
+    )
+
+    position = _popover_position(
+        QPoint(400, 300),
+        QSize(34, 34),
+        QSize(180, 120),
+        QRect(0, 0, 1000, 800),
+    )
+
+    assert position.y() == 300 - 120 - POPOVER_MARGIN
+    assert position.x() == 400 + (34 - 180) // 2
+
+
+def test_context_indicator_popover_position_falls_back_below() -> None:
+    """Popover открывается снизу, если над индикатором нет места."""
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import (
+        POPOVER_MARGIN,
+        _popover_position,
+    )
+
+    position = _popover_position(
+        QPoint(400, 20),
+        QSize(34, 34),
+        QSize(180, 120),
+        QRect(0, 0, 1000, 800),
+    )
+
+    assert position.y() == 20 + 34 + POPOVER_MARGIN
+
+
+def test_context_indicator_usage_color_thresholds() -> None:
+    """Цвет индикатора меняется по уровню заполнения."""
+    from agent_desktop_constructor.app.ui.widgets.context_indicator import _usage_color
+
+    assert _usage_color(0) == "#64748b"
+    assert _usage_color(10) == "#38bdf8"
+    assert _usage_color(50) == "#22c55e"
+    assert _usage_color(80) == "#f59e0b"
+    assert _usage_color(95) == "#ef4444"
+
+
+def test_agent_create_widget_keeps_proxy_claude_models(monkeypatch) -> None:
+    """Селект моделей сохраняет конкретные Claude-модели из прокси."""
+    from agent_desktop_constructor.app.ui.widgets import agent_create_widget
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+        _merge_default_model_options,
+    )
+
+    payload = {
+        "data": [
+            {
+                "id": "chatgpt",
+                "metadata": {
+                    "display_name": "Chat-GPT 5.5",
+                    "supports_reasoning": True,
+                },
+            },
+            {
+                "id": "claude",
+                "metadata": {
+                    "display_name": "Claude",
+                    "supports_reasoning": True,
+                },
+            },
+            {
+                "id": "claude-sonnet-4.6",
+                "metadata": {
+                    "display_name": "Claude Sonnet 4.6",
+                    "supports_reasoning": True,
+                },
+            },
+            {
+                "id": "claude-sonnet-4.6:reason",
+                "metadata": {
+                    "display_name": "Claude Sonnet 4.6",
+                    "supports_reasoning": True,
+                },
+            },
+            {
+                "id": "claude-opus-4.1",
+                "metadata": {
+                    "display_name": "Claude Opus 4.1",
+                    "supports_reasoning": True,
+                },
+            },
+            {
+                "id": "lmstudio",
+                "metadata": {
+                    "display_name": "LM Studio (gpt-oss-120b)",
+                    "supports_reasoning": False,
+                },
+            },
+        ]
+    }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(payload).encode("utf-8")
+
+    requested_urls: list[str] = []
+
+    def fake_urlopen(url: str, timeout: int):
+        requested_urls.append(url)
+        assert timeout == 3
+        return FakeResponse()
+
+    monkeypatch.setattr(agent_create_widget.request, "urlopen", fake_urlopen)
+    dummy = SimpleNamespace(
+        _container=SimpleNamespace(
+            config=SimpleNamespace(llm_proxy_url="http://192.168.2.135:8080")
+        )
+    )
+
+    proxy_options = AgentCreateWidget._load_proxy_model_options(dummy)
+    options = _merge_default_model_options(proxy_options)
+    ids = [option.model_id for option in options]
+
+    assert requested_urls == ["http://192.168.2.135:8080/v1/models"]
+    assert "claude" not in ids
+    assert "claude-sonnet-4.6" in ids
+    assert "claude-opus-4.1" in ids
+    sonnet = next(option for option in options if option.model_id == "claude-sonnet-4.6")
+    assert sonnet.supports_reasoning is True
+    assert sonnet.modes == ("reason",)
+
+
+def test_agent_create_widget_persists_selected_model_id(
+    qt_app,
+    fake_container,
+    monkeypatch,
+) -> None:
+    """Смена модели/reason сохраняет полный model id."""
+    from agent_desktop_constructor.app.ui.widgets import agent_create_widget
+    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
+        AgentCreateWidget,
+    )
+
+    saved_models: list[str] = []
+    monkeypatch.setattr(agent_create_widget, "save_llm_model_name", saved_models.append)
+    widget = AgentCreateWidget(fake_container)
+
+    reason_index = widget.reason_combo.findData("reason")
+    widget.reason_combo.setCurrentIndex(reason_index)
+    qt_app.processEvents()
+
+    lmstudio_index = widget.model_combo.findData("lmstudio")
+    widget.model_combo.setCurrentIndex(lmstudio_index)
+    qt_app.processEvents()
+
+    assert saved_models[-2:] == ["chatgpt:reason", "lmstudio"]
+
+    widget._ensure_selected_model_container()
+
+    assert widget._container.config.llm_model_name == "lmstudio"
+    assert saved_models[-1] == "lmstudio"
 
 
 def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:

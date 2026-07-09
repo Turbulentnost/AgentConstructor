@@ -1,12 +1,17 @@
 """Тесты JSON-настроек AppConfig."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from agent_desktop_constructor.app.core.app_mode import AppRunMode
 from agent_desktop_constructor.app.core.config import AppConfig
-from agent_desktop_constructor.app.core.settings import load_settings, save_settings
+from agent_desktop_constructor.app.core.settings import (
+    load_settings,
+    save_llm_model_name,
+    save_settings,
+)
 
 
 def test_load_settings_returns_default_when_file_missing(tmp_path: Path) -> None:
@@ -58,6 +63,35 @@ def test_save_settings_creates_parent_directory(tmp_path: Path) -> None:
     save_settings(AppConfig(), str(path))
 
     assert path.exists()
+
+
+def test_save_llm_model_name_updates_only_model_name(tmp_path: Path) -> None:
+    """save_llm_model_name не перезаписывает остальные ключи settings."""
+    path = tmp_path / "settings.json"
+    path.write_text(
+        '{"run_mode":"offline","custom_key":{"enabled":true}}',
+        encoding="utf-8",
+    )
+
+    save_llm_model_name("chatgpt:reason", str(path))
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {
+        "run_mode": "offline",
+        "custom_key": {"enabled": True},
+        "llm_model_name": "chatgpt:reason",
+    }
+
+
+def test_save_llm_model_name_creates_minimal_settings(tmp_path: Path) -> None:
+    """save_llm_model_name создаёт минимальный settings.json."""
+    path = tmp_path / "nested" / "settings.json"
+
+    save_llm_model_name("lmstudio", str(path))
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "llm_model_name": "lmstudio"
+    }
 
 
 def test_broken_json_raises_clear_error(tmp_path: Path) -> None:

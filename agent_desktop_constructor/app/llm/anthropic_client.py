@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Callable
 from urllib import error, request
 
 from agent_desktop_constructor.app.llm.client import (
@@ -10,6 +11,7 @@ from agent_desktop_constructor.app.llm.client import (
     _strip_markdown_fences,
 )
 from agent_desktop_constructor.app.llm.errors import (
+    LLMCancelledError,
     LLMConnectionError,
     LLMResponseError,
 )
@@ -51,11 +53,19 @@ class AnthropicLLMClient:
     def __init__(self, config: LLMConfig) -> None:
         """Сохранить конфигурацию Claude."""
         self._config = config
+        self._cancel_callback: Callable[[], bool] | None = None
 
     @property
     def config(self) -> LLMConfig:
         """Вернуть конфигурацию клиента для сборки LLMRequest."""
         return self._config
+
+    def set_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Задать колбэк отмены текущего HTTP-запроса к модели."""
+        self._cancel_callback = callback
 
     def complete(self, llm_request: LLMRequest) -> LLMResponse:
         """Выполнить messages-запрос Claude и вернуть текст ответа."""
@@ -63,6 +73,8 @@ class AnthropicLLMClient:
         payload = self._build_payload(llm_request)
         try:
             raw_bytes = self._post_payload(endpoint, payload)
+        except LLMCancelledError:
+            raise
         except error.HTTPError as exc:
             details = _read_http_error_body(exc)
             message = f"LLM endpoint вернул HTTP {exc.code}"
@@ -94,6 +106,7 @@ class AnthropicLLMClient:
             request.urlopen,
             http_request,
             self._config.timeout_seconds,
+            cancel_callback=self._cancel_callback,
         )
 
     def _build_headers(self) -> dict[str, str]:

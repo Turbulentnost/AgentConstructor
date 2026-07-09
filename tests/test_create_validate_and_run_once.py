@@ -9,6 +9,7 @@ from agent_desktop_constructor.app.core.models.agent_validation import (
 from agent_desktop_constructor.app.core.services.agent_application_service import (
     AgentApplicationService,
 )
+from agent_desktop_constructor.app.llm.errors import LLMCancelledError
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
@@ -194,27 +195,34 @@ def test_create_validate_and_run_once_returns_failed_validation_on_builder_timeo
     assert runtime.run_calls == 0
 
 
-def test_create_validate_and_run_once_prefers_cancel_over_builder_error() -> None:
-    """Если остановка запрошена во время ошибки LLM, показываем отмену, а не 502."""
+class CancellingBuilder:
+    """Builder, имитирующий остановку пользователя во время планирования."""
+
+    tools_catalog = AgentBuilder().tools_catalog
+
+    def build_from_request(self, user_request: str):
+        raise LLMCancelledError("Запрос к LLM отменён пользователем")
+
+
+def test_create_validate_and_run_once_stops_cleanly_on_user_cancel() -> None:
+    """Отмена на этапе плана не маскируется как сбой LLM Planner."""
     runtime = FakeRuntime()
     validation_service = FakeValidationService(AgentValidationStatus.PASSED)
     service = AgentApplicationService(
-        agent_builder=RaisingBuilder(),
+        agent_builder=CancellingBuilder(),
         runtime=runtime,
         agent_validation_service=validation_service,
     )
-    cancelled = {"value": False}
 
-    def cancel_callback() -> bool:
-        return cancelled["value"]
-
-    cancelled["value"] = True
     agent_spec, validation, state = service.create_validate_and_run_once(
-        "Найди совещания",
-        cancel_callback=cancel_callback,
+        "Найди совещания"
     )
 
-    assert validation.summary == "Выполнение остановлено пользователем."
-    assert "timed out" not in validation.summary
+    assert agent_spec.agent_id
+    assert validation.status == AgentValidationStatus.FAILED
+    assert "остановлено пользователем" in validation.summary.casefold()
+    assert "fallback" not in " ".join(validation.warnings).casefold()
     assert state is None
+    assert validation_service.calls == []
+    assert runtime.run_calls == 0
 

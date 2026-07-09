@@ -16,3 +16,7 @@ class LLMResponseError(LLMError):
 class LLMInvalidJSONError(LLMError):
     """LLM вернула невалидный или не соответствующий схеме JSON."""
 
+
+class LLMCancelledError(LLMError):
+    """Запрос к LLM прерван по запросу пользователя (кнопка «Остановить»)."""
+

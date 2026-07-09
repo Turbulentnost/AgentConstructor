@@ -70,8 +70,16 @@ class ToolGateway:
             if not human_approved:
                 return self._approval_required_result(tool_name)
 
+        execution_input = input_data
+        if human_approved:
+            execution_input = dict(input_data)
+            runtime_context = dict(execution_input.get("runtime_context") or {})
+            runtime_context["human_approved"] = True
+            execution_input["runtime_context"] = runtime_context
+            execution_input["human_approved"] = True
+
         try:
-            result = tool.execute(input_data)
+            result = tool.execute(execution_input)
         except Exception as exc:
             return self._error_result(
                 tool_name=tool_name,

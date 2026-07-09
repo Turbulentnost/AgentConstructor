@@ -400,6 +400,7 @@ class AgentBuilder:
                 ),
                 self._build_tool_permission_from_catalog("llm.analyze_collected_data"),
                 self._build_tool_permission_from_catalog("report.build_task_report"),
+                self._build_tool_permission_from_catalog("workspace.powershell_run"),
                 self._build_tool_permission_from_catalog("email.create_draft"),
                 self._build_tool_permission_from_catalog(
                     "email.send",
@@ -417,6 +418,7 @@ class AgentBuilder:
                 self._build_tool_permission_from_catalog(
                     "report.build_schedule_recommendations"
                 ),
+                self._build_tool_permission_from_catalog("workspace.powershell_run"),
                 self._build_tool_permission_from_catalog("email.create_draft"),
                 self._build_tool_permission_from_catalog("email.send", allowed=False),
             ]
@@ -438,6 +440,7 @@ class AgentBuilder:
                 self._build_tool_permission_from_catalog(
                     "report.build_document_analysis_report"
                 ),
+                self._build_tool_permission_from_catalog("workspace.powershell_run"),
                 self._build_tool_permission_from_catalog(
                     "document.approve", allowed=False
                 ),
@@ -448,6 +451,7 @@ class AgentBuilder:
             self._build_tool_permission_from_catalog("browser.open_page"),
             self._build_tool_permission_from_catalog("llm.generate_text"),
             self._build_tool_permission_from_catalog("llm.analyze_collected_data"),
+            self._build_tool_permission_from_catalog("workspace.powershell_run"),
         ]
 
     def _build_runtime_limits(self, template_name: str) -> AgentRuntimeLimits:

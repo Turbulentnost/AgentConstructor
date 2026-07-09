@@ -7,7 +7,7 @@
   "use_llm_planner": true,
   "llm_provider": "openai_compatible",
   "llm_base_url": "https://api.openai.com",
-  "llm_model_name": "chatgpt:internal",
+  "llm_model_name": "claude-opus-4.6:internal",
   "llm_proxy_url": "http://192.168.2.135:8080",
   "llm_temperature": 0.2,
   "llm_timeout_seconds": 120,

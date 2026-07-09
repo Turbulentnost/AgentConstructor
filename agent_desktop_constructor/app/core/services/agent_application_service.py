@@ -14,6 +14,7 @@ from agent_desktop_constructor.app.core.models.agent_validation import (
     AgentValidationResult,
     AgentValidationStatus,
 )
+from agent_desktop_constructor.app.llm.errors import LLMCancelledError
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
@@ -79,12 +80,36 @@ class AgentApplicationService:
         """Вернуть предупреждения о сбоях audit repository."""
         return list(self._audit_warnings)
 
-    def build_preview(self, user_request: str) -> AgentSpec:
+    def build_preview(
+        self,
+        user_request: str,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> AgentSpec:
         """Построить AgentSpec из запроса без сохранения и запуска."""
         normalized_request = user_request.strip()
         if not normalized_request:
             raise ValueError("user_request не должен быть пустым")
-        return self._agent_builder.build_from_request(normalized_request)
+        self._set_builder_cancel_callback(cancel_callback)
+        try:
+            return self._agent_builder.build_from_request(normalized_request)
+        finally:
+            self._set_builder_cancel_callback(None)
+
+    def _set_builder_cancel_callback(
+        self,
+        callback: Callable[[], bool] | None,
+    ) -> None:
+        """Пробросить отмену в LLM-клиент планировщика сборки агента."""
+        planner = getattr(self._agent_builder, "_llm_planner", None)
+        if planner is None:
+            return
+        llm_client = getattr(planner, "_llm_client", None)
+        if llm_client is None or not hasattr(llm_client, "set_cancel_callback"):
+            return
+        try:
+            llm_client.set_cancel_callback(callback)
+        except Exception:
+            pass
 
     def save_agent(self, agent_spec: AgentSpec) -> None:
         """Сохранить AgentSpec в repository или memory-only storage."""
@@ -93,6 +118,7 @@ class AgentApplicationService:
         else:
             self._memory_agents[agent_spec.agent_id] = agent_spec
 
+        self._ensure_agent_workspace(agent_spec.agent_id)
         self._add_audit(
             action="agent.saved",
             details={"agent_id": agent_spec.agent_id, "name": agent_spec.name},
@@ -142,6 +168,11 @@ class AgentApplicationService:
         if self._workspace_resolver is None:
             return None
         return str(self._workspace_resolver.for_agent(agent_id).directory)
+
+    def _ensure_agent_workspace(self, agent_id: str) -> None:
+        """Создать рабочую папку агента, если workspace resolver доступен."""
+        if self._workspace_resolver is not None:
+            self._workspace_resolver.for_agent(agent_id)
 
     def delete_agent(self, agent_id: str) -> None:
         """Удалить сохранённого агента по agent_id."""
@@ -325,7 +356,29 @@ class AgentApplicationService:
         if progress_callback is not None:
             progress_callback("🧩 Строю план агента через LLM…")
         try:
-            agent_spec = self.build_preview(user_request)
+            agent_spec = self.build_preview(
+                user_request,
+                cancel_callback=cancel_callback,
+            )
+        except LLMCancelledError as exc:
+            if progress_callback is not None:
+                progress_callback("⏹ Построение плана остановлено пользователем.")
+            agent_spec = self._build_template_fallback_agent(user_request)
+            return (
+                agent_spec,
+                AgentValidationResult(
+                    agent_id=agent_spec.agent_id,
+                    status=AgentValidationStatus.FAILED,
+                    run_id=None,
+                    errors=[str(exc)],
+                    warnings=[],
+                    summary="Построение плана остановлено пользователем.",
+                    final_message=None,
+                    output_data=None,
+                    suggested_fixes=[],
+                ),
+                None,
+            )
         except Exception as exc:
             if self._is_cancel_requested(cancel_callback):
                 agent_spec = self._build_template_fallback_agent(user_request)

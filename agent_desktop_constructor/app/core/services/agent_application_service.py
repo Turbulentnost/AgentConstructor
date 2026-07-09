@@ -36,9 +36,6 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-CANCELLED_RUN_SUMMARY = "Выполнение остановлено пользователем."
-
-
 class AgentApplicationService:
     """Сервисный слой приложения для UI, CLI и будущих application workflows."""
 
@@ -349,10 +346,6 @@ class AgentApplicationService:
         attachment_paths: list[str] | None = None,
     ) -> tuple[AgentSpec, AgentValidationResult, AgentRuntimeState | None]:
         """Собрать агента, выполнить проверочный запуск и сохранить при успехе."""
-        if self._is_cancel_requested(cancel_callback):
-            agent_spec = self._build_template_fallback_agent(user_request)
-            return self._cancelled_run_result(agent_spec, progress_callback)
-
         if progress_callback is not None:
             progress_callback("🧩 Строю план агента через LLM…")
         try:
@@ -380,9 +373,6 @@ class AgentApplicationService:
                 None,
             )
         except Exception as exc:
-            if self._is_cancel_requested(cancel_callback):
-                agent_spec = self._build_template_fallback_agent(user_request)
-                return self._cancelled_run_result(agent_spec, progress_callback)
             reason = f"{type(exc).__name__}: {exc}"
             if progress_callback is not None:
                 progress_callback(f"⚠ Не удалось построить план агента. Причина: {reason}")
@@ -405,8 +395,6 @@ class AgentApplicationService:
                 ),
                 None,
             )
-        if self._is_cancel_requested(cancel_callback):
-            return self._cancelled_run_result(agent_spec, progress_callback)
         attached_files = self.ingest_attachments(agent_spec.agent_id, attachment_paths)
         if attached_files and progress_callback is not None:
             progress_callback(
@@ -503,42 +491,6 @@ class AgentApplicationService:
         """Построить fallback AgentSpec без LLM, чтобы UI мог показать результат."""
         fallback_builder = AgentBuilder(tools_catalog=self._agent_builder.tools_catalog)
         return fallback_builder.build_from_request(user_request)
-
-    def _is_cancel_requested(
-        self,
-        cancel_callback: Callable[[], bool] | None,
-    ) -> bool:
-        """Безопасно проверить, запросил ли пользователь остановку."""
-        if cancel_callback is None:
-            return False
-        try:
-            return bool(cancel_callback())
-        except Exception:
-            return False
-
-    def _cancelled_run_result(
-        self,
-        agent_spec: AgentSpec,
-        progress_callback: Callable[[str], None] | None = None,
-    ) -> tuple[AgentSpec, AgentValidationResult, None]:
-        """Вернуть результат кооперативной остановки до/вместо ошибки LLM."""
-        if progress_callback is not None:
-            progress_callback(f"⏹ {CANCELLED_RUN_SUMMARY}")
-        return (
-            agent_spec,
-            AgentValidationResult(
-                agent_id=agent_spec.agent_id,
-                status=AgentValidationStatus.FAILED,
-                run_id=None,
-                errors=[],
-                warnings=[],
-                summary=CANCELLED_RUN_SUMMARY,
-                final_message=None,
-                output_data=None,
-                suggested_fixes=[],
-            ),
-            None,
-        )
 
     def get_agent(self, agent_id: str) -> AgentSpec:
         """Вернуть AgentSpec по agent_id."""

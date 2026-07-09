@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QPointF,
     Property,
     QPropertyAnimation,
+    QRect,
     QRectF,
     Qt,
     QThread,
@@ -668,13 +669,94 @@ class StageCard(QFrame):
         super().mousePressEvent(event)
 
 
+class CursorLiveText(QLabel):
+    """Строка live-лога: shimmer для действий и typewriter для комментариев."""
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        color: str,
+        shimmer: bool = False,
+        typewriter: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self._visible_chars = 0 if typewriter else len(text)
+        self._base_color = QColor(color)
+        self._shimmer = shimmer
+        self._shimmer_offset = -0.35
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        self.setStyleSheet(f"background:transparent; color:{color}; font-size:12px;")
+        self.setText(text if not typewriter else "")
+
+        self._typing_timer = QTimer(self)
+        self._typing_timer.setInterval(13)
+        self._typing_timer.timeout.connect(self._type_next_chunk)
+        if typewriter:
+            self._typing_timer.start()
+
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.setInterval(48)
+        self._shimmer_timer.timeout.connect(self._advance_shimmer)
+        if shimmer:
+            self._shimmer_timer.start()
+
+    def _type_next_chunk(self) -> None:
+        if self._visible_chars >= len(self._full_text):
+            self._typing_timer.stop()
+            return
+        chunk = 3 if len(self._full_text) > 90 else 2
+        self._visible_chars = min(len(self._full_text), self._visible_chars + chunk)
+        self.setText(self._full_text[: self._visible_chars])
+        self.updateGeometry()
+
+    def _advance_shimmer(self) -> None:
+        self._shimmer_offset += 0.009
+        if self._shimmer_offset > 1.35:
+            self._shimmer_offset = -0.35
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._shimmer or not self.text():
+            super().paintEvent(event)
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        text_rect = self.contentsRect()
+        flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap
+
+        painter.setPen(self._base_color)
+        painter.drawText(text_rect, int(flags), self.text())
+
+        band_width = max(52, int(self.width() * 0.3))
+        center_x = int(self.width() * self._shimmer_offset)
+        painter.save()
+        painter.setClipRect(text_rect)
+        for spread, alpha in ((-0.22, 28), (0.0, 78), (0.22, 28)):
+            half = int(band_width * 0.38)
+            x = center_x + int(band_width * spread) - half
+            painter.save()
+            painter.setClipRect(
+                QRect(x, 0, half * 2, self.height()),
+                Qt.ClipOperation.IntersectClip,
+            )
+            painter.setPen(QColor(232, 241, 255, alpha))
+            painter.drawText(text_rect, int(flags), self.text())
+            painter.restore()
+        painter.restore()
+
+
 class LiveLogView(QScrollArea):
-    """Стеклянная лента live-событий вместо обычного текстового поля."""
+    """Cursor-like поток live-событий без карточек."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """Создать прокручиваемую ленту событий агента."""
         super().__init__(parent)
-        self._items: list[QFrame] = []
+        self._items: list[QWidget] = []
         self._animations: list[QPropertyAnimation] = []
 
         self.setWidgetResizable(True)
@@ -684,8 +766,8 @@ class LiveLogView(QScrollArea):
         self._host = QWidget()
         self._host.setObjectName("liveLogHost")
         self._layout = QVBoxLayout(self._host)
-        self._layout.setContentsMargins(10, 10, 10, 10)
-        self._layout.setSpacing(7)
+        self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setSpacing(8)
 
         self._placeholder = QLabel(
             "События появятся здесь: LLM-планирование, вызовы инструментов, "
@@ -701,13 +783,9 @@ class LiveLogView(QScrollArea):
             "#liveLogView { background:transparent; border:none; }"
             "#liveLogHost { background:transparent; }"
             "#livePlaceholder { color:#66738b; font-size:12px; padding:8px; }"
-            "#liveLogItem {"
-            "background:#081a2f; border:1px solid #15304e;"
-            "border-radius:10px;"
-            "}"
-            "#liveLogItem QLabel { color:#d6deec; font-size:12px; }"
-            "#liveLogMeta { color:#7e8ba5; font-size:10px; font-weight:700; }"
-            "#liveLogDot { border-radius:5px; }"
+            "#liveLogRow { background:transparent; border:none; }"
+            "#liveLogIcon { color:#9bbcff; font-size:13px; font-weight:700; }"
+            "#liveLogText { background:transparent; }"
         )
 
     def setReadOnly(self, _read_only: bool) -> None:  # noqa: N802 (Qt compatibility)
@@ -718,47 +796,41 @@ class LiveLogView(QScrollArea):
         self._placeholder.setText(text)
 
     def append(self, message: str) -> None:
-        """Добавить событие в ленту с мягким появлением."""
+        """Добавить событие в Cursor-like поток с анимацией по типу сообщения."""
         text = str(message or "").strip()
         if not text:
             return
         self._placeholder.setVisible(False)
 
-        item = QFrame()
-        item.setObjectName("liveLogItem")
-        item.setStyleSheet(self._item_style(text))
+        row = QWidget()
+        row.setObjectName("liveLogRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
 
-        dot = QLabel()
-        dot.setObjectName("liveLogDot")
-        dot.setFixedSize(10, 10)
-        dot.setStyleSheet(f"background:{self._accent_color(text)}; border-radius:5px;")
+        icon = QLabel(self._event_icon(text))
+        icon.setObjectName("liveLogIcon")
+        icon.setFixedWidth(14)
+        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        icon.setStyleSheet(f"color:{self._accent_color(text)};")
+        row_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
-        meta = QLabel(self._event_label(text))
-        meta.setObjectName("liveLogMeta")
+        body = CursorLiveText(
+            self._clean_message(text),
+            color=self._text_color(text),
+            shimmer=self._is_running_action(text),
+            typewriter=self._is_typewriter_message(text),
+        )
+        body.setObjectName("liveLogText")
+        row_layout.addWidget(body, 1)
 
-        body = QLabel(self._clean_message(text))
-        body.setTextFormat(Qt.TextFormat.PlainText)
-        body.setWordWrap(True)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(7)
-        header.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
-        header.addWidget(meta, 1)
-
-        layout = QVBoxLayout(item)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(5)
-        layout.addLayout(header)
-        layout.addWidget(body)
-
-        self._layout.insertWidget(max(0, self._layout.count() - 1), item)
-        self._items.append(item)
-        if len(self._items) > 80:
+        self._layout.insertWidget(max(0, self._layout.count() - 1), row)
+        self._items.append(row)
+        if len(self._items) > 120:
             old = self._items.pop(0)
             old.setParent(None)
             old.deleteLater()
-        self._fade_in(item)
+        self._fade_in(row)
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def clear(self) -> None:
@@ -774,7 +846,7 @@ class LiveLogView(QScrollArea):
         effect.setOpacity(0.0)
         item.setGraphicsEffect(effect)
         animation = QPropertyAnimation(effect, b"opacity", self)
-        animation.setDuration(260)
+        animation.setDuration(180)
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -792,24 +864,18 @@ class LiveLogView(QScrollArea):
         scrollbar = self.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def _event_label(self, text: str) -> str:
+    def _event_icon(self, text: str) -> str:
         if text.startswith("✅"):
-            return "COMPLETED"
+            return "✓"
         if text.startswith("⚠") or text.startswith("❌"):
-            return "ATTENTION"
+            return "!"
         if text.startswith("⏸"):
-            return "WAITING FOR HUMAN"
+            return "Ⅱ"
         if text.startswith("📎"):
-            return "ATTACHMENT"
-        if text.startswith("🧩") or "LLM" in text:
-            return "LLM"
-        if text.startswith("🔎"):
-            return "CHECK"
-        if text.startswith("▶"):
-            return "RUN"
+            return "↗"
         if text.startswith("⏹"):
-            return "STOP"
-        return "EVENT"
+            return "■"
+        return "✦" if self._is_running_action(text) else "•"
 
     def _accent_color(self, text: str) -> str:
         if text.startswith("✅"):
@@ -826,19 +892,35 @@ class LiveLogView(QScrollArea):
             return "#4b8bff"
         return "#7aa2ff"
 
-    def _item_style(self, text: str) -> str:
-        color = self._accent_color(text)
+    def _text_color(self, text: str) -> str:
+        if text.startswith("⚠") or text.startswith("❌"):
+            return "#f2c7d0"
+        if text.startswith("✅"):
+            return "#c8f8df"
+        return "#b9c7dd" if self._is_running_action(text) else "#8fa1bb"
+
+    def _is_running_action(self, text: str) -> bool:
+        lower = text.lower()
         return (
-            "#liveLogItem {"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            f"stop:0 {color}, stop:0.009 #0c213a, stop:1 #08172a);"
-            f"border:1px solid {color}; border-radius:10px;"
-            "}"
+            text.startswith(("🧩", "🔎", "▶", "⚙"))
+            or "строю" in lower
+            or "переключаю" in lower
+            or "запускаю" in lower
+            or "проверяю" in lower
+        )
+
+    def _is_typewriter_message(self, text: str) -> bool:
+        lower = text.lower()
+        return (
+            text.startswith(("⚠", "❌"))
+            or "не удалось" in lower
+            or "ошибка" in lower
+            or "причина:" in lower
         )
 
     @staticmethod
     def _clean_message(text: str) -> str:
-        return text.lstrip("✅⚠❌⏸📎🧩🔎▶⏹ ").strip() or text
+        return text.lstrip("✅⚠❌⏸📎🧩🔎▶⏹⚙ ").strip() or text
 
 
 class PlanNumberCircle(QWidget):

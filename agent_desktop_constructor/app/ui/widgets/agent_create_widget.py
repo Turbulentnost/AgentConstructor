@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Event
 from typing import Callable
 from urllib import error, request
@@ -29,6 +30,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -250,6 +252,12 @@ REF_BORDER = "#16304f"
 REF_BLUE = "#2f7cff"
 REF_TEXT = "#e7eefc"
 REF_MUTED = "#7f8ea5"
+
+COMPOSER_ICONS_DIR = Path(__file__).resolve().parent.parent / "resources" / "icons"
+COMPOSER_ICON_FILES: dict[str, tuple[str, str]] = {
+    "attach": ("paperclip-default.svg", "paperclip-active.svg"),
+    "database": ("server-default.svg", "server-active.svg"),
+}
 
 
 def _short(text: object, max_len: int = 90) -> str:
@@ -673,10 +681,7 @@ class LiveLogView(QScrollArea):
 
         self.setWidget(self._host)
         self.setStyleSheet(
-            "#liveLogView {"
-            "background:#071426;"
-            "border:1px solid #102844; border-radius:12px;"
-            "}"
+            "#liveLogView { background:transparent; border:none; }"
             "#liveLogHost { background:transparent; }"
             "#livePlaceholder { color:#66738b; font-size:12px; padding:8px; }"
             "#liveLogItem {"
@@ -1187,9 +1192,15 @@ class BadgeSelect(QPushButton):
         self._menu = QMenu(self)
         self._menu.setStyleSheet(BADGE_SELECT_MENU_STYLE)
         self._menu.triggered.connect(self._on_menu_action)
+        self._block_open_until = 0.0
+        self._menu.aboutToHide.connect(self._on_menu_about_to_hide)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(self._open_menu)
         self._apply_style()
+
+    def _on_menu_about_to_hide(self) -> None:
+        """Не переоткрывать меню сразу после закрытия тем же кликом по кнопке."""
+        self._block_open_until = time.monotonic() + 0.3
 
     def _apply_style(self) -> None:
         self.setStyleSheet(REASON_BADGE_STYLE if self._ghost else MODEL_BADGE_STYLE)
@@ -1227,6 +1238,8 @@ class BadgeSelect(QPushButton):
         painter.drawPath(path)
 
     def _open_menu(self) -> None:
+        if time.monotonic() < self._block_open_until:
+            return
         if not self.isEnabled() or self.count() == 0:
             return
         self._rebuild_menu()
@@ -1306,7 +1319,10 @@ class BadgeSelect(QPushButton):
 
 
 class ComposerIconButton(QPushButton):
-    """Квадратная кнопка с line-icon для нижней панели composer."""
+    """Квадратная кнопка с SVG-иконкой для нижней панели composer."""
+
+    _ICON_SIZE = 18
+    _svg_cache: dict[str, tuple[QSvgRenderer, QSvgRenderer]] = {}
 
     def __init__(self, kind: str, tooltip: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1317,8 +1333,45 @@ class ComposerIconButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(30, 30)
 
+    @classmethod
+    def _svg_renderers(cls, kind: str) -> tuple[QSvgRenderer, QSvgRenderer] | None:
+        files = COMPOSER_ICON_FILES.get(kind)
+        if files is None:
+            return None
+        if kind not in cls._svg_cache:
+            default_path = COMPOSER_ICONS_DIR / files[0]
+            active_path = COMPOSER_ICONS_DIR / files[1]
+            cls._svg_cache[kind] = (
+                QSvgRenderer(str(default_path)),
+                QSvgRenderer(str(active_path)),
+            )
+        return cls._svg_cache[kind]
+
+    def _use_active_icon(self) -> bool:
+        return self.underMouse() or self.isDown()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        super().leaveEvent(event)
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
+        renderers = self._svg_renderers(self._kind)
+        if renderers is not None:
+            renderer = renderers[1] if self._use_active_icon() else renderers[0]
+            if renderer.isValid():
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                offset = (self.width() - self._ICON_SIZE) / 2
+                renderer.render(
+                    painter,
+                    QRectF(offset, offset, self._ICON_SIZE, self._ICON_SIZE),
+                )
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         color = QColor("#94a3b8")
@@ -1327,19 +1380,7 @@ class ComposerIconButton(QPushButton):
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._kind == "attach":
-            path = QPainterPath(QPointF(14, 8))
-            path.arcTo(QRectF(10, 8, 6, 6), 0, -180)
-            path.lineTo(QPointF(14, 19))
-            path.arcTo(QRectF(10, 16, 6, 6), 180, -180)
-            painter.drawPath(path)
-        elif self._kind == "database":
-            painter.drawEllipse(QRectF(7, 5, 16, 5))
-            painter.drawLine(QPointF(7, 7.5), QPointF(7, 20))
-            painter.drawLine(QPointF(23, 7.5), QPointF(23, 20))
-            painter.drawEllipse(QRectF(7, 12, 16, 5))
-            painter.drawEllipse(QRectF(7, 18, 16, 5))
-        elif self._kind == "grid":
+        if self._kind == "grid":
             painter.drawRect(QRectF(7, 7, 7, 7))
             painter.drawRect(QRectF(16, 7, 7, 7))
             painter.drawRect(QRectF(7, 16, 7, 7))
@@ -1712,12 +1753,6 @@ class AgentCreateWidget(QWidget):
         layout.setContentsMargins(14, 16, 8, 14)
         layout.setSpacing(10)
 
-        timeline_panel = QFrame()
-        timeline_panel.setObjectName("timelinePanel")
-        panel_layout = QVBoxLayout(timeline_panel)
-        panel_layout.setContentsMargins(14, 12, 14, 10)
-        panel_layout.setSpacing(10)
-
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(10)
@@ -1728,7 +1763,7 @@ class AgentCreateWidget(QWidget):
         title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.run_status_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
-        panel_layout.addLayout(title_row)
+        layout.addLayout(title_row)
 
         summary = QHBoxLayout()
         summary.setContentsMargins(0, 0, 0, 0)
@@ -1772,9 +1807,15 @@ class AgentCreateWidget(QWidget):
             "eta", "—", "Ожидаемое завершение"
         )
         summary.addWidget(eta_chip, 0, Qt.AlignmentFlag.AlignVCenter)
-        panel_layout.addLayout(summary)
+        layout.addLayout(summary)
 
         self._build_stage_cards()
+
+        live_section = QWidget()
+        live_section.setObjectName("liveSection")
+        panel_layout = QVBoxLayout(live_section)
+        panel_layout.setContentsMargins(0, 4, 0, 0)
+        panel_layout.setSpacing(10)
 
         self.live_log = LiveLogView()
         self.live_log.setSizePolicy(
@@ -1799,17 +1840,14 @@ class AgentCreateWidget(QWidget):
         self.files_label.linkActivated.connect(open_local_path)
         panel_layout.addWidget(self.files_label)
 
-        layout.addWidget(timeline_panel, 1)
+        layout.addWidget(live_section, 1)
         layout.addWidget(self._build_bottom_composer(), 0)
 
         container.setStyleSheet(
             "#centerArea {"
             f"background:{REF_BG};"
             "}"
-            "#timelinePanel {"
-            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
-            "border-radius:14px;"
-            "}"
+            "#liveSection { background:transparent; }"
             "#screenTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
             "#runStatusBadge {"
             f"background:{STATUS_STYLE['pending'][1]}; color:{STATUS_STYLE['pending'][2]};"
@@ -1873,7 +1911,7 @@ class AgentCreateWidget(QWidget):
         composer = QFrame()
         composer.setObjectName("composerPanel")
         layout = QVBoxLayout(composer)
-        layout.setContentsMargins(14, 10, 14, 8)
+        layout.setContentsMargins(14, 10, 14, 13)
         layout.setSpacing(5)
 
         self.request_edit = QTextEdit()
@@ -1899,18 +1937,12 @@ class AgentCreateWidget(QWidget):
         self.attach_button = ComposerIconButton("attach", "Прикрепить файл")
         self.attach_button.clicked.connect(self.attach_files)
         toolbar.addWidget(self.attach_button)
-        for kind, tip in (
-            ("database", "Источники данных"),
-            ("grid", "Табличные данные"),
-            ("code", "Параметры JSON"),
-        ):
-            toolbar.addWidget(ComposerIconButton(kind, tip))
+        toolbar.addWidget(ComposerIconButton("database", "Источники данных"))
 
         self._init_model_controls()
         toolbar.addSpacing(4)
         toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
-        toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.attach_clear_button = QPushButton("Очистить вложения")
         self.attach_clear_button.clicked.connect(self.clear_attachments)
@@ -1921,36 +1953,6 @@ class AgentCreateWidget(QWidget):
         toolbar.addStretch(1)
         toolbar.addWidget(self._build_launch_split())
         layout.addLayout(toolbar)
-
-        divider_host = QWidget()
-        divider_host.setObjectName("workflowStepDividerHost")
-        divider_row = QHBoxLayout(divider_host)
-        divider_row.setContentsMargins(5, 5, 5, 5)
-        divider_row.setSpacing(0)
-        workflow_divider = QFrame()
-        workflow_divider.setObjectName("workflowStepDivider")
-        workflow_divider.setFixedHeight(1)
-        workflow_divider.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        divider_row.addWidget(workflow_divider)
-        layout.addWidget(divider_host)
-
-        workflow_host = QWidget()
-        workflow_host.setObjectName("workflowStepHost")
-        workflow_host_layout = QHBoxLayout(workflow_host)
-        workflow_host_layout.setContentsMargins(0, 0, 0, 0)
-        workflow_host_layout.setSpacing(0)
-        workflow_host_layout.addStretch(1)
-        self._workflow_step_bar = WorkflowStepBar(self.select_stage, composer)
-        self._workflow_step_bar.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
-        workflow_host_layout.addWidget(self._workflow_step_bar, 18)
-        workflow_host_layout.addStretch(1)
-        layout.addWidget(workflow_host)
 
         composer.setStyleSheet(
             "#composerPanel {"
@@ -1985,9 +1987,6 @@ class AgentCreateWidget(QWidget):
             "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
             "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
             "}"
-            "#workflowStepDividerHost { background:transparent; }"
-            "#workflowStepDivider { background:#1a2740; border:none; }"
-            "#workflowStepHost { background:transparent; }"
         )
         return composer
 
@@ -2031,6 +2030,7 @@ class AgentCreateWidget(QWidget):
         self.refresh_models_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_models_button.setFixedHeight(22)
         self.refresh_models_button.setStyleSheet(MODEL_REFRESH_BUTTON_STYLE)
+        self.refresh_models_button.setVisible(False)
         self._reload_model_options()
 
     def _configure_compact_combo(self, combo: BadgeSelect) -> None:
@@ -2205,19 +2205,13 @@ class AgentCreateWidget(QWidget):
             self._stage_cards[stage_id] = card
 
     def _build_details_panel(self) -> QWidget:
-        """Правая панель плана и текущего шага в одной непрерывной секции."""
+        """Правая панель плана и текущего шага без отдельной карточки-обёртки."""
         panel = QWidget()
         panel.setObjectName("detailsPanel")
         panel.setMinimumWidth(400)
         panel.setMaximumWidth(440)
-        outer = QVBoxLayout(panel)
-        outer.setContentsMargins(8, 16, 14, 16)
-        outer.setSpacing(0)
-
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebarPanel")
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 16, 14, 16)
         layout.setSpacing(12)
 
         plan_header = QLabel("План")
@@ -2272,15 +2266,9 @@ class AgentCreateWidget(QWidget):
         self._dev_container.setVisible(False)
         layout.addWidget(self._dev_container, 1)
 
-        outer.addWidget(sidebar, 1)
-
         panel.setStyleSheet(
             "#detailsPanel {"
             f"background:{REF_BG}; border-left:1px solid #10243c;"
-            "}"
-            "#sidebarPanel {"
-            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
-            "border-radius:14px;"
             "}"
             "#planTitle, #sideTitle { color:#f4f8ff; font-size:18px; font-weight:800; }"
             "#currentStepSection { background:transparent; }"
@@ -2909,6 +2897,15 @@ class AgentCreateWidget(QWidget):
         self._render_plan_stages(agent_spec)
         self._apply_validation(validation)
         self.select_stage(STAGE_RESULT)
+        if self._is_run_cancelled(validation, state):
+            self._hide_human_panel()
+            self._set_stage(
+                STAGE_TRIAL,
+                "warning",
+                "Остановлено пользователем",
+                validation.summary,
+            )
+            return
         if state is None:
             self._hide_human_panel()
             show_info(self, "Агент не запущен", validation.summary)
@@ -2944,6 +2941,18 @@ class AgentCreateWidget(QWidget):
         return getattr(state, "status", None) in {
             AgentRunStatus.PAUSED_FOR_HUMAN,
             AgentRunStatus.PAUSED_FOR_CREDENTIALS,
+        }
+
+    def _is_run_cancelled(self, validation, state: object | None) -> bool:
+        """Проверить, что запуск завершился по кнопке «Остановить»."""
+        if self._cancel_event.is_set():
+            return True
+        if getattr(state, "status", None) == AgentRunStatus.CANCELLED:
+            return True
+        summary = (getattr(validation, "summary", None) or "").strip().lower()
+        return summary in {
+            "выполнение остановлено пользователем.",
+            "пробный запуск остановлен пользователем.",
         }
 
     def _prompt_human(self, agent_spec: AgentSpec, state: object) -> None:

@@ -193,3 +193,28 @@ def test_create_validate_and_run_once_returns_failed_validation_on_builder_timeo
     assert validation_service.calls == []
     assert runtime.run_calls == 0
 
+
+def test_create_validate_and_run_once_prefers_cancel_over_builder_error() -> None:
+    """Если остановка запрошена во время ошибки LLM, показываем отмену, а не 502."""
+    runtime = FakeRuntime()
+    validation_service = FakeValidationService(AgentValidationStatus.PASSED)
+    service = AgentApplicationService(
+        agent_builder=RaisingBuilder(),
+        runtime=runtime,
+        agent_validation_service=validation_service,
+    )
+    cancelled = {"value": False}
+
+    def cancel_callback() -> bool:
+        return cancelled["value"]
+
+    cancelled["value"] = True
+    agent_spec, validation, state = service.create_validate_and_run_once(
+        "Найди совещания",
+        cancel_callback=cancel_callback,
+    )
+
+    assert validation.summary == "Выполнение остановлено пользователем."
+    assert "timed out" not in validation.summary
+    assert state is None
+

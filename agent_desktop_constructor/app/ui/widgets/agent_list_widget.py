@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Event
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -46,6 +46,7 @@ _PAUSED_STATUSES = {
 }
 
 GRID_COLUMNS = 3
+RUN_PANEL_DEFAULT_WIDTH = 300
 MOCK_DESCRIPTION = "описание"
 
 
@@ -174,6 +175,8 @@ class AgentListWidget(QWidget):
         self._cancel_event = Event()
         self._thread: QThread | None = None
         self._worker: CreateFlowWorker | None = None
+        self._splitter: QSplitter | None = None
+        self._splitter_sizes_applied = False
 
         self._build_ui()
         self._wire_signals()
@@ -218,14 +221,36 @@ class AgentListWidget(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
-        splitter.addWidget(self._build_run_panel())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 4)
+        run_panel = self._build_run_panel()
+        run_panel.setMinimumWidth(260)
+        splitter.addWidget(run_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setHandleWidth(1)
+        self._splitter = splitter
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
         self.setStyleSheet("background:#14161c; color:#e6e9ef;")
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._splitter_sizes_applied:
+            QTimer.singleShot(0, self._apply_default_splitter_sizes)
+
+    def _apply_default_splitter_sizes(self) -> None:
+        """Задать стартовую ширину правой панели запуска."""
+        if self._splitter_sizes_applied or self._splitter is None:
+            return
+        total = self._splitter.width()
+        if total <= 0:
+            return
+        handle = self._splitter.handleWidth()
+        right_width = RUN_PANEL_DEFAULT_WIDTH
+        left_width = max(240, total - right_width - handle)
+        self._splitter.setSizes([left_width, right_width])
+        self._splitter_sizes_applied = True
 
     def _build_run_panel(self) -> QWidget:
         """Правая панель: запуск выбранного агента и история его запусков."""

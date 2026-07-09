@@ -57,11 +57,20 @@ class BrowserVisionWorkerProvider:
         self._by_browser: dict[str, BrowserVisionWorker] = {}
         self._active_key: str | None = None
 
-    def get(self, input_data: dict) -> BrowserVisionWorker:
+    def get(
+        self,
+        input_data: dict,
+        *,
+        inherit_user_session: bool = True,
+    ) -> BrowserVisionWorker:
         """Вернуть worker для browser_id/name или последний активный."""
         name = _requested_browser_name(input_data)
         profile_options = _profile_options(input_data)
-        inherited_session = _inherited_user_browser_session(input_data)
+        inherited_session = (
+            _inherited_user_browser_session(input_data)
+            if inherit_user_session
+            else None
+        )
         inherited_session_used = False
         if inherited_session and not name and not _has_explicit_profile(input_data):
             name = str(inherited_session.get("browser_id") or "")
@@ -110,6 +119,33 @@ class BrowserVisionWorkerProvider:
             )
         self._active_key = cache_key
         return worker
+
+    def get_cdp_worker_for_page_source(
+        self,
+        input_data: dict,
+    ) -> tuple[BrowserVisionWorker, dict]:
+        """Вернуть CDP-worker и input для DOM-дампа, не наследуя OS fallback.
+
+        Скриншот/клик могут работать по уже открытому окну без CDP, но HTML/CSS
+        требуют доступа к DOM. Поэтому из прошлых browser.open_browser/navigate
+        берём только browser_id и url, а не активируем OS fallback.
+        """
+        enriched = dict(input_data)
+        session = _inherited_user_browser_session(input_data)
+        if session is not None:
+            if not _requested_browser_name(enriched):
+                browser_id = str(
+                    session.get("browser_id") or session.get("browser_name") or ""
+                ).strip()
+                if browser_id:
+                    enriched["browser_id"] = browser_id
+            if not _has_explicit_profile(enriched):
+                enriched["use_default_profile"] = True
+            if not str(enriched.get("url") or "").strip():
+                url = str(session.get("url") or "").strip()
+                if url:
+                    enriched["url"] = url
+        return self.get(enriched, inherit_user_session=False), enriched
 
 
 class _BaseVisionTool(BaseTool):
@@ -444,8 +480,8 @@ class BrowserDumpPageSourceTool(BaseTool):
     def execute(self, input_data: dict) -> ToolCallResult:
         """Выгрузить исходный код страницы и записать его в файлы папки агента."""
         try:
-            worker = self._provider.get(input_data)
-            payload = worker.dump_page_source(input_data)
+            worker, cdp_input = self._provider.get_cdp_worker_for_page_source(input_data)
+            payload = worker.dump_page_source(cdp_input)
         except BrowserCdpError as exc:
             return ToolCallResult(
                 ok=False,

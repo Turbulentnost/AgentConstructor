@@ -12,11 +12,13 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRuntimeState,
 )
 from agent_desktop_constructor.tools.browser_vision_tools import (
+    BrowserDumpPageSourceTool,
     BrowserNavigateTool,
     BrowserScreenshotTool,
     BrowserVisionWorkerProvider,
     register_browser_vision_tools,
 )
+from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.workers.browser_cdp_worker import BrowserCdpError
@@ -49,6 +51,20 @@ class FakeVisionWorker:
             "html_length": 28,
             "truncated": False,
             "html_summary": "<html><body>hi</body></html>",
+        }
+    def dump_page_source(self, i):
+        self.calls.append(("dump_page_source", i))
+        if self.fail:
+            raise BrowserCdpError("нет браузера")
+        return {
+            "url": i.get("url") or "https://x",
+            "title": "t",
+            "html": "<html><head><style>.a{}</style></head><body>hi</body></html>",
+            "css": ".a{}",
+            "html_length": 62,
+            "css_length": 4,
+            "stylesheet_count": 1,
+            "blocked_stylesheets": [],
         }
     def click(self, i): return self._act("click", i)
     def type_text(self, i): return self._act("type_text", i)
@@ -207,6 +223,77 @@ def test_vision_tool_inherits_open_browser_user_session(monkeypatch) -> None:
     assert created["config"].browser_id == "edge"
     assert created["config"].use_default_profile is True
     assert created["worker"].os_fallback["url"] == "https://vk.com/im"
+
+
+def test_dump_page_source_uses_inherited_browser_without_os_fallback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """DOM-дамп берёт browser_id/url из истории, но не включает OS fallback."""
+    created: dict = {}
+
+    class ProviderWorker(FakeVisionWorker):
+        pass
+
+    def fake_worker(config):
+        created["config"] = config
+        worker = ProviderWorker()
+        created["worker"] = worker
+        return worker
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.find_readable_browser",
+        lambda name: object() if name == "edge" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.resolve_browser_executable",
+        lambda name: "C:/Edge/msedge.exe" if name == "edge" else None,
+    )
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.browser_vision_tools.BrowserVisionWorker",
+        fake_worker,
+    )
+    provider = BrowserVisionWorkerProvider(FakeVisionWorker())
+    tool = BrowserDumpPageSourceTool(provider, AgentWorkspaceResolver(tmp_path))
+
+    result = tool.execute(
+        {
+            "runtime_context": {"agent_id": "agent-1"},
+            "tool_outputs": {
+                "browser.open_browser": {
+                    "browser_id": "edge",
+                    "url": "https://example.com/table",
+                    "profile_mode": "default",
+                    "used_default_profile": True,
+                    "cdp_available": False,
+                }
+            },
+        }
+    )
+
+    assert result.ok is True
+    assert created["config"].browser_id == "edge"
+    assert created["config"].use_default_profile is True
+    assert created["worker"].os_fallback is None
+    assert created["worker"].calls[0] == (
+        "dump_page_source",
+        {
+            "runtime_context": {"agent_id": "agent-1"},
+            "tool_outputs": {
+                "browser.open_browser": {
+                    "browser_id": "edge",
+                    "url": "https://example.com/table",
+                    "profile_mode": "default",
+                    "used_default_profile": True,
+                    "cdp_available": False,
+                }
+            },
+            "browser_id": "edge",
+            "use_default_profile": True,
+            "url": "https://example.com/table",
+        },
+    )
+    assert result.output_data["html_path"].endswith("/page.html")
 
 
 def test_sanitize_collected_data_strips_base64() -> None:

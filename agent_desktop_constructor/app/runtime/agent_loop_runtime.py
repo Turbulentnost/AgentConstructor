@@ -170,6 +170,33 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         del events[:-80]
         self._refresh_context(state, agent_spec, emit_usage=False)
 
+    def _emit_think_progress(
+        self,
+        decision: SupervisorDecision,
+        state: AgentRuntimeState | None = None,
+        agent_spec: AgentSpec | None = None,
+    ) -> None:
+        """Показать в UI отдельный этап THINK перед действием агента."""
+        thought = decision.thought
+        if thought is None:
+            return
+        parts: list[str] = []
+        if (thought.understanding or "").strip():
+            parts.append(f"понял: {thought.understanding.strip()}")
+        if (thought.missing_info or "").strip():
+            parts.append(f"не хватает: {thought.missing_info.strip()}")
+        actions = [a.strip() for a in thought.planned_actions if a and a.strip()]
+        if actions:
+            parts.append("план: " + "; ".join(actions))
+        why = (thought.why or "").strip()
+        if thought.chosen_tool:
+            suffix = f" — {why}" if why else ""
+            parts.append(f"выбираю: {thought.chosen_tool}{suffix}")
+        elif why:
+            parts.append(f"почему: {why}")
+        if parts:
+            self._emit_progress("🤔 THINK: " + " | ".join(parts), state, agent_spec)
+
     def _emit_decision_progress(
         self,
         decision: SupervisorDecision,
@@ -423,6 +450,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             state.variables.setdefault("loop_decisions", []).append(
                 decision.model_dump(mode="json")
             )
+            self._emit_think_progress(decision, state, agent_spec)
             self._emit_decision_progress(decision, state, agent_spec)
             self._refresh_context(state, agent_spec)
 

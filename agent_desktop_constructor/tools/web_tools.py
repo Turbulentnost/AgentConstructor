@@ -611,6 +611,7 @@ def register_web_tools(
     *,
     skip_existing: bool = False,
     worker: BrowserCdpWorker | None = None,
+    workspace_resolver: "AgentWorkspaceResolver | None" = None,
 ) -> None:
     """Зарегистрировать read-only web tools."""
     browser_worker = worker or BrowserCdpWorker()
@@ -632,7 +633,11 @@ def register_web_tools(
         register_browser_vision_tools,
     )
 
-    register_browser_vision_tools(registry, skip_existing=skip_existing)
+    register_browser_vision_tools(
+        registry,
+        skip_existing=skip_existing,
+        workspace_resolver=workspace_resolver,
+    )
 
 
 def _execute_browser_worker(

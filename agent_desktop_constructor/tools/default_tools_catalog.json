@@ -1442,6 +1442,117 @@
       "planner_hint": "Используй, когда нужно выполнить локальную PowerShell-команду над файлами в рабочей папке агента: посмотреть файлы (Get-ChildItem), прочитать небольшой текстовый файл, проверить версию утилиты или запустить скрипт. Команда всегда выполняется только в sandbox папке агента; working_subdir не может выйти наружу. Команды удаления или разрушительной перезаписи (Remove-Item/rm/del/rmdir/Clear-Content/Set-Content и aliases) требуют отдельного подтверждения человека."
     },
     {
+      "name": "code.write_python",
+      "title": "Написать Python-код в папку агента",
+      "description": "Сохраняет Python-код в подпапку code рабочей папки агента (только .py). Не запускает код.",
+      "category": "code",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": {"type": "string", "description": "Исходный код Python для сохранения"},
+          "filename": {"type": "string", "description": "Имя .py файла в папке code (по умолчанию main.py)"}
+        },
+        "required": ["code"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "absolute_path": {"type": "string"},
+          "filename": {"type": "string"},
+          "bytes_written": {"type": "integer"},
+          "lines": {"type": "integer"}
+        }
+      },
+      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent", "meeting_agent"],
+      "examples": [
+        "Записать скрипт разбора выгруженной HTML-таблицы",
+        "Сохранить программу обработки данных перед запуском"
+      ],
+      "planner_hint": "Используй, когда для задачи нужно написать программу на Python (разобрать большую таблицу/HTML, обработать данные, посчитать что-то), а не выполнять это вручную самой LLM. Код сохраняется в подпапку code рабочей папки агента (только .py). После записи запусти его через code.run_python. Для больших таблиц с выгруженной страницы всегда пиши программу-парсер, а не пересказывай данные сам."
+    },
+    {
+      "name": "code.run_python",
+      "title": "Запустить Python-код агента",
+      "description": "Запускает .py файл из подпапки code рабочей папки агента и возвращает stdout/stderr/exit_code. Требует подтверждения человека перед запуском.",
+      "category": "code",
+      "side_effect_level": "create_draft",
+      "execution_mode": "local",
+      "requires_human_approval": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filename": {"type": "string", "description": "Имя .py файла в папке code (по умолчанию main.py)"},
+          "code": {"type": "string", "description": "Необязательный inline-код: будет сохранён и запущен"},
+          "args": {"type": "array", "items": {"type": "string"}, "description": "Аргументы командной строки"},
+          "timeout_seconds": {"type": "integer", "description": "Таймаут выполнения, максимум 600 секунд"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {"type": "boolean"},
+          "exit_code": {"type": "integer"},
+          "stdout": {"type": "string"},
+          "stderr": {"type": "string"},
+          "stdout_summary": {"type": "string"},
+          "stderr_summary": {"type": "string"},
+          "script": {"type": "string"},
+          "cwd": {"type": "string"},
+          "timed_out": {"type": "boolean"}
+        }
+      },
+      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent", "meeting_agent"],
+      "examples": [
+        "Запустить написанный скрипт разбора таблицы и получить результат",
+        "Выполнить программу обработки выгруженных данных"
+      ],
+      "planner_hint": "Запускает .py файл из папки code в рабочей директории агента (cwd = папка агента, поэтому скрипт видит выгруженные файлы, например page_dumps/.../page.html). Можно передать inline code — он будет сохранён и запущен. ВСЕГДА требует подтверждения человека перед запуском. Если скрипт завершился с ошибкой (см. stderr) — перепиши код через code.write_python и запусти снова. Используй для реальной обработки данных вместо ручного пересказа больших таблиц."
+    },
+    {
+      "name": "browser.dump_page_source",
+      "title": "Выгрузить HTML+CSS страницы в файлы",
+      "description": "Сохраняет полный HTML и собранный CSS текущей вкладки браузера в файлы рабочей папки агента для последующего анализа кодом.",
+      "category": "browser",
+      "side_effect_level": "create_draft",
+      "execution_mode": "browser_worker",
+      "requires_human_approval": false,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "description": "Необязательный URL: перейти перед выгрузкой"},
+          "dump_name": {"type": "string", "description": "Имя подпапки дампа (по умолчанию из заголовка/URL)"},
+          "browser_id": {"type": "string"},
+          "browser_name": {"type": "string"},
+          "use_default_profile": {"type": "boolean"}
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"},
+          "title": {"type": "string"},
+          "html_path": {"type": "string"},
+          "css_path": {"type": "string"},
+          "dump_dir": {"type": "string"},
+          "html_length": {"type": "integer"},
+          "css_length": {"type": "integer"},
+          "stylesheet_count": {"type": "integer"},
+          "blocked_stylesheets": {"type": "array"},
+          "html_summary": {"type": "string"}
+        }
+      },
+      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent"],
+      "examples": [
+        "Выгрузить HTML и CSS страницы с большой таблицей для анализа программой",
+        "Сохранить исходный код страницы, чтобы разобрать его написанным скриптом"
+      ],
+      "planner_hint": "Используй, когда с открытой страницы нужно выгрузить большой объём данных (например большую таблицу) для последующего разбора кодом, а не пересказывать вручную. Сохраняет page.html и styles.css в page_dumps/<имя>/ рабочей папки агента и возвращает пути. Требует CDP-доступ к DOM: OS fallback/обычное окно без CDP не позволяют получить HTML/CSS. Если до этого был browser.open_browser или browser.navigate с browser_id, инструмент сам унаследует browser_id/url и попробует тот же default-profile через CDP, но НЕ будет наследовать OS fallback. Для авторизованной страницы используй тот же browser_id и use_default_profile=true; если CDP не поднялся из-за уже открытого браузера, спроси человека закрыть окно и открой страницу через browser.navigate с тем же browser_id/use_default_profile=true. Если авторизация не нужна, можно открыть URL через browser.navigate без use_default_profile. После выгрузки напиши программу-парсер (code.write_python) и запусти её (code.run_python) — она прочитает файл по возвращённому html_path."
+    },
+    {
       "name": "agent.wait",
       "title": "Пауза агента",
       "description": "Откладывает работу агента на заданное число секунд.",

@@ -171,6 +171,66 @@ class BrowserVisionWorker:
                 summary_chars=summary_chars,
             )
 
+    def dump_page_source(self, input_data: dict) -> dict:
+        """Выгрузить полный HTML и собранный CSS текущей вкладки (для анализа)."""
+        if self._os_fallback_active:
+            raise BrowserCdpError(
+                "Выгрузка HTML/CSS требует CDP-доступа к DOM, а сейчас активен "
+                "OS fallback. Нельзя получить DOM из обычного окна без CDP. "
+                "Если нужна авторизованная страница — попроси человека закрыть этот "
+                "браузер и открой её через browser.navigate с тем же browser_id и "
+                "use_default_profile=true, чтобы CDP поднялся на штатном профиле. "
+                "Если авторизация не нужна — открой URL через browser.navigate без "
+                "use_default_profile и повтори browser.dump_page_source.",
+                output_data=self.profile_output(
+                    cdp_available=False,
+                    fallback_used=True,
+                    fallback_reason="page_source_requires_cdp",
+                ),
+            )
+        url = str(input_data.get("url") or "").strip()
+        try:
+            with self._session() as session:
+                if url:
+                    self._navigate(session, _require_http_url(url))
+                session.send("Runtime.enable")
+                payload = session.evaluate(_page_source_script()) or {}
+                if not isinstance(payload, dict):
+                    raise BrowserCdpError("CDP не вернул исходный код страницы.")
+                html = str(payload.get("html") or "")
+                css = str(payload.get("css") or "")
+                return {
+                    "url": payload.get("url") or session.evaluate("location.href"),
+                    "title": payload.get("title")
+                    or session.evaluate("document.title")
+                    or "",
+                    "html": html,
+                    "css": css,
+                    "html_length": len(html),
+                    "css_length": len(css),
+                    "stylesheet_count": int(payload.get("stylesheet_count") or 0),
+                    "blocked_stylesheets": payload.get("blocked_stylesheets") or [],
+                    **self.profile_output(cdp_available=True),
+                }
+        except BrowserCdpEndpointUnavailable as exc:
+            raise BrowserCdpError(
+                "Не удалось получить HTML/CSS: для выбранного браузера/профиля не "
+                "поднялся CDP endpoint. DOM-выгрузка невозможна через OS fallback. "
+                "Для авторизованной страницы закрой уже открытый браузер и открой "
+                "его через browser.navigate с browser_id/use_default_profile=true; "
+                "для неавторизованной страницы используй browser.navigate без "
+                "use_default_profile и затем повтори browser.dump_page_source.",
+                output_data={
+                    **self.profile_output(
+                        cdp_available=False,
+                        fallback_used=False,
+                        fallback_reason="page_source_cdp_unavailable",
+                    ),
+                    "url": url,
+                    "warning": str(exc),
+                },
+            ) from exc
+
     def click(self, input_data: dict) -> dict:
         """Кликнуть по координатам (x, y) и вернуть новый скриншот."""
         x = _require_number(input_data.get("x"), "x")
@@ -794,6 +854,42 @@ def _html_script(max_chars: int, summary_chars: int) -> str:
     html_summary: htmlSummary
   }};
 }})()
+"""
+
+
+def _page_source_script() -> str:
+    """JS expression: полный outerHTML + собранный CSS всех доступных stylesheet."""
+    return """
+(() => {
+  const root = document.documentElement;
+  const html = root ? (root.outerHTML || '') : '';
+  const sheets = Array.from(document.styleSheets || []);
+  const blocked = [];
+  let css = '';
+  sheets.forEach((sheet) => {
+    const origin = sheet.href || 'inline';
+    try {
+      const rules = sheet.cssRules;
+      if (!rules) return;
+      let text = '';
+      for (let i = 0; i < rules.length; i++) {
+        text += rules[i].cssText + '\\n';
+      }
+      css += '/* ' + origin + ' */\\n' + text + '\\n';
+    } catch (e) {
+      blocked.push(origin);
+      css += '/* ' + origin + ' (недоступно из-за CORS: ' + e.name + ') */\\n';
+    }
+  });
+  return {
+    url: location.href,
+    title: document.title || '',
+    html,
+    css,
+    stylesheet_count: sheets.length,
+    blocked_stylesheets: blocked
+  };
+})()
 """
 
 

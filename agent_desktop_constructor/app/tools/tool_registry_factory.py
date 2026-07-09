@@ -8,6 +8,9 @@ from agent_desktop_constructor.app.tools.llm_analysis_tools import (
     register_llm_analysis_tools,
 )
 from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
+from agent_desktop_constructor.tools.code_execution_tools import (
+    register_code_execution_tools,
+)
 from agent_desktop_constructor.tools.com_backed_tools import register_outlook_com_tools
 from agent_desktop_constructor.tools.excel_tools import register_excel_tools
 from agent_desktop_constructor.tools.fake_task_control_tools import (
@@ -36,9 +39,12 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             OneCReadOnlyWorker(),
             skip_existing=True,
         )
-        register_web_tools(registry, skip_existing=True)
+        register_web_tools(
+            registry, skip_existing=True, workspace_resolver=workspace_resolver
+        )
         register_excel_tools(registry, workspace_resolver, skip_existing=True)
         register_powershell_tools(registry, workspace_resolver, skip_existing=True)
+        register_code_execution_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 
@@ -47,7 +53,9 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
         register_outlook_com_tools(registry, worker)
         register_onec_readonly_tools(registry, OneCReadOnlyWorker())
         register_report_tools(registry, skip_existing=True)
-        register_web_tools(registry, skip_existing=True)
+        register_web_tools(
+            registry, skip_existing=True, workspace_resolver=workspace_resolver
+        )
         if config.use_llm_planner:
             register_llm_analysis_tools(
                 registry,
@@ -57,6 +65,7 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
         _apply_com_timeout(registry, config)
         register_excel_tools(registry, workspace_resolver, skip_existing=True)
         register_powershell_tools(registry, workspace_resolver, skip_existing=True)
+        register_code_execution_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 
@@ -68,9 +77,12 @@ def build_tool_registry(config: AppConfig) -> ToolRegistry:
             OneCReadOnlyWorker(),
             skip_existing=True,
         )
-        register_web_tools(registry, skip_existing=True)
+        register_web_tools(
+            registry, skip_existing=True, workspace_resolver=workspace_resolver
+        )
         register_excel_tools(registry, workspace_resolver, skip_existing=True)
         register_powershell_tools(registry, workspace_resolver, skip_existing=True)
+        register_code_execution_tools(registry, workspace_resolver, skip_existing=True)
         register_wait_tool(registry, skip_existing=True)
         return registry
 

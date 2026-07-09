@@ -21,6 +21,21 @@ class SupervisorDecisionType(StrEnum):
     FINISH_FAILED = "finish_failed"
 
 
+class AgentThought(BaseModel):
+    """Структурированный результат обязательного этапа THINK перед действием.
+
+    Модель обязана СНАЧАЛА обдумать шаг и вернуть этот блок: что понято, чего не
+    хватает, какие действия планируются и какой инструмент нужен и почему. Только
+    после этого Runtime разрешает ACT (вызов инструмента/завершение).
+    """
+
+    understanding: str = ""
+    missing_info: str = ""
+    planned_actions: list[str] = Field(default_factory=list)
+    chosen_tool: str | None = None
+    why: str = ""
+
+
 class SupervisorToolCallProposal(BaseModel):
     """Предложение Supervisor вызвать дополнительный tool через Runtime."""
 
@@ -42,6 +57,7 @@ class SupervisorDecision(BaseModel):
 
     decision_type: SupervisorDecisionType
     reason: str
+    thought: AgentThought | None = None
     next_node_id: str | None = None
     tool_call: SupervisorToolCallProposal | None = None
     human_question: str | None = None

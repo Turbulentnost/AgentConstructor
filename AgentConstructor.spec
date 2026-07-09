@@ -20,6 +20,8 @@ hiddenimports = [
     "agent_desktop_constructor.tools.web_tools",
     "agent_desktop_constructor.tools.excel_tools",
     "agent_desktop_constructor.tools.wait_tool",
+    "agent_desktop_constructor.tools.powershell_tools",
+    "agent_desktop_constructor.tools.code_execution_tools",
     "agent_desktop_constructor.tools.agent_workspace",
     "agent_desktop_constructor.tools.attachment_reader",
     "openpyxl",

@@ -8,11 +8,18 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+
 from agent_desktop_constructor.core.models.tooling import (
     ToolCallResult,
     ToolDefinition,
     ToolExecutionMode,
     ToolSideEffectLevel,
+)
+from agent_desktop_constructor.tools.agent_workspace import (
+    AgentWorkspaceResolver,
+    WorkspaceError,
 )
 from agent_desktop_constructor.tools.base import BaseTool
 from agent_desktop_constructor.tools.registry import ToolRegistry
@@ -371,6 +378,145 @@ class BrowserGetPageHtmlTool(_BaseVisionTool):
         return "get_page_html"
 
 
+_PAGE_SOURCE_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string"},
+        "title": {"type": "string"},
+        "html_path": {"type": "string"},
+        "css_path": {"type": "string"},
+        "html_length": {"type": "integer"},
+        "css_length": {"type": "integer"},
+        "stylesheet_count": {"type": "integer"},
+        "blocked_stylesheets": {"type": "array"},
+        "html_summary": {"type": "string"},
+        "dump_dir": {"type": "string"},
+    },
+}
+
+
+def _safe_dump_name(value: str) -> str:
+    """Сделать безопасное имя подпапки дампа из URL/заголовка."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("_")[:48]
+    return cleaned or "page"
+
+
+class BrowserDumpPageSourceTool(BaseTool):
+    """Выгружает HTML и CSS открытой страницы в файлы рабочей папки агента."""
+
+    def __init__(
+        self,
+        provider: BrowserVisionWorkerProvider,
+        resolver: AgentWorkspaceResolver,
+    ) -> None:
+        """Создать инструмент browser.dump_page_source."""
+        super().__init__(
+            ToolDefinition(
+                name="browser.dump_page_source",
+                title="Выгрузить HTML+CSS страницы в файлы",
+                description=(
+                    "Сохраняет полный HTML и собранный CSS текущей вкладки браузера "
+                    "в файлы рабочей папки агента (page_dumps/<имя>/page.html и "
+                    "styles.css) для последующего анализа кодом. Возвращает пути к "
+                    "файлам и краткое резюме, а не весь текст — чтобы не раздувать "
+                    "контекст. Дальше содержимое разбирает написанная моделью "
+                    "программа (code.write_python + code.run_python), а не сама LLM."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.BROWSER_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=60,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "dump_name": {"type": "string"},
+                        **_BROWSER_INPUT_PROPERTIES,
+                    },
+                },
+                output_schema=_PAGE_SOURCE_OUTPUT,
+            )
+        )
+        self._provider = provider
+        self._resolver = resolver
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        """Выгрузить исходный код страницы и записать его в файлы папки агента."""
+        try:
+            worker = self._provider.get(input_data)
+            payload = worker.dump_page_source(input_data)
+        except BrowserCdpError as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="BROWSER_CDP_ERROR",
+                error_message=str(exc),
+                output_data=exc.output_data,
+            )
+        except Exception as exc:  # noqa: BLE001 - worker изолирует ошибки браузера
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="BROWSER_VISION_ERROR",
+                error_message=str(exc),
+            )
+
+        try:
+            workspace = self._resolver.for_agent(
+                self._resolver.agent_id_from_input(input_data)
+            )
+        except WorkspaceError as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="WORKSPACE_ERROR",
+                error_message=str(exc),
+            )
+
+        html = str(payload.get("html") or "")
+        css = str(payload.get("css") or "")
+        base_name = str(input_data.get("dump_name") or "").strip() or _safe_dump_name(
+            str(payload.get("title") or payload.get("url") or "page")
+        )
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dump_dir = (workspace.directory / "page_dumps" / f"{base_name}_{stamp}").resolve()
+        try:
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            (dump_dir / "page.html").write_text(html, encoding="utf-8")
+            (dump_dir / "styles.css").write_text(css, encoding="utf-8")
+        except OSError as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="DUMP_WRITE_ERROR",
+                error_message=str(exc),
+            )
+
+        rel_dir = dump_dir.relative_to(workspace.directory).as_posix()
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data={
+                "url": payload.get("url"),
+                "title": payload.get("title"),
+                "html_path": f"{rel_dir}/page.html",
+                "css_path": f"{rel_dir}/styles.css",
+                "dump_dir": rel_dir,
+                "html_length": payload.get("html_length"),
+                "css_length": payload.get("css_length"),
+                "stylesheet_count": payload.get("stylesheet_count"),
+                "blocked_stylesheets": payload.get("blocked_stylesheets") or [],
+                "html_summary": html[:2000],
+                "note": (
+                    "HTML и CSS сохранены в файлы. Не пересказывай большие таблицы "
+                    "сам — напиши программу (code.write_python) для разбора "
+                    f"{rel_dir}/page.html и запусти её (code.run_python)."
+                ),
+            },
+        )
+
+
 class BrowserClickTool(_BaseVisionTool):
     """Кликнуть по координатам на странице (координаты определяет LLM по скриншоту)."""
 
@@ -517,10 +663,11 @@ def register_browser_vision_tools(
     *,
     skip_existing: bool = False,
     worker: BrowserVisionWorker | None = None,
+    workspace_resolver: AgentWorkspaceResolver | None = None,
 ) -> None:
     """Зарегистрировать vision-инструменты браузера с общим worker."""
     provider = BrowserVisionWorkerProvider(worker or BrowserVisionWorker())
-    tools = [
+    tools: list[BaseTool] = [
         BrowserNavigateTool(provider),
         BrowserScreenshotTool(provider),
         BrowserGetPageHtmlTool(provider),
@@ -529,6 +676,8 @@ def register_browser_vision_tools(
         BrowserPressKeyTool(provider),
         BrowserScrollTool(provider),
     ]
+    if workspace_resolver is not None:
+        tools.append(BrowserDumpPageSourceTool(provider, workspace_resolver))
     for tool in tools:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue

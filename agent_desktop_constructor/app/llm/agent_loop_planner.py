@@ -55,9 +55,23 @@ class LLMAgentLoopPlanner:
             )
         )
         decision = _parse_agent_loop_decision(response.content, self._tools_catalog)
+        _require_thought(decision)
         if decision.tool_call is not None:
             self._tools_catalog.validate_tool_names([decision.tool_call.tool_name])
         return decision
+
+
+def _require_thought(decision: SupervisorDecision) -> None:
+    """Обязать LLM пройти этап THINK перед действием (иначе повтор через runtime)."""
+    thought = decision.thought
+    if thought is None or not (thought.understanding or "").strip():
+        raise LLMInvalidJSONError(
+            "Пропущен обязательный этап THINK: сначала верни поле thought с "
+            "непустым understanding (что понял), а также missing_info (чего не "
+            "хватает), planned_actions (что планируешь), chosen_tool и why (какой "
+            "инструмент нужен сейчас и почему). Только ПОСЛЕ этого выбирай "
+            "decision_type."
+        )
 
 
 _VALID_DECISION_TYPES = {member.value for member in SupervisorDecisionType}
@@ -131,6 +145,7 @@ def _normalize_decision_payload(
     if not isinstance(payload, dict):
         return payload
     payload = dict(payload)
+    payload = _normalize_thought(payload)
     decision_type = payload.get("decision_type")
 
     if (
@@ -160,6 +175,60 @@ def _normalize_decision_payload(
                 "reason": (payload.get("reason") or f"Вызвать {tool_name}"),
             }
 
+    return payload
+
+
+_THOUGHT_KEYS = ("thought", "thinking", "think", "analysis", "reasoning")
+_THOUGHT_FIELD_ALIASES = {
+    "understanding": "understanding",
+    "understood": "understanding",
+    "what_i_understood": "understanding",
+    "summary": "understanding",
+    "missing_info": "missing_info",
+    "missing": "missing_info",
+    "what_is_missing": "missing_info",
+    "gaps": "missing_info",
+    "planned_actions": "planned_actions",
+    "plan": "planned_actions",
+    "actions": "planned_actions",
+    "next_steps": "planned_actions",
+    "chosen_tool": "chosen_tool",
+    "tool": "chosen_tool",
+    "next_tool": "chosen_tool",
+    "why": "why",
+    "reason": "why",
+    "rationale": "why",
+}
+
+
+def _normalize_thought(payload: dict) -> dict:
+    """Привести блок THINK к полям AgentThought, устойчиво к синонимам LLM."""
+    raw = None
+    for key in _THOUGHT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            raw = value
+            break
+        if isinstance(value, str) and value.strip() and "thought" not in payload:
+            raw = {"understanding": value}
+            break
+    if raw is None:
+        return payload
+    normalized: dict = {}
+    for key, value in raw.items():
+        field = _THOUGHT_FIELD_ALIASES.get(str(key).strip().casefold())
+        if field is None:
+            continue
+        if field == "planned_actions":
+            if isinstance(value, str):
+                normalized[field] = [value] if value.strip() else []
+            elif isinstance(value, list):
+                normalized[field] = [str(item) for item in value if str(item).strip()]
+        elif field == "chosen_tool":
+            normalized[field] = str(value).strip() or None if value is not None else None
+        else:
+            normalized[field] = str(value)
+    payload["thought"] = normalized
     return payload
 
 

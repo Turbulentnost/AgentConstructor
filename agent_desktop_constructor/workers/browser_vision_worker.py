@@ -171,6 +171,38 @@ class BrowserVisionWorker:
                 summary_chars=summary_chars,
             )
 
+    def dump_page_source(self, input_data: dict) -> dict:
+        """Выгрузить полный HTML и собранный CSS текущей вкладки (для анализа)."""
+        if self._os_fallback_active:
+            raise BrowserCdpError(
+                "Выгрузка HTML/CSS требует CDP-доступа к DOM, а сейчас активен "
+                "OS fallback. Открой страницу в automation-профиле (browser.navigate "
+                "без use_default_profile), затем повтори browser.dump_page_source."
+            )
+        url = str(input_data.get("url") or "").strip()
+        with self._session() as session:
+            if url:
+                self._navigate(session, _require_http_url(url))
+            session.send("Runtime.enable")
+            payload = session.evaluate(_page_source_script()) or {}
+            if not isinstance(payload, dict):
+                raise BrowserCdpError("CDP не вернул исходный код страницы.")
+            html = str(payload.get("html") or "")
+            css = str(payload.get("css") or "")
+            return {
+                "url": payload.get("url") or session.evaluate("location.href"),
+                "title": payload.get("title")
+                or session.evaluate("document.title")
+                or "",
+                "html": html,
+                "css": css,
+                "html_length": len(html),
+                "css_length": len(css),
+                "stylesheet_count": int(payload.get("stylesheet_count") or 0),
+                "blocked_stylesheets": payload.get("blocked_stylesheets") or [],
+                **self.profile_output(cdp_available=True),
+            }
+
     def click(self, input_data: dict) -> dict:
         """Кликнуть по координатам (x, y) и вернуть новый скриншот."""
         x = _require_number(input_data.get("x"), "x")
@@ -794,6 +826,42 @@ def _html_script(max_chars: int, summary_chars: int) -> str:
     html_summary: htmlSummary
   }};
 }})()
+"""
+
+
+def _page_source_script() -> str:
+    """JS expression: полный outerHTML + собранный CSS всех доступных stylesheet."""
+    return """
+(() => {
+  const root = document.documentElement;
+  const html = root ? (root.outerHTML || '') : '';
+  const sheets = Array.from(document.styleSheets || []);
+  const blocked = [];
+  let css = '';
+  sheets.forEach((sheet) => {
+    const origin = sheet.href || 'inline';
+    try {
+      const rules = sheet.cssRules;
+      if (!rules) return;
+      let text = '';
+      for (let i = 0; i < rules.length; i++) {
+        text += rules[i].cssText + '\\n';
+      }
+      css += '/* ' + origin + ' */\\n' + text + '\\n';
+    } catch (e) {
+      blocked.push(origin);
+      css += '/* ' + origin + ' (недоступно из-за CORS: ' + e.name + ') */\\n';
+    }
+  });
+  return {
+    url: location.href,
+    title: document.title || '',
+    html,
+    css,
+    stylesheet_count: sheets.length,
+    blocked_stylesheets: blocked
+  };
+})()
 """
 
 

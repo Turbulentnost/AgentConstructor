@@ -90,8 +90,10 @@ def build_agent_loop_prompt(
 Ты не пишешь и не запускаешь код напрямую в своём ответе. Но если задача требует
 обработки данных, ты можешь ВЫБРАТЬ действия code.write_python (написать программу
 на Python) и code.run_python (запустить её). Runtime лишь проверит, что код лежит
-и исполняется внутри папки code рабочей директории агента, и спросит подтверждение
-перед запуском.
+и исполняется внутри папки code рабочей директории агента. Для code.run_python
+в sandbox есть бюджет автозапусков (несколько подряд без паузы человеку) — чтобы
+ты мог чинить stderr через rewrite→rerun; когда бюджет исчерпан, Runtime спросит
+подтверждение.
 
 Правила:
 - Выбирай tool_name только из списка доступных инструментов. Не выдумывай новые.
@@ -108,6 +110,9 @@ def build_agent_loop_prompt(
   final_message и criteria_evidence по пунктам goal_checklist (criterion +
   evidence из collected_data / observation_history). НЕ используй шаблонные
   или выдуманные факты — только реальные собранные данные.
+- Поле confidence: ставь честную оценку 0..1. Если уверенность ниже порога
+  агента (low_confidence_threshold), Runtime отклонит finish_success — тогда
+  собери ещё данные или спроси человека (ask_human).
 - Смотри observation_history: там не только последний вызов tool, но и предыдущие
   результаты/ошибки того же инструмента. В executed_steps при ошибке читай
   error_message целиком.
@@ -342,36 +347,41 @@ def _recent_reasoning(runtime_state: AgentRuntimeState, limit: int = 8) -> list[
     decisions = runtime_state.variables.get("loop_decisions", [])
     if not isinstance(decisions, list):
         return []
-    tool_results = list(runtime_state.tool_results)
-    recent: list[dict] = []
-    tool_result_offset = max(0, len(tool_results) - limit)
-    for index, item in enumerate(decisions[-limit:]):
+    # Хронологически сопоставляем call_tool → следующий результат того же tool.
+    remaining_results = list(runtime_state.tool_results)
+    paired: list[dict] = []
+    for item in decisions:
         if not isinstance(item, dict):
             continue
         tool_call = item.get("tool_call") or {}
+        tool_name = tool_call.get("tool_name")
         outcome = None
-        result_index = tool_result_offset + index
-        if 0 <= result_index < len(tool_results):
-            record = tool_results[result_index]
-            outcome = {
-                "ok": record.ok,
-                "error_message": (record.error_message or "")[:300]
-                if not record.ok
-                else None,
-                "summary": _summarize_output(record.output_data, max_chars=200),
-            }
+        if tool_name:
+            for index, record in enumerate(remaining_results):
+                if record.tool_name != tool_name:
+                    continue
+                outcome = {
+                    "ok": record.ok,
+                    "error_message": (record.error_message or "")[:300]
+                    if not record.ok
+                    else None,
+                    "summary": _summarize_output(record.output_data, max_chars=200),
+                }
+                del remaining_results[index]
+                break
         thought = item.get("thought") or {}
-        recent.append(
+        paired.append(
             {
                 "decision": item.get("decision_type"),
-                "tool": tool_call.get("tool_name"),
+                "tool": tool_name,
                 "input": tool_call.get("input_data"),
                 "reason": str(item.get("reason") or "")[:300],
                 "understanding": str(thought.get("understanding") or "")[:200],
+                "confidence": item.get("confidence"),
                 "outcome": outcome,
             }
         )
-    return recent
+    return paired[-limit:]
 
 
 def _sanitize_observation_history(history: object) -> list[dict]:

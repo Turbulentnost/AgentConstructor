@@ -71,7 +71,8 @@ class SupervisorDecision(BaseModel):
     final_message: str | None = None
     criteria_evidence: list[CriteriaEvidence] = Field(default_factory=list)
     checklist_updates: list[ChecklistUpdate] = Field(default_factory=list)
-    confidence: float = Field(default=0.0, ge=0, le=1)
+    # None = модель не указала уверенность (не блокируем finish).
+    confidence: float | None = Field(default=None, ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)
 
     @field_validator("reason")

@@ -58,6 +58,9 @@ VISION_INTERACTION_TOOLS = {
     "browser.scroll",
 }
 
+CODE_RUN_PYTHON_TOOL = "code.run_python"
+DEFAULT_CODE_RUN_AUTO_APPROVE_BUDGET = 3
+
 
 class LLMAgentLoopRuntime(SimpleAgentRuntime):
     """Runtime, в котором LLM сама выбирает инструменты, смотрит результат и решает дальше."""
@@ -246,6 +249,11 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         )
         state.variables.setdefault("tool_outputs", {})
         state.variables.setdefault("tool_output_history", [])
+        state.variables.setdefault(
+            "code_run_auto_approve_budget",
+            DEFAULT_CODE_RUN_AUTO_APPROVE_BUDGET,
+        )
+        state.variables.setdefault("code_run_approved_files", [])
         ensure_goal_checklist(agent_spec, state.variables)
         self._refresh_context(state, agent_spec)
         self._create_run(agent_spec, state)
@@ -330,18 +338,30 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._refresh_context(state, agent_spec)
 
         if pending_tool is not None and approved:
-            signature = _action_signature(
-                pending_tool["tool_name"], pending_tool.get("input_data", {})
-            )
-            state.variables.setdefault("loop_executed_signatures", []).append(signature)
+            proposed_input = pending_tool.get("input_data", {})
+            if pending_tool["tool_name"] == CODE_RUN_PYTHON_TOOL:
+                self._remember_code_run_approval(state, proposed_input)
             self._execute_loop_tool(
                 agent_spec=agent_spec,
                 state=state,
                 tool_name=pending_tool["tool_name"],
-                proposed_input=pending_tool.get("input_data", {}),
+                proposed_input=proposed_input,
                 reason=pending_tool.get("reason", "Подтверждено человеком"),
                 human_approved=True,
             )
+            if (
+                state.tool_results
+                and state.tool_results[-1].ok
+                and state.tool_results[-1].tool_name == pending_tool["tool_name"]
+            ):
+                signature = _action_signature(
+                    pending_tool["tool_name"], proposed_input
+                )
+                signatures = state.variables.setdefault(
+                    "loop_executed_signatures", []
+                )
+                if signature not in signatures:
+                    signatures.append(signature)
             if state.status in {
                 AgentRunStatus.PAUSED_FOR_HUMAN,
                 AgentRunStatus.PAUSED_FOR_CREDENTIALS,
@@ -534,6 +554,11 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     or "Ранее был критичный пустой/битый результат инструмента. "
                     "Сначала исправь наблюдение или дай criteria_evidence."
                 )
+            confidence_reject = self._low_confidence_finish_reject(
+                agent_spec, decision
+            )
+            if confidence_reject is not None:
+                reject_reason = reject_reason or confidence_reject
             if reject_reason is not None:
                 if reject_reason not in repeat_notes:
                     repeat_notes.append(reject_reason)
@@ -841,6 +866,64 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         if hasattr(tool, "cancel_check"):
             tool.cancel_check = self._is_cancel_requested
 
+    def _low_confidence_finish_reject(
+        self,
+        agent_spec: AgentSpec,
+        decision: SupervisorDecision,
+    ) -> str | None:
+        """Запретить finish_success при явно низкой уверенности модели."""
+        if decision.confidence is None:
+            return None
+        threshold = float(agent_spec.runtime_limits.low_confidence_threshold)
+        if decision.confidence >= threshold:
+            return None
+        return (
+            f"confidence={decision.confidence:.2f} ниже порога "
+            f"{threshold:.2f}. Не завершай задачу: собери ещё данные или верни "
+            "ask_human с конкретным вопросом."
+        )
+
+    def _code_run_filename(self, proposed_input: dict) -> str:
+        """Имя скрипта для бюджета автоподтверждения code.run_python."""
+        name = str(proposed_input.get("filename") or "main.py").strip()
+        return name or "main.py"
+
+    def _remember_code_run_approval(
+        self,
+        state: AgentRuntimeState,
+        proposed_input: dict,
+    ) -> None:
+        """Запомнить файл, который человек (или budget) уже разрешил запускать."""
+        approved = state.variables.setdefault("code_run_approved_files", [])
+        if not isinstance(approved, list):
+            approved = []
+            state.variables["code_run_approved_files"] = approved
+        filename = self._code_run_filename(proposed_input)
+        if filename not in approved:
+            approved.append(filename)
+
+    def _try_auto_approve_code_run(
+        self,
+        state: AgentRuntimeState,
+        proposed_input: dict,
+    ) -> bool:
+        """Автоподтвердить code.run_python в пределах бюджета sandbox-run."""
+        filename = self._code_run_filename(proposed_input)
+        approved = state.variables.setdefault("code_run_approved_files", [])
+        if isinstance(approved, list) and filename in approved:
+            return True
+        budget = int(state.variables.get("code_run_auto_approve_budget", 0) or 0)
+        if budget <= 0:
+            return False
+        state.variables["code_run_auto_approve_budget"] = budget - 1
+        self._remember_code_run_approval(state, proposed_input)
+        self._emit_progress(
+            f"⚡ code.run_python «{filename}» автоподтверждён "
+            f"(осталось автозапусков: {budget - 1})",
+            state,
+        )
+        return True
+
     def _execute_loop_tool(
         self,
         agent_spec: AgentSpec,
@@ -851,6 +934,12 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         human_approved: bool = False,
     ) -> None:
         """Исполнить инструмент через ToolGateway и записать результат для LLM."""
+        if (
+            not human_approved
+            and tool_name == CODE_RUN_PYTHON_TOOL
+            and self._try_auto_approve_code_run(state, proposed_input)
+        ):
+            human_approved = True
         input_data = {
             **proposed_input,
             "llm_reason": reason,

@@ -1,18 +1,31 @@
 """Тесты LLMAgentLoopRuntime: LLM сама ведёт инструменты и делает вывод."""
 
+from pathlib import Path
+
 from agent_desktop_constructor.app.llm.errors import LLMCancelledError
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
 )
-from agent_desktop_constructor.app.runtime.agent_loop_runtime import LLMAgentLoopRuntime
+from agent_desktop_constructor.app.runtime.agent_loop_runtime import (
+    DEFAULT_CODE_RUN_AUTO_APPROVE_BUDGET,
+    LLMAgentLoopRuntime,
+)
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
-from agent_desktop_constructor.core.models.agent_spec import AgentSpec
+from agent_desktop_constructor.core.models.agent_spec import (
+    AgentActionLevel,
+    AgentSpec,
+    AgentToolPermission,
+)
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
 )
+from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
 from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
+from agent_desktop_constructor.tools.code_execution_tools import (
+    register_code_execution_tools,
+)
 from agent_desktop_constructor.tools.fake_task_control_tools import (
     register_fake_task_control_tools,
 )
@@ -536,3 +549,137 @@ def test_llm_loop_dangerous_tool_requires_human_approval() -> None:
     assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN
     assert state.pending_human_approval is not None
     assert state.pending_human_approval.tool_name == "email.send"
+
+
+def _with_code_run_tool(agent_spec: AgentSpec) -> AgentSpec:
+    """Добавить code.run_python в разрешения агента."""
+    tools = list(agent_spec.tools)
+    if not any(tool.tool_name == "code.run_python" for tool in tools):
+        tools.append(
+            AgentToolPermission(
+                tool_name="code.run_python",
+                action_level=AgentActionLevel.CREATE_DRAFT,
+                requires_human_approval=True,
+                allowed=True,
+            )
+        )
+    return agent_spec.model_copy(update={"tools": tools})
+
+
+def test_finish_success_rejected_on_low_confidence() -> None:
+    """Явно низкая confidence блокирует finish_success."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+    low = _finish_success(
+        "Сомневаюсь",
+        "Календарь вроде прочитан, но уверенность низкая для финального ответа.",
+        agent_spec,
+    ).model_copy(update={"confidence": 0.1})
+    high = _finish_success(
+        "Уверен",
+        "Календарь прочитан, одно совещание, можно планировать фокус-блоки.",
+        agent_spec,
+    ).model_copy(update={"confidence": 0.9})
+    planner = ScriptedPlanner(low, high)
+    runtime = make_runtime(planner)
+
+    state = runtime.run(agent_spec, {"user_request": "график"})
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert planner.calls == 2
+    assert any("confidence" in note for note in state.variables.get("loop_repeat_notes", []))
+
+
+def test_code_run_python_auto_approved_within_budget(tmp_path: Path) -> None:
+    """code.run_python в LLM-цикле автоподтверждается, пока есть sandbox-бюджет."""
+    agent_spec = _with_code_run_tool(
+        AgentBuilder().build_from_request(
+            "Посмотри совещания в Outlook и подскажи как распланировать график"
+        )
+    )
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="Запускаю парсер",
+            tool_call={
+                "tool_name": "code.run_python",
+                "input_data": {
+                    "filename": "parse.py",
+                    "code": "print('hello-from-agent')",
+                },
+                "reason": "обработка",
+            },
+        ),
+        _finish_success(
+            "Готово",
+            "Скрипт выполнен, stdout получен, цель по обработке данных закрыта.",
+            agent_spec,
+        ),
+    )
+    registry = ToolRegistry()
+    register_code_execution_tools(registry, AgentWorkspaceResolver(tmp_path))
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=ToolGateway(registry),
+        agent_loop_planner=planner,
+        tools_catalog=load_tools_catalog(),
+        tool_registry=registry,
+    )
+
+    state = runtime.run(
+        agent_spec,
+        {"user_request": "обработать данные скриптом"},
+    )
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert state.variables["code_run_auto_approve_budget"] == (
+        DEFAULT_CODE_RUN_AUTO_APPROVE_BUDGET - 1
+    )
+    assert "parse.py" in state.variables.get("code_run_approved_files", [])
+    runs = [r for r in state.tool_results if r.tool_name == "code.run_python"]
+    assert runs and runs[0].ok is True
+
+
+def test_code_run_python_pauses_when_budget_exhausted(tmp_path: Path) -> None:
+    """При нулевом бюджете code.run_python снова требует HumanApproval."""
+    agent_spec = _with_code_run_tool(
+        AgentBuilder().build_from_request(
+            "Посмотри совещания в Outlook и подскажи как распланировать график"
+        )
+    )
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="Запускаю без бюджета",
+            tool_call={
+                "tool_name": "code.run_python",
+                "input_data": {
+                    "filename": "once.py",
+                    "code": "print(1)",
+                },
+                "reason": "run",
+            },
+        )
+    )
+    registry = ToolRegistry()
+    register_code_execution_tools(registry, AgentWorkspaceResolver(tmp_path))
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=ToolGateway(registry),
+        agent_loop_planner=planner,
+        tools_catalog=load_tools_catalog(),
+        tool_registry=registry,
+    )
+
+    state = runtime.run(
+        agent_spec,
+        {
+            "user_request": "скрипт",
+            "code_run_auto_approve_budget": 0,
+            "code_run_approved_files": [],
+        },
+    )
+
+    assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN
+    assert state.variables.get("pending_loop_tool", {}).get("tool_name") == (
+        "code.run_python"
+    )

@@ -169,8 +169,9 @@ class CodeRunPythonTool(BaseTool):
                     "возвращает stdout/stderr/exit_code. Можно передать inline code "
                     "— он будет сначала сохранён, затем запущен. Рабочая директория "
                     "процесса — папка агента, поэтому скрипт может читать выгруженные "
-                    "файлы и писать результаты. Требует подтверждения человека перед "
-                    "запуском."
+                    "файлы и писать результаты. По умолчанию требует подтверждения "
+                    "человека; в LLM-цикле Runtime может автоподтвердить несколько "
+                    "запусков подряд в sandbox (бюджет rewrite→rerun)."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,

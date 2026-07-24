@@ -72,6 +72,20 @@ def _require_thought(decision: SupervisorDecision) -> None:
             "инструмент нужен сейчас и почему). Только ПОСЛЕ этого выбирай "
             "decision_type."
         )
+    if decision.decision_type in {
+        SupervisorDecisionType.CALL_TOOL,
+        SupervisorDecisionType.CALL_ADDITIONAL_TOOL,
+        SupervisorDecisionType.RETRY_TOOL,
+    }:
+        actions = [a.strip() for a in (thought.planned_actions or []) if a and str(a).strip()]
+        if not actions:
+            raise LLMInvalidJSONError(
+                "Для call_tool в thought.planned_actions нужен хотя бы один шаг плана."
+            )
+        if not (thought.why or "").strip():
+            raise LLMInvalidJSONError(
+                "Для call_tool поле thought.why обязательно (почему этот инструмент сейчас)."
+            )
 
 
 _VALID_DECISION_TYPES = {member.value for member in SupervisorDecisionType}

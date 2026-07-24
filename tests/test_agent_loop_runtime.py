@@ -7,6 +7,7 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
 )
 from agent_desktop_constructor.app.runtime.agent_loop_runtime import LLMAgentLoopRuntime
 from agent_desktop_constructor.builder.agent_builder import AgentBuilder
+from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
@@ -18,6 +19,30 @@ from agent_desktop_constructor.tools.fake_task_control_tools import (
 from agent_desktop_constructor.tools.gateway import ToolGateway
 from agent_desktop_constructor.tools.registry import ToolRegistry
 from agent_desktop_constructor.tools.report_tools import register_report_tools
+
+
+def _finish_success(reason: str, final_message: str, agent_spec: AgentSpec) -> SupervisorDecision:
+    """finish_success с criteria_evidence по всем критериям спеки."""
+    evidence = [
+        {
+            "criterion": criterion,
+            "evidence": f"Подтверждено результатом инструментов: {final_message[:80]}",
+        }
+        for criterion in agent_spec.goal.success_criteria
+    ]
+    if not evidence:
+        evidence = [
+            {
+                "criterion": agent_spec.goal.main_goal,
+                "evidence": f"Подтверждено результатом инструментов: {final_message[:80]}",
+            }
+        ]
+    return SupervisorDecision(
+        decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+        reason=reason,
+        final_message=final_message,
+        criteria_evidence=evidence,
+    )
 
 
 class ScriptedPlanner:
@@ -90,6 +115,9 @@ def make_runtime(planner) -> LLMAgentLoopRuntime:
 
 def test_llm_drives_tools_and_makes_its_own_conclusion() -> None:
     """LLM вызывает инструмент, видит результат и сама формулирует вывод."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
     planner = ScriptedPlanner(
         SupervisorDecision(
             decision_type=SupervisorDecisionType.CALL_TOOL,
@@ -100,16 +128,13 @@ def test_llm_drives_tools_and_makes_its_own_conclusion() -> None:
                 "reason": "Нужны совещания",
             },
         ),
-        SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Данных достаточно",
-            final_message="На неделе одно совещание, есть окно для фокус-работы.",
+        _finish_success(
+            "Данных достаточно",
+            "На неделе одно совещание, есть окно для фокус-работы.",
+            agent_spec,
         ),
     )
     runtime = make_runtime(planner)
-    agent_spec = AgentBuilder().build_from_request(
-        "Посмотри совещания в Outlook и подскажи как распланировать график"
-    )
 
     state = runtime.run(agent_spec, {"user_request": "распланировать график"})
 
@@ -120,6 +145,8 @@ def test_llm_drives_tools_and_makes_its_own_conclusion() -> None:
     executed = [record.tool_name for record in state.tool_results]
     assert "outlook.read_calendar" in executed
     assert "outlook.read_calendar" in state.variables["tool_outputs"]
+    assert state.variables.get("goal_checklist")
+    assert state.variables.get("tool_output_history")
 
 
 def test_llm_loop_does_not_repeat_same_path() -> None:
@@ -149,6 +176,9 @@ def test_llm_loop_does_not_repeat_same_path() -> None:
 
 def test_llm_loop_rejects_unknown_tool_and_lets_llm_recover() -> None:
     """Неизвестный инструмент не исполняется; LLM получает ошибку и завершает сама."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
     planner = ScriptedPlanner(
         SupervisorDecision(
             decision_type=SupervisorDecisionType.CALL_TOOL,
@@ -159,16 +189,13 @@ def test_llm_loop_rejects_unknown_tool_and_lets_llm_recover() -> None:
                 "reason": "bad",
             },
         ),
-        SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Инструмент недоступен, завершаю с тем что есть",
-            final_message="Не удалось выполнить недоступный инструмент.",
+        _finish_success(
+            "Инструмент недоступен, завершаю с тем что есть",
+            "Не удалось выполнить недоступный инструмент, данных календаря нет.",
+            agent_spec,
         ),
     )
     runtime = make_runtime(planner)
-    agent_spec = AgentBuilder().build_from_request(
-        "Посмотри совещания в Outlook и подскажи как распланировать график"
-    )
 
     state = runtime.run(agent_spec, {"user_request": "распланировать"})
 
@@ -177,6 +204,105 @@ def test_llm_loop_rejects_unknown_tool_and_lets_llm_recover() -> None:
     invented = [r for r in state.tool_results if r.tool_name == "invented.tool"]
     assert invented and invented[0].ok is False
     assert "ToolsCatalog" in (invented[0].error_message or "")
+
+
+def test_finish_success_rejected_without_criteria_evidence() -> None:
+    """Без criteria_evidence runtime отклоняет finish_success и даёт LLM ещё шаг."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+            reason="Рано",
+            final_message="Готово без доказательств по критериям цели.",
+        ),
+        _finish_success(
+            "Теперь с evidence",
+            "Календарь учтён: одно совещание, можно планировать фокус-блоки.",
+            agent_spec,
+        ),
+    )
+    runtime = make_runtime(planner)
+
+    state = runtime.run(agent_spec, {"user_request": "график"})
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert planner.calls == 2
+    assert any(
+        "criteria_evidence" in note or "критери" in note.casefold()
+        for note in state.variables.get("loop_repeat_notes", [])
+    )
+
+
+def test_failed_tool_can_be_retried_with_same_signature() -> None:
+    """После ошибки тот же tool с теми же params можно повторить (signature только на success)."""
+    from agent_desktop_constructor.core.models.tooling import ToolCallResult
+
+    class FlakyGateway(ToolGateway):
+        def __init__(self, registry: ToolRegistry) -> None:
+            super().__init__(registry)
+            self.calls = 0
+
+        def execute_tool(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            if self.calls == 1:
+                return ToolCallResult(
+                    ok=False,
+                    tool_name=kwargs["tool_name"],
+                    error_type="TRANSIENT",
+                    error_message="временный сбой",
+                )
+            return super().execute_tool(**kwargs)
+
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
+    planner = ScriptedPlanner(
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="попытка 1",
+            tool_call={
+                "tool_name": "outlook.read_calendar",
+                "input_data": {},
+                "reason": "календарь",
+            },
+        ),
+        SupervisorDecision(
+            decision_type=SupervisorDecisionType.CALL_TOOL,
+            reason="попытка 2",
+            tool_call={
+                "tool_name": "outlook.read_calendar",
+                "input_data": {},
+                "reason": "календарь снова",
+            },
+        ),
+        _finish_success(
+            "ок",
+            "Календарь прочитан со второй попытки, график можно строить.",
+            agent_spec,
+        ),
+    )
+    registry = ToolRegistry()
+    register_fake_task_control_tools(registry)
+    register_report_tools(registry, skip_existing=True)
+    gateway = FlakyGateway(registry)
+    runtime = LLMAgentLoopRuntime(
+        tool_gateway=gateway,
+        agent_loop_planner=planner,
+        tools_catalog=load_tools_catalog(),
+        tool_registry=registry,
+    )
+
+    state = runtime.run(agent_spec, {"user_request": "график"})
+
+    assert state.status == AgentRunStatus.COMPLETED
+    assert gateway.calls == 2
+    calendar = [r for r in state.tool_results if r.tool_name == "outlook.read_calendar"]
+    assert len(calendar) == 2
+    assert calendar[0].ok is False and calendar[1].ok is True
+    history = state.variables.get("tool_output_history") or []
+    assert len(history) >= 2
 
 
 def test_llm_loop_stops_when_cancel_requested() -> None:
@@ -269,6 +395,9 @@ def test_set_cancel_callback_wires_llm_client() -> None:
 
 def test_llm_loop_ask_human_pauses_and_resumes_without_restart() -> None:
     """ask_human приостанавливает цикл, а resume продолжает с ответом человека."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Посмотри совещания в Outlook и подскажи как распланировать график"
+    )
     planner = ScriptedPlanner(
         SupervisorDecision(
             decision_type=SupervisorDecisionType.ASK_HUMAN,
@@ -276,16 +405,13 @@ def test_llm_loop_ask_human_pauses_and_resumes_without_restart() -> None:
             human_question="Какую неделю анализировать?",
             human_options=["Текущую", "Прошлую"],
         ),
-        SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Ответ получен",
-            final_message="Готово, использовал ответ человека.",
+        _finish_success(
+            "Ответ получен",
+            "Готово, использовал ответ человека для планирования недели.",
+            agent_spec,
         ),
     )
     runtime = make_runtime(planner)
-    agent_spec = AgentBuilder().build_from_request(
-        "Посмотри совещания в Outlook и подскажи как распланировать график"
-    )
 
     state = runtime.run(agent_spec, {"user_request": "распланировать график"})
     assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN
@@ -295,13 +421,18 @@ def test_llm_loop_ask_human_pauses_and_resumes_without_restart() -> None:
     resumed = runtime.resume_with_human_input(agent_spec, state, "Текущую")
 
     assert resumed.status == AgentRunStatus.COMPLETED
-    assert resumed.variables["final_message"] == "Готово, использовал ответ человека."
+    assert resumed.variables["final_message"] == (
+        "Готово, использовал ответ человека для планирования недели."
+    )
     responses = resumed.variables.get("human_responses")
     assert responses and responses[-1]["answer"] == "Текущую"
 
 
 def test_llm_loop_resume_executes_approved_tool() -> None:
     """После подтверждения человека отложенный dangerous-инструмент исполняется."""
+    agent_spec = AgentBuilder().build_from_request(
+        "Найди поручения и отправь отчёт по почте"
+    )
     planner = ScriptedPlanner(
         SupervisorDecision(
             decision_type=SupervisorDecisionType.CALL_TOOL,
@@ -312,16 +443,13 @@ def test_llm_loop_resume_executes_approved_tool() -> None:
                 "reason": "dangerous",
             },
         ),
-        SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Отправлено",
-            final_message="Письмо обработано после подтверждения.",
+        _finish_success(
+            "Отправлено",
+            "Письмо обработано после подтверждения человеком.",
+            agent_spec,
         ),
     )
     runtime = make_runtime(planner)
-    agent_spec = AgentBuilder().build_from_request(
-        "Найди поручения и отправь отчёт по почте"
-    )
 
     state = runtime.run(agent_spec, {"user_request": "поручения"})
     assert state.status == AgentRunStatus.PAUSED_FOR_HUMAN

@@ -13,9 +13,18 @@ from agent_desktop_constructor.app.core.models.human_approval import (
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEventType
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
 from agent_desktop_constructor.app.llm.errors import LLMCancelledError
+from agent_desktop_constructor.app.llm.goal_checklist import (
+    append_tool_output_history,
+    apply_checklist_updates,
+    ensure_goal_checklist,
+    validate_finish_success,
+)
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
+)
+from agent_desktop_constructor.app.llm.tool_result_quality import (
+    ToolResultQualityEvaluator,
 )
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.tooling import ToolCallResult
@@ -23,6 +32,7 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
     HumanApprovalRequest,
+    ToolCallRecord,
 )
 from agent_desktop_constructor.runtime.simple_runtime import SimpleAgentRuntime
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
@@ -80,6 +90,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._max_repeat_attempts = max_repeat_attempts
         self._max_decision_retries = max_decision_retries
         self._context_manager = context_manager or AgentContextManager()
+        self._quality_evaluator = ToolResultQualityEvaluator()
         self._progress_callback: Callable[[str], None] | None = None
         self._cancel_callback: Callable[[], bool] | None = None
 
@@ -234,6 +245,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             variables=initial_variables or {},
         )
         state.variables.setdefault("tool_outputs", {})
+        state.variables.setdefault("tool_output_history", [])
+        ensure_goal_checklist(agent_spec, state.variables)
         self._refresh_context(state, agent_spec)
         self._create_run(agent_spec, state)
         self._add_run_event(
@@ -396,6 +409,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         limits = agent_spec.runtime_limits
         decision_failures = 0
 
+        ensure_goal_checklist(agent_spec, state.variables)
+
         while state.can_continue(limits.max_steps, limits.max_tool_calls):
             if self._is_cancel_requested():
                 self._mark_user_cancelled(state)
@@ -468,9 +483,14 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                         "Агент зациклился: повторяет уже пройденные действия"
                     )
                     break
+                self._persist_loop_progress(
+                    state, executed_signatures, repeat_notes, repeat_count
+                )
                 continue
             if stop:
                 break
+            # Успешный шаг / новое наблюдение сбрасывает streak антизацикливания.
+            repeat_count = 0
             self._persist_loop_progress(
                 state, executed_signatures, repeat_notes, repeat_count
             )
@@ -497,8 +517,47 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
     ) -> bool | str:
         """Применить решение LLM. Вернуть True=стоп, False=продолжить, 'repeat'=повтор."""
         decision_type = decision.decision_type
+        checklist = ensure_goal_checklist(agent_spec, state.variables)
+        if decision.checklist_updates:
+            checklist = apply_checklist_updates(checklist, decision.checklist_updates)
+            state.variables["goal_checklist"] = checklist
 
         if decision_type == SupervisorDecisionType.FINISH_SUCCESS:
+            reject_reason = validate_finish_success(
+                checklist=checklist,
+                criteria_evidence=decision.criteria_evidence,
+                final_message=decision.final_message,
+            )
+            if state.variables.get("block_early_finish") and not decision.criteria_evidence:
+                reject_reason = (
+                    reject_reason
+                    or "Ранее был критичный пустой/битый результат инструмента. "
+                    "Сначала исправь наблюдение или дай criteria_evidence."
+                )
+            if reject_reason is not None:
+                if reject_reason not in repeat_notes:
+                    repeat_notes.append(reject_reason)
+                self._emit_progress(
+                    f"⛔ finish_success отклонён: {reject_reason}",
+                    state,
+                    agent_spec,
+                )
+                self._add_run_event(
+                    state,
+                    AgentRunEventType.NODE_FAILED,
+                    "finish_success отклонён: критерии цели не подтверждены",
+                    details={"reason": reject_reason},
+                )
+                return "repeat"
+            # Закрываем критерии после принятого evidence.
+            for item in checklist:
+                if isinstance(item, dict) and item.get("kind") == "criterion":
+                    item["status"] = "done"
+            state.variables["goal_checklist"] = checklist
+            state.variables["criteria_evidence"] = [
+                item.model_dump(mode="json") for item in decision.criteria_evidence
+            ]
+            state.variables.pop("block_early_finish", None)
             state.variables["final_message"] = decision.final_message
             state.mark_completed()
             return True
@@ -568,19 +627,36 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         # Паузу (agent.wait) можно повторять — например, периодически ждать
         # письмо/код. Дедупликация по сигнатуре её не блокирует.
         allow_repeat = is_vision_tool or proposal.tool_name == WAIT_TOOL_NAME
+        fail_counts = state.variables.setdefault("loop_tool_fail_counts", {})
+        if not isinstance(fail_counts, dict):
+            fail_counts = {}
+            state.variables["loop_tool_fail_counts"] = fail_counts
+        max_retries = int(agent_spec.runtime_limits.max_retries_per_tool)
+
+        # Сигнатура = успешный вызов. Повтор после ошибки разрешён в пределах бюджета.
         if signature in executed_signatures and not allow_repeat:
             note = (
-                f"Действие {proposal.tool_name} с теми же параметрами уже выполнялось "
-                "— повтор пропущен."
+                f"Действие {proposal.tool_name} с теми же параметрами уже успешно "
+                "выполнялось — повтор пропущен. Смени параметры или стратегию."
             )
             repeat_notes.append(note)
             self._add_run_event(
                 state,
                 AgentRunEventType.NODE_FAILED,
-                "LLM предложила повтор уже пройденного действия",
+                "LLM предложила повтор уже успешного действия",
                 tool_name=proposal.tool_name,
                 details={"signature": signature},
             )
+            return "repeat"
+
+        prior_fails = int(fail_counts.get(signature, 0) or 0)
+        if not allow_repeat and prior_fails > max_retries:
+            note = (
+                f"Инструмент {proposal.tool_name} с теми же параметрами уже падал "
+                f"{prior_fails} раз(а) (лимит max_retries_per_tool={max_retries}). "
+                "Смени параметры, инструмент или заверши задачу."
+            )
+            repeat_notes.append(note)
             return "repeat"
 
         validation_error = self._validate_tool_call(agent_spec, proposal.tool_name)
@@ -600,6 +676,14 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     error_message=validation_error,
                 ),
             )
+            append_tool_output_history(
+                state.variables,
+                proposal.tool_name,
+                {},
+                ok=False,
+                error_message=validation_error,
+                step=state.step_counter,
+            )
             self._add_run_event(
                 state,
                 AgentRunEventType.TOOL_CALL_FAILED,
@@ -609,8 +693,6 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
             return "repeat"
 
-        if not allow_repeat:
-            executed_signatures.append(signature)
         self._execute_loop_tool(
             agent_spec=agent_spec,
             state=state,
@@ -624,6 +706,24 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             AgentRunStatus.FAILED,
         }:
             return True
+
+        last = state.tool_results[-1] if state.tool_results else None
+        if last is not None and last.tool_name == proposal.tool_name:
+            if last.ok:
+                if not allow_repeat and signature not in executed_signatures:
+                    executed_signatures.append(signature)
+                fail_counts.pop(signature, None)
+                self._mark_plan_step_done(state, proposal.tool_name)
+                self._record_persistent_fact(state, last)
+            else:
+                fail_counts[signature] = prior_fails + 1
+            self._apply_tool_quality_notes(
+                agent_spec=agent_spec,
+                state=state,
+                tool_result=last,
+                repeat_notes=repeat_notes,
+            )
+
         # Vision-действие выполнилось, но не изменило страницу — не даём агенту
         # бесконечно повторять одно и то же (например прокрутку без сдвига).
         if is_vision_tool:
@@ -633,6 +733,95 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 self._emit_progress(f"↺ {no_progress_note}")
                 return "repeat"
         return False
+
+    def _apply_tool_quality_notes(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        tool_result: ToolCallRecord,
+        repeat_notes: list[str],
+    ) -> None:
+        """Оценить полезность результата tool и добавить подсказки в repeat_notes."""
+        try:
+            quality = self._quality_evaluator.evaluate(
+                agent_spec=agent_spec,
+                runtime_state=state,
+                tool_result=tool_result,
+            )
+        except Exception:
+            return
+        if quality.is_useful and not quality.is_critical_failure:
+            state.variables.pop("block_early_finish", None)
+            return
+        note = (
+            f"Качество результата {tool_result.tool_name}: "
+            f"{quality.reason}. Рекомендация: {quality.suggested_next_action}."
+        )
+        if note not in repeat_notes:
+            repeat_notes.append(note)
+        if quality.is_critical_failure:
+            state.variables["block_early_finish"] = True
+            self._emit_progress(f"⚠ {note}", state, agent_spec)
+
+    def _record_persistent_fact(
+        self,
+        state: AgentRuntimeState,
+        tool_result: ToolCallRecord,
+    ) -> None:
+        """Сохранить краткий факт успешного tool в persistent-контекст."""
+        output = tool_result.output_data or {}
+        if not isinstance(output, dict):
+            return
+        fact: dict[str, object] = {
+            "tool": tool_result.tool_name,
+            "step": state.step_counter,
+        }
+        for key in (
+            "url",
+            "title",
+            "path",
+            "file_path",
+            "dump_dir",
+            "html_path",
+            "css_path",
+            "saved_path",
+            "workbook_path",
+        ):
+            value = output.get(key)
+            if value:
+                fact[key] = value
+        if len(fact) <= 2:
+            return
+        try:
+            snapshot = self._context_manager.restore_from_state(state)
+            self._context_manager.record_persistent_fact(
+                snapshot,
+                key=f"fact_{state.step_counter}_{tool_result.tool_name}",
+                value=fact,
+            )
+            self._context_manager.save_to_state(state, snapshot)
+        except Exception:
+            pass
+
+    def _mark_plan_step_done(self, state: AgentRuntimeState, tool_name: str) -> None:
+        """Отметить plan_step чек-листа выполненным после успешного tool."""
+        checklist = state.variables.get("goal_checklist")
+        if not isinstance(checklist, list):
+            return
+        changed = False
+        for item in checklist:
+            if not isinstance(item, dict):
+                continue
+            if item.get("kind") != "plan_step":
+                continue
+            if item.get("related_tool") != tool_name:
+                continue
+            if item.get("status") == "done":
+                continue
+            item["status"] = "done"
+            changed = True
+        if changed:
+            state.variables["goal_checklist"] = checklist
 
     def _prepare_wait_tool(self, tool_name: str, proposed_input: dict) -> None:
         """Показать значок паузы и включить прерывание сна при остановке."""
@@ -724,6 +913,13 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             stored_output = self._stash_screenshot(state, output_data)
             stored_output = self._stash_page_html(state, stored_output)
             state.variables.setdefault("tool_outputs", {})[tool_name] = stored_output
+            append_tool_output_history(
+                state.variables,
+                tool_name,
+                stored_output,
+                ok=True,
+                step=state.step_counter,
+            )
             self._refresh_context(state, agent_spec)
             output_keys = sorted(output_data.keys())
             self._add_run_event(
@@ -752,9 +948,16 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
             return
 
-        self._record_tool_result(state, input_data, result)
-        if result.output_data is not None:
-            state.variables.setdefault("tool_outputs", {})[tool_name] = result.output_data
+        stored_fail = result.output_data if result.output_data is not None else {}
+        state.variables.setdefault("tool_outputs", {})[tool_name] = stored_fail
+        append_tool_output_history(
+            state.variables,
+            tool_name,
+            stored_fail,
+            ok=False,
+            error_message=result.error_message,
+            step=state.step_counter,
+        )
         self._add_run_event(
             state,
             AgentRunEventType.TOOL_CALL_FAILED,

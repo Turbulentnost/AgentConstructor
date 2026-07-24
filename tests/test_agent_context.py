@@ -35,6 +35,28 @@ from agent_desktop_constructor.tools.gateway import ToolGateway
 from agent_desktop_constructor.tools.registry import ToolRegistry
 
 
+def _finish_with_evidence(agent_spec, reason: str, final_message: str) -> SupervisorDecision:
+    """finish_success с evidence по критериям спеки (для fake planner'ов)."""
+    evidence = [
+        {
+            "criterion": criterion,
+            "evidence": f"Подтверждено инструментами: {final_message}",
+        }
+        for criterion in agent_spec.goal.success_criteria
+    ] or [
+        {
+            "criterion": agent_spec.goal.main_goal,
+            "evidence": f"Подтверждено инструментами: {final_message}",
+        }
+    ]
+    return SupervisorDecision(
+        decision_type=SupervisorDecisionType.FINISH_SUCCESS,
+        reason=reason,
+        final_message=final_message,
+        criteria_evidence=evidence,
+    )
+
+
 class OneToolPlanner:
     """Fake planner: один tool call, затем успешное завершение."""
 
@@ -53,10 +75,10 @@ class OneToolPlanner:
                     "reason": "прочитать календарь",
                 },
             )
-        return SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Данных достаточно",
-            final_message="Готово",
+        return _finish_with_evidence(
+            agent_spec,
+            "Данных достаточно",
+            "Календарь прочитан, итоговый вывод сформирован по данным Outlook.",
         )
 
 
@@ -78,10 +100,10 @@ class OnePowerShellFailurePlanner:
                     "reason": "получить stdout/stderr команды",
                 },
             )
-        return SupervisorDecision(
-            decision_type=SupervisorDecisionType.FINISH_SUCCESS,
-            reason="Данные команды видны",
-            final_message="Готово",
+        return _finish_with_evidence(
+            agent_spec,
+            "Данные команды видны",
+            "Ошибка команды зафиксирована, stdout/stderr доступны в контексте.",
         )
 
 

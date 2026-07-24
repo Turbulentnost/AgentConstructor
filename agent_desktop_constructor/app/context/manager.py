@@ -249,6 +249,23 @@ class AgentContextManager:
             priority=80,
         )
 
+    def record_persistent_fact(
+        self,
+        snapshot: AgentContextSnapshot,
+        *,
+        key: str,
+        value: object,
+        priority: int = 70,
+    ) -> None:
+        """Записать устойчивый факт run в секцию PERSISTENT."""
+        self._upsert(
+            snapshot,
+            ContextSection.PERSISTENT,
+            key,
+            value,
+            priority=priority,
+        )
+
     def build_llm_context(
         self,
         *,

@@ -154,6 +154,30 @@ def test_require_thought_passes_with_understanding() -> None:
     _require_thought(decision)
 
 
+def test_require_thought_call_tool_needs_why_and_plan() -> None:
+    """Для call_tool недостаточно одного understanding — нужны why и planned_actions."""
+    decision = SupervisorDecision(
+        decision_type=SupervisorDecisionType.CALL_TOOL,
+        reason="Открываю",
+        tool_call={
+            "tool_name": "browser.navigate",
+            "input_data": {"url": "https://x"},
+            "reason": "go",
+        },
+        thought=AgentThought(understanding="Нужна страница"),
+    )
+
+    with pytest.raises(LLMInvalidJSONError, match="planned_actions"):
+        _require_thought(decision)
+
+    decision.thought = AgentThought(
+        understanding="Нужна страница",
+        planned_actions=["открыть url"],
+        why="там данные",
+    )
+    _require_thought(decision)
+
+
 def test_decide_enforces_think_stage_via_planner() -> None:
     """decide() отклоняет ответ LLM без блока THINK (сработает retry в runtime)."""
     from agent_desktop_constructor.builder.agent_builder import AgentBuilder

@@ -32,5 +32,7 @@ def test_agent_loop_prompt_contains_temporal_context() -> None:
     assert '"current_date"' in prompt_text
     assert '"current_week_start"' in prompt_text
     assert "YYYY-MM-DD" in prompt_text
-    assert '"input_schema"' in prompt_text
+    assert '"required_inputs"' in prompt_text
+    assert '"input_properties"' in prompt_text
     assert "outlook.read_calendar" in prompt_text
+    assert '"goal_checklist"' in prompt_text or "goal_checklist" in prompt_text

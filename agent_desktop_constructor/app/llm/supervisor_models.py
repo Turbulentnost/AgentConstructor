@@ -6,6 +6,11 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agent_desktop_constructor.app.llm.goal_checklist import (
+    ChecklistUpdate,
+    CriteriaEvidence,
+)
+
 
 class SupervisorDecisionType(StrEnum):
     """Тип решения LLM Supervisor после события Runtime."""
@@ -64,6 +69,8 @@ class SupervisorDecision(BaseModel):
     human_options: list[str] = Field(default_factory=list)
     graph_patch: dict | None = None
     final_message: str | None = None
+    criteria_evidence: list[CriteriaEvidence] = Field(default_factory=list)
+    checklist_updates: list[ChecklistUpdate] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)
 

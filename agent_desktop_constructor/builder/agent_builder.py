@@ -3,6 +3,9 @@
 from uuid import uuid4
 
 from agent_desktop_constructor.app.llm.agent_plan_models import LLMAgentPlan
+from agent_desktop_constructor.app.llm.goal_checklist import (
+    concrete_success_criteria_from_plan_steps,
+)
 from agent_desktop_constructor.builder.data_requirements import DataRequirementAnalyzer
 from agent_desktop_constructor.builder.graph_templates import (
     AgentTemplateName,
@@ -134,7 +137,10 @@ class AgentBuilder:
             description=f"AgentSpec построен из LLM AgentPlan. Исходный запрос: {user_request}",
             goal=AgentGoal(
                 main_goal=plan.goal,
-                success_criteria=["Выполнен LLM-план по запросу пользователя"],
+                success_criteria=concrete_success_criteria_from_plan_steps(
+                    [step.title for step in plan.steps if (step.title or "").strip()],
+                    plan.goal,
+                ),
                 forbidden_actions=[
                     "Не выполнять инструменты вне ToolsCatalog",
                     "Не выполнять dangerous/write действия без подтверждения человека",

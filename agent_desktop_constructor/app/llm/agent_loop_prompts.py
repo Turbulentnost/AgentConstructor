@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from agent_desktop_constructor.app.context.manager import AgentContextManager
+from agent_desktop_constructor.app.llm.goal_checklist import TOOL_OUTPUT_HISTORY_LIMIT
 from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
@@ -29,6 +30,12 @@ AGENT_LOOP_SCHEMA_DESCRIPTION = """
     "reason": "зачем нужен именно этот инструмент сейчас"
   },
   "final_message": "итоговый вывод для пользователя на основе собранных данных (для finish_success)",
+  "criteria_evidence": [
+    {"criterion": "текст критерия из goal_checklist", "evidence": "чем подтверждается (данные tools)"}
+  ],
+  "checklist_updates": [
+    {"item_id": "criterion_1", "status": "done|pending|blocked", "note": "кратко"}
+  ],
   "human_question": null,
   "human_options": [],
   "confidence": 0.0,
@@ -38,17 +45,24 @@ AGENT_LOOP_SCHEMA_DESCRIPTION = """
 ОБЯЗАТЕЛЬНЫЙ этап THINK:
 - Поле thought ОБЯЗАТЕЛЬНО и должно идти ПЕРЕД действием. Нельзя сразу вызвать
   инструмент или завершить задачу, не заполнив thought.understanding.
+- Для call_tool дополнительно обязательны thought.why и хотя бы один
+  thought.planned_actions.
+- Сверяйся с goal_checklist: что ещё pending, что уже можно закрыть.
 - Сначала обдумай (THINK): что понял, чего не хватает, что планируешь, какой
   инструмент нужен и почему. Затем выбери действие (ACT). Runtime исполнит его и
   вернёт результат (OBSERVE), после чего ты снова обдумываешь (THINK) следующий шаг.
 
 ВАЖНО про decision_type:
-- decision_type принимает ТОЛЬКО одно из значений: call_tool, finish_success,
-  finish_failed, ask_human, request_credentials (а также retry_tool,
-  call_additional_tool, replan_graph, continue_to_next).
+- decision_type принимает ТОЛЬКО: call_tool, finish_success, finish_failed,
+  ask_human, request_credentials (допустимы синонимы retry_tool /
+  call_additional_tool как вызов инструмента).
+- НЕ используй replan_graph — в этом режиме он не поддержан.
 - НИКОГДА не пиши имя инструмента (например "browser.screenshot") в decision_type.
 - Чтобы вызвать инструмент: decision_type="call_tool", а имя инструмента —
   строго внутри tool_call.tool_name, параметры — внутри tool_call.input_data.
+- finish_success разрешён только с criteria_evidence по обязательным критериям
+  goal_checklist (или после checklist_updates status=done). Без доказательств
+  Runtime отклонит завершение и попросит продолжить.
 """.strip()
 
 
@@ -90,9 +104,13 @@ def build_agent_loop_prompt(
   scrolled=false или at_bottom=true — дальше в ту же сторону прокручивать бесполезно.
 - Смотри на результаты уже выполненных инструментов (collected_data) и решай:
   нужно ли собрать ещё данные другим инструментом или данных уже достаточно.
-- Если собранных данных достаточно для цели — верни finish_success и сформулируй
-  вывод (final_message) сам, на основе запроса пользователя и собранных данных.
-  НЕ используй шаблонные или выдуманные факты — только реальные собранные данные.
+- Если собранных данных достаточно для цели — верни finish_success с
+  final_message и criteria_evidence по пунктам goal_checklist (criterion +
+  evidence из collected_data / observation_history). НЕ используй шаблонные
+  или выдуманные факты — только реальные собранные данные.
+- Смотри observation_history: там не только последний вызов tool, но и предыдущие
+  результаты/ошибки того же инструмента. В executed_steps при ошибке читай
+  error_message целиком.
 - Если нужный инструмент недоступен или данных получить нельзя — finish_failed или ask_human.
 - write/dangerous действия исполняются только с подтверждением человека.
 
@@ -162,13 +180,23 @@ def build_agent_loop_prompt(
     collected_data = _sanitize_collected_data(
         runtime_state.variables.get("tool_outputs", {})
     )
+    observation_history = _sanitize_observation_history(
+        runtime_state.variables.get("tool_output_history", [])
+    )
+    goal_checklist = runtime_state.variables.get("goal_checklist") or []
     last_screenshot = runtime_state.variables.get("last_screenshot")
     executed_steps = [
         {
             "tool_name": record.tool_name,
             "ok": record.ok,
             "error_type": record.error_type,
-            "output_summary": _summarize_output(record.output_data),
+            "error_message": (record.error_message or "")[:2000]
+            if not record.ok
+            else None,
+            "output_summary": _summarize_output(
+                record.output_data,
+                max_chars=1600 if not record.ok else 600,
+            ),
         }
         for record in runtime_state.tool_results
     ]
@@ -189,11 +217,13 @@ def build_agent_loop_prompt(
         "agent_context": agent_context,
         "user_request": runtime_state.variables.get("user_request"),
         "goal": agent_spec.goal.model_dump(mode="json"),
+        "goal_checklist": goal_checklist,
         "available_tools": tools_context,
         "executed_steps": executed_steps,
         "executed_actions": executed_signatures,
         "your_recent_steps": _recent_reasoning(runtime_state),
         "collected_data": collected_data,
+        "observation_history": observation_history,
         "repeat_notes": repeat_notes,
         "human_responses": runtime_state.variables.get("human_responses", []),
         "decision_schema": AGENT_LOOP_SCHEMA_DESCRIPTION,
@@ -275,7 +305,8 @@ def _available_tools_context(
                 "tool_name": item.name,
                 "description": item.description,
                 "when_to_use": item.planner_hint,
-                "input_schema": item.input_schema,
+                "required_inputs": _schema_required_fields(item.input_schema),
+                "input_properties": _schema_property_names(item.input_schema),
                 "side_effect_level": item.side_effect_level.value,
                 "requires_human_approval": item.requires_human_approval,
                 "output_keys": sorted(
@@ -286,25 +317,87 @@ def _available_tools_context(
     return context
 
 
+def _schema_required_fields(schema: dict | None) -> list[str]:
+    """Вернуть required-поля JSON Schema без полного дерева schema."""
+    if not isinstance(schema, dict):
+        return []
+    required = schema.get("required")
+    if isinstance(required, list):
+        return [str(item) for item in required if str(item).strip()]
+    return []
+
+
+def _schema_property_names(schema: dict | None, limit: int = 12) -> list[str]:
+    """Имена свойств input_schema — компактнее полной схемы."""
+    if not isinstance(schema, dict):
+        return []
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return []
+    return sorted(str(key) for key in props.keys())[:limit]
+
+
 def _recent_reasoning(runtime_state: AgentRuntimeState, limit: int = 8) -> list[dict]:
     """Собрать краткую историю собственных решений LLM — её «память диалога»."""
     decisions = runtime_state.variables.get("loop_decisions", [])
     if not isinstance(decisions, list):
         return []
+    tool_results = list(runtime_state.tool_results)
     recent: list[dict] = []
-    for item in decisions[-limit:]:
+    tool_result_offset = max(0, len(tool_results) - limit)
+    for index, item in enumerate(decisions[-limit:]):
         if not isinstance(item, dict):
             continue
         tool_call = item.get("tool_call") or {}
+        outcome = None
+        result_index = tool_result_offset + index
+        if 0 <= result_index < len(tool_results):
+            record = tool_results[result_index]
+            outcome = {
+                "ok": record.ok,
+                "error_message": (record.error_message or "")[:300]
+                if not record.ok
+                else None,
+                "summary": _summarize_output(record.output_data, max_chars=200),
+            }
+        thought = item.get("thought") or {}
         recent.append(
             {
                 "decision": item.get("decision_type"),
                 "tool": tool_call.get("tool_name"),
                 "input": tool_call.get("input_data"),
                 "reason": str(item.get("reason") or "")[:300],
+                "understanding": str(thought.get("understanding") or "")[:200],
+                "outcome": outcome,
             }
         )
     return recent
+
+
+def _sanitize_observation_history(history: object) -> list[dict]:
+    """Сжать историю наблюдений для промпта (без тяжёлых html/base64)."""
+    if not isinstance(history, list):
+        return []
+    sanitized: list[dict] = []
+    for item in history[-TOOL_OUTPUT_HISTORY_LIMIT:]:
+        if not isinstance(item, dict):
+            continue
+        output = item.get("output")
+        if isinstance(output, dict):
+            output = _sanitize_collected_data({"_": output}).get("_")
+        sanitized.append(
+            {
+                "step": item.get("step"),
+                "tool_name": item.get("tool_name"),
+                "ok": item.get("ok"),
+                "error_message": item.get("error_message"),
+                "output_summary": _summarize_output(
+                    output if isinstance(output, dict) else {"value": output},
+                    max_chars=500,
+                ),
+            }
+        )
+    return sanitized
 
 
 def _sanitize_collected_data(collected_data: dict) -> dict:

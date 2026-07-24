@@ -64,7 +64,7 @@ def build_application_container(
 ) -> ApplicationContainer:
     """Собрать ApplicationContainer без запуска инструментов, агента и COM."""
     app_config = config or load_app_config_from_env()
-    engine = create_engine_for_sqlite(app_config.database_path)
+    engine = create_engine_for_sqlite(str(app_config.resolve_database_path()))
     init_database(engine)
     session_factory = create_session_factory(engine)
     agent_repository = AgentRepository(session_factory)

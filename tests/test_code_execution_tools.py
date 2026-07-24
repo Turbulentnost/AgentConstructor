@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 from agent_desktop_constructor.tools.agent_workspace import AgentWorkspaceResolver
@@ -87,6 +89,36 @@ def test_run_python_reports_failure_with_stderr(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.error_type == "SCRIPT_FAILED"
     assert "boom" in result.output_data["stderr"]
+
+
+def test_run_python_uses_internal_exe_runner_when_frozen(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """В exe-режиме code.run_python вызывает сам exe с internal runner."""
+    tool = CodeRunPythonTool(AgentWorkspaceResolver(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["cwd"] = kwargs["cwd"]
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "C:/App/AgentConstructor.exe")
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.code_execution_tools.subprocess.run",
+        fake_run,
+    )
+
+    result = tool.execute(_ctx(code="print('ok')", filename="runner.py"))
+
+    assert result.ok is True
+    assert captured["args"][:2] == [
+        "C:/App/AgentConstructor.exe",
+        "--agent-python-runner",
+    ]
+    assert str(captured["args"][2]).endswith("runner.py")
 
 
 def test_run_python_requires_human_approval_in_catalog() -> None:

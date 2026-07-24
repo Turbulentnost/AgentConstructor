@@ -38,7 +38,7 @@ def run_desktop_app(config: AppConfig | None = None) -> int:
     app_config = config
     if app_config is None:
         try:
-            if Path(DEFAULT_SETTINGS_PATH).exists():
+            if Path(DEFAULT_SETTINGS_PATH).exists() or getattr(sys, "frozen", False):
                 app_config = load_settings()
             else:
                 app_config = load_app_config_from_env()

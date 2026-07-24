@@ -32,6 +32,18 @@ datas = [
         "agent_desktop_constructor/tools/default_tools_catalog.json",
         "agent_desktop_constructor/tools",
     ),
+    (
+        "agent_desktop_constructor/tools/default_tools_catalog.json",
+        ".",
+    ),
+    (
+        "agent_desktop_constructor/tools/default_tools_catalog.json",
+        "data",
+    ),
+    (
+        "agent_desktop_constructor/app/ui/resources",
+        "agent_desktop_constructor/app/ui/resources",
+    ),
     ("data/settings.json", "data"),
 ]
 

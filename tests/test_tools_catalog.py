@@ -1,6 +1,7 @@
 """Тесты каталога доступных инструментов."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,59 @@ def test_load_tools_catalog_loads_default_json() -> None:
 
     assert isinstance(catalog, ToolsCatalog)
     assert catalog.tools
+
+
+def test_load_tools_catalog_frozen_uses_bundle_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """В frozen exe каталог ищется через sys._MEIPASS, если рядом с модулем его нет."""
+    source_catalog = load_tools_catalog()
+    bundle_catalog = (
+        tmp_path
+        / "_internal"
+        / "agent_desktop_constructor"
+        / "tools"
+        / "default_tools_catalog.json"
+    )
+    bundle_catalog.parent.mkdir(parents=True)
+    bundle_catalog.write_text(
+        source_catalog.model_dump_json(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "AgentConstructor.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_internal"), raising=False)
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.catalog_loader.DEFAULT_TOOLS_CATALOG_PATH",
+        tmp_path / "missing" / "default_tools_catalog.json",
+    )
+
+    catalog = load_tools_catalog()
+
+    assert catalog.has_tool("outlook.search_mail")
+
+
+def test_load_tools_catalog_frozen_uses_data_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если package-layout повреждён, каталог может быть найден в data fallback."""
+    source_catalog = load_tools_catalog()
+    data_catalog = tmp_path / "data" / "default_tools_catalog.json"
+    data_catalog.parent.mkdir(parents=True)
+    data_catalog.write_text(source_catalog.model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "AgentConstructor.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_internal"), raising=False)
+    monkeypatch.setattr(
+        "agent_desktop_constructor.tools.catalog_loader.DEFAULT_TOOLS_CATALOG_PATH",
+        tmp_path / "missing" / "default_tools_catalog.json",
+    )
+
+    catalog = load_tools_catalog()
+
+    assert catalog.has_tool("workspace.powershell_run")
 
 
 def test_catalog_contains_outlook_search_mail() -> None:

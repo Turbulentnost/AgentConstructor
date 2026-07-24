@@ -23,6 +23,26 @@ DEFAULT_OPENAI_MODEL = "gpt-5.5"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def runtime_base_dir() -> Path:
+    """Вернуть базовую папку для изменяемых данных приложения.
+
+    В обычном Python-режиме это корень проекта. В собранном PyInstaller exe это
+    папка рядом с ``AgentConstructor.exe``. Так база, workspace агентов, папка
+    ``code`` и файлы PowerShell не зависят от текущей директории запуска ярлыка.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
+
+
+def resolve_runtime_path(path: str | Path) -> Path:
+    """Разрешить относительный путь относительно runtime_base_dir()."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return runtime_base_dir() / candidate
+
+
 class AppConfig(BaseModel):
     """Единая конфигурация сборки приложения."""
 
@@ -68,10 +88,17 @@ class AppConfig(BaseModel):
         файлы агентов хранились вместе с остальными данными приложения.
         """
         if self.agent_workspaces_root:
-            root = Path(self.agent_workspaces_root)
+            root = resolve_runtime_path(self.agent_workspaces_root)
         else:
-            root = Path(self.database_path).resolve().parent / "agent_workspaces"
+            root = (
+                resolve_runtime_path(self.database_path).resolve().parent
+                / "agent_workspaces"
+            )
         return root
+
+    def resolve_database_path(self) -> Path:
+        """Вернуть путь к SQLite DB относительно runtime_base_dir для exe."""
+        return resolve_runtime_path(self.database_path)
 
     def to_llm_config(self) -> LLMConfig:
         """Преобразовать AppConfig в LLMConfig.

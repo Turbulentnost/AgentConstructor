@@ -54,14 +54,21 @@ def _trim(text: str) -> str:
     return text[:MAX_OUTPUT_CHARS] + "..."
 
 
-def _python_executable() -> str | None:
-    """Найти интерпретатор Python для запуска скриптов агента."""
-    if not getattr(sys, "frozen", False) and sys.executable:
-        return sys.executable
+def _python_command_prefix() -> list[str] | None:
+    """Вернуть команду запуска Python-кода агента.
+
+    В исходниках используем текущий Python. В frozen exe отдельного python.exe
+    может не быть, поэтому вызываем сам AgentConstructor.exe во внутреннем
+    runner-режиме: он выполнит скрипт через встроенный Python runtime PyInstaller.
+    """
+    if getattr(sys, "frozen", False) and sys.executable:
+        return [sys.executable, "--agent-python-runner"]
+    if sys.executable:
+        return [sys.executable]
     for name in ("python", "python3", "py"):
         found = shutil.which(name)
         if found:
-            return found
+            return [found]
     return None
 
 
@@ -209,19 +216,19 @@ class CodeRunPythonTool(BaseTool):
                 "(code.write_python) или передай inline code.",
             )
 
-        executable = _python_executable()
-        if executable is None:
+        command_prefix = _python_command_prefix()
+        if command_prefix is None:
             return _fail(
                 self.definition.name,
                 "PYTHON_NOT_FOUND",
-                "Не найден интерпретатор Python (python/python3/py) на устройстве.",
+                "Не найден интерпретатор Python и недоступен встроенный runner exe.",
             )
 
         args = [str(item) for item in (input_data.get("args") or []) if str(item)]
         timeout = _timeout(input_data.get("timeout_seconds"))
         try:
             completed = subprocess.run(
-                [executable, str(target), *args],
+                [*command_prefix, str(target), *args],
                 cwd=str(workspace.directory),
                 capture_output=True,
                 text=True,

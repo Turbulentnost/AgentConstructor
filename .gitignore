@@ -17,6 +17,7 @@ env/
 
 build/
 dist/
+dist*/
 *.egg-info/
 
 .idea/

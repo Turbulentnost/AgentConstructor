@@ -115,9 +115,17 @@ def _bool_input(value: object) -> bool:
 
 
 def _profile_options(input_data: dict) -> dict[str, object]:
-    """Вытащить явные настройки профиля для CDP/vision worker."""
+    """Вытащить настройки профиля для CDP worker.
+
+    По умолчанию (флаг не передан) — штатный пользовательский профиль с
+    существующей авторизацией; automation только при use_default_profile=false.
+    """
+    if "use_default_profile" in input_data:
+        use_default = _bool_input(input_data.get("use_default_profile"))
+    else:
+        use_default = True
     return {
-        "use_default_profile": _bool_input(input_data.get("use_default_profile")),
+        "use_default_profile": use_default,
         "profile_name": str(input_data.get("profile_name") or "").strip() or None,
         "user_data_dir": str(input_data.get("user_data_dir") or "").strip() or None,
     }

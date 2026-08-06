@@ -1839,15 +1839,26 @@ class AgentCreateWidget(QWidget):
         self.context_indicator = ContextIndicator()
         toolbar.addWidget(self.context_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.attach_clear_button = QPushButton("Очистить вложения")
+        self.attach_clear_button = QPushButton("Очистить")
+        self.attach_clear_button.setObjectName("attachClearButton")
+        self.attach_clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_clear_button.clicked.connect(self.clear_attachments)
-        self.attach_label = QLabel("Файлы не прикреплены")
+        self.attach_label = QLabel("")
+        self.attach_label.setObjectName("attachLabel")
+        self.attach_label.setWordWrap(True)
         self.attach_clear_button.setVisible(False)
         self.attach_label.setVisible(False)
 
         toolbar.addStretch(1)
         toolbar.addWidget(self._build_launch_split())
         layout.addLayout(toolbar)
+
+        attach_row = QHBoxLayout()
+        attach_row.setContentsMargins(2, 0, 2, 0)
+        attach_row.setSpacing(8)
+        attach_row.addWidget(self.attach_label, 1)
+        attach_row.addWidget(self.attach_clear_button, 0)
+        layout.addLayout(attach_row)
 
         composer.setStyleSheet(
             "#composerPanel {"
@@ -1882,6 +1893,12 @@ class AgentCreateWidget(QWidget):
             "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
             "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
             "}"
+            "#attachLabel { color:#93c5fd; font-size:12px; }"
+            "#attachClearButton {"
+            "background:transparent; color:#94a3b8; border:1px solid #1a2a40;"
+            "border-radius:6px; padding:3px 8px; font-size:11px;"
+            "}"
+            "#attachClearButton:hover { color:#e2e8f0; border-color:#2a4060; }"
         )
         return composer
 
@@ -3171,7 +3188,8 @@ class AgentCreateWidget(QWidget):
             self,
             "Прикрепить файлы для агента",
             "",
-            "Файлы (*.xlsx *.csv *.txt *.json *.md);;Все файлы (*.*)",
+            "Документы (*.xlsx *.xls *.csv *.txt *.json *.md *.docx *.pdf);;"
+            "Excel (*.xlsx *.xls *.csv);;Текст (*.txt *.md *.json);;Все файлы (*.*)",
         )
         if not paths:
             return
@@ -3186,16 +3204,27 @@ class AgentCreateWidget(QWidget):
         self._update_attach_label()
 
     def _update_attach_label(self) -> None:
-        """Обновить подсказку на кнопке вложений."""
-        if not self._attachment_paths:
-            self.attach_button.setToolTip("Прикрепить файл")
-            return
+        """Показать список прикреплённых файлов под композером."""
         from pathlib import Path
 
-        names = ", ".join(Path(path).name for path in self._attachment_paths)
-        self.attach_button.setToolTip(f"Прикреплено: {names}")
+        if not self._attachment_paths:
+            self.attach_button.setToolTip(
+                "Прикрепить документ (Excel, CSV, TXT…) — агент получит его в рабочую папку"
+            )
+            if self.attach_label is not None:
+                self.attach_label.clear()
+                self.attach_label.setVisible(False)
+            if self.attach_clear_button is not None:
+                self.attach_clear_button.setVisible(False)
+            return
+        names = [Path(path).name for path in self._attachment_paths]
+        tip = "Прикреплено: " + ", ".join(names)
+        self.attach_button.setToolTip(tip)
         if self.attach_label is not None:
-            self.attach_label.setText(f"Прикреплено: {names}")
+            self.attach_label.setText("📎 " + ", ".join(names))
+            self.attach_label.setVisible(True)
+        if self.attach_clear_button is not None:
+            self.attach_clear_button.setVisible(True)
 
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""

@@ -27,18 +27,29 @@
             "type": "string",
             "description": "Конец периода в формате YYYY-MM-DD или ISO datetime"
           },
-          "days": {"type": "integer"},
-          "query": {"type": "string"},
-          "max_results": {"type": "integer"}
+          "days": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "max_results": {
+            "type": "integer"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "messages": {"type": "array"}
+          "messages": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "meeting_agent"
+      ],
       "examples": [
         "Найти входящие и отправленные письма за сегодня",
         "Найти отправленные письма за конкретный день",
@@ -70,17 +81,26 @@
             "type": "string",
             "description": "Конец периода в формате YYYY-MM-DD или ISO datetime"
           },
-          "days_forward": {"type": "integer"},
-          "max_results": {"type": "integer"}
+          "days_forward": {
+            "type": "integer"
+          },
+          "max_results": {
+            "type": "integer"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "events": {"type": "array"}
+          "events": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent", "meeting_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "meeting_agent"
+      ],
       "examples": [
         "Найти встречи на сегодня",
         "Найти встречи за конкретный день",
@@ -97,14 +117,20 @@
       "side_effect_level": "read",
       "execution_mode": "com_worker",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "tasks": {"type": "array"}
+          "tasks": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent"
+      ],
       "examples": [
         "Получить активные задачи пользователя"
       ],
@@ -118,16 +144,26 @@
       "side_effect_level": "create_draft",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "report_text": {"type": "string"},
-          "task_count": {"type": "integer"},
-          "risk_count": {"type": "integer"}
+          "report_text": {
+            "type": "string"
+          },
+          "task_count": {
+            "type": "integer"
+          },
+          "risk_count": {
+            "type": "integer"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent"
+      ],
       "examples": [
         "Сформировать отчёт по найденным поручениям"
       ],
@@ -141,14 +177,22 @@
       "side_effect_level": "create_draft",
       "execution_mode": "com_worker",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "draft_id": {"type": "string"}
+          "draft_id": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "meeting_agent",
+        "document_analysis_agent"
+      ],
       "examples": [
         "Подготовить черновик письма с отчётом"
       ],
@@ -162,15 +206,25 @@
       "side_effect_level": "dangerous",
       "execution_mode": "com_worker",
       "requires_human_approval": true,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "sent": {"type": "boolean"},
-          "message_id": {"type": "string"}
+          "sent": {
+            "type": "boolean"
+          },
+          "message_id": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "meeting_agent",
+        "document_analysis_agent"
+      ],
       "examples": [
         "Отправить письмо руководителю после подтверждения"
       ],
@@ -184,14 +238,20 @@
       "side_effect_level": "read",
       "execution_mode": "com_worker",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": {"type": "string"}
+          "text": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent"
+      ],
       "examples": [
         "Извлечь текст из документа Word"
       ],
@@ -205,14 +265,20 @@
       "side_effect_level": "read",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "files": {"type": "array"}
+          "files": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent"
+      ],
       "examples": [
         "Найти документ по названию",
         "Найти файлы с кодом НД"
@@ -227,14 +293,20 @@
       "side_effect_level": "read",
       "execution_mode": "external_api",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "documents": {"type": "array"}
+          "documents": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent"
+      ],
       "examples": [
         "Найти связанные нормативные документы"
       ],
@@ -248,14 +320,20 @@
       "side_effect_level": "create_draft",
       "execution_mode": "llm",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": {"type": "string"}
+          "text": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["generic_agent"],
+      "allowed_for_agent_types": [
+        "generic_agent"
+      ],
       "examples": [
         "Сформировать текстовый ответ"
       ],
@@ -269,14 +347,20 @@
       "side_effect_level": "create_draft",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "summary_text": {"type": "string"}
+          "summary_text": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["meeting_agent"],
+      "allowed_for_agent_types": [
+        "meeting_agent"
+      ],
       "examples": [
         "Подготовить протокол совещания"
       ],
@@ -290,18 +374,32 @@
       "side_effect_level": "create_draft",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "recommendation_text": {"type": "string"},
-          "busy_slots": {"type": "array"},
-          "free_slots": {"type": "array"},
-          "risks": {"type": "array"},
-          "recommendations": {"type": "array"}
+          "recommendation_text": {
+            "type": "string"
+          },
+          "busy_slots": {
+            "type": "array"
+          },
+          "free_slots": {
+            "type": "array"
+          },
+          "risks": {
+            "type": "array"
+          },
+          "recommendations": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["meeting_agent"],
+      "allowed_for_agent_types": [
+        "meeting_agent"
+      ],
       "examples": [
         "Оценить плотность встреч и предложить свободные окна",
         "Сформировать рекомендации по фокус-времени"
@@ -316,14 +414,20 @@
       "side_effect_level": "create_draft",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "report_text": {"type": "string"}
+          "report_text": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent"
+      ],
       "examples": [
         "Сформировать отчёт анализа документа"
       ],
@@ -344,9 +448,15 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "browsers": {"type": "array"},
-          "count": {"type": "integer"},
-          "default_readable_browser": {"type": "string"}
+          "browsers": {
+            "type": "array"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "default_readable_browser": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -372,25 +482,53 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "browser": {"type": "string"},
-          "url": {"type": "string"}
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "path": {"type": "string"},
-          "url": {"type": "string"},
-          "pid": {"type": "integer"},
-          "available_browsers": {"type": "array"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "available_browsers": {
+            "type": "array"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -417,19 +555,38 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": {"type": "string"},
-          "max_results": {"type": "integer"},
-          "allowed_domains": {"type": "array", "items": {"type": "string"}}
+          "query": {
+            "type": "string"
+          },
+          "max_results": {
+            "type": "integer"
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "query": {"type": "string"},
-          "answer": {"type": "string"},
-          "results": {"type": "array"},
-          "source": {"type": "string"}
+          "query": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -456,32 +613,74 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "max_chars": {"type": "integer"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "text": {"type": "string"},
-          "links": {"type": "array"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"},
-          "cdp_available": {"type": "boolean"},
-          "cdp_url": {"type": "string"},
-          "fallback_used": {"type": "boolean"},
-          "fallback_reason": {"type": "string"},
-          "next_action_hint": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          },
+          "cdp_available": {
+            "type": "boolean"
+          },
+          "cdp_url": {
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "next_action_hint": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -493,7 +692,7 @@
       "examples": [
         "Прочитать указанную web-страницу"
       ],
-      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы через CDP. Если пользователь явно назвал браузер, сначала получи browser.list_installed_browsers и передай browser/browser_id (например yandex). По умолчанию CDP использует profile_mode=automation; это надёжнее для чтения/скриншотов. Для существующей пользовательской сессии без CDP используй browser.open_browser; use_default_profile=true может не дать CDP, если штатный профиль уже открыт. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
+      "planner_hint": "Используй, когда нужно прочитать содержимое конкретной страницы. По умолчанию открывай штатный пользовательский профиль (use_default_profile=true), чтобы сохранить авторизацию; не создавай новый automation-профиль без явной причины. Если пользователь назвал браузер, сначала browser.list_installed_browsers и передай browser/browser_id. Если нужен только показ пользовательской сессии без CDP — browser.open_browser. Не нажимай кнопки отправки, не заполняй формы, не скачивай файлы без подтверждения."
     },
     {
       "name": "browser.extract_table",
@@ -506,35 +705,83 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "table_hint": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "table_hint": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["url"]
+        "required": [
+          "url"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "tables": {"type": "array"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"},
-          "cdp_available": {"type": "boolean"},
-          "cdp_url": {"type": "string"},
-          "fallback_used": {"type": "boolean"},
-          "fallback_reason": {"type": "string"},
-          "next_action_hint": {"type": "string"},
-          "warning": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tables": {
+            "type": "array"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          },
+          "cdp_available": {
+            "type": "boolean"
+          },
+          "cdp_url": {
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "next_action_hint": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -559,36 +806,86 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "direction": {"type": "string"},
-          "pixels": {"type": "integer"},
-          "max_chars": {"type": "integer"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "pixels": {
+            "type": "integer"
+          },
+          "max_chars": {
+            "type": "integer"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["url"]
+        "required": [
+          "url"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "text": {"type": "string"},
-          "scroll_y": {"type": "integer"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"},
-          "cdp_available": {"type": "boolean"},
-          "cdp_url": {"type": "string"},
-          "fallback_used": {"type": "boolean"},
-          "fallback_reason": {"type": "string"},
-          "next_action_hint": {"type": "string"},
-          "warning": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "scroll_y": {
+            "type": "integer"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          },
+          "cdp_available": {
+            "type": "boolean"
+          },
+          "cdp_url": {
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "next_action_hint": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -613,30 +910,68 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "link_text": {"type": "string"},
-          "href": {"type": "string"},
-          "max_chars": {"type": "integer"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "link_text": {
+            "type": "string"
+          },
+          "href": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["url"]
+        "required": [
+          "url"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "text": {"type": "string"},
-          "links": {"type": "array"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -654,7 +989,7 @@
     {
       "name": "browser.navigate",
       "title": "Открыть страницу в браузере (UI)",
-      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам. По умолчанию использует стабильный automation-профиль; для пользовательских сессий штатного профиля передай use_default_profile=true.",
+      "description": "Открывает URL в управляемой вкладке браузера и возвращает скриншот. Используется для vision-режима, где LLM управляет UI по скриншотам. По умолчанию открывает штатный пользовательский профиль (use_default_profile=true), чтобы сохранить уже существующую авторизацию; новый automation-профиль — только при явном use_default_profile=false.",
       "category": "browser",
       "side_effect_level": "create_draft",
       "execution_mode": "browser_worker",
@@ -662,36 +997,86 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_open_browser_fallback": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_open_browser_fallback": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["url"]
+        "required": [
+          "url"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"},
-          "cdp_available": {"type": "boolean"},
-          "cdp_url": {"type": "string"},
-          "fallback_used": {"type": "boolean"},
-          "fallback_reason": {"type": "string"},
-          "next_action_hint": {"type": "string"},
-          "warning": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "viewport_width": {
+            "type": "integer"
+          },
+          "viewport_height": {
+            "type": "integer"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          },
+          "cdp_available": {
+            "type": "boolean"
+          },
+          "cdp_url": {
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "next_action_hint": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -704,7 +1089,7 @@
         "Открыть веб-версию сервиса и посмотреть UI",
         "Открыть страницу, где нужно взаимодействовать с элементами"
       ],
-      "planner_hint": "Начинай vision-сценарий с browser.navigate, когда для задачи нужно взаимодействовать с интерфейсом сайта (кнопки, поля, вход), а не просто прочитать текст. Если пользователь явно назвал браузер (например Яндекс/Yandex), сначала вызови browser.list_installed_browsers и передай browser_id='yandex' или выбранный id. По умолчанию используется profile_mode=automation — это отдельный стабильный профиль без пользовательских логинов и надёжным CDP. Если нужно только открыть пользовательскую сессию без управления, используй browser.open_browser. Если после browser.open_browser нужно продолжить смотреть/кликать в той же пользовательской сессии, вызывай browser.screenshot/browser.click/type_text без нового browser_id/profile: инструменты наследуют browser.open_browser из tool_outputs и используют OS fallback. Если нужна существующая сессия штатного профиля и дальнейшее UI-управление, можно передать use_default_profile=true: если CDP недоступен из-за уже открытого профиля, инструмент перейдёт в OS fallback (fallback_used=true, cdp_available=false) и вернёт скриншот видимого экрана. После этого продолжай browser.screenshot/browser.click/browser.type_text/browser.press_key/browser.scroll; координаты будут по видимому экрану из скриншота, а не по CDP viewport. Не переключайся на automation profile, если нужна текущая авторизация пользователя. Для Yandex штатный профиль использует %LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data. Не используй временный user-data-dir."
+      "planner_hint": "Начинай vision-сценарий с browser.navigate (или browser.open_browser), когда нужно взаимодействовать с интерфейсом сайта. По умолчанию открывай УЖЕ АВТОРИЗОВАННУЮ пользовательскую сессию: use_default_profile=true (это значение по умолчанию, если флаг не передан). НЕ создавай новый automation-профиль (use_default_profile=false) — там нет логинов пользователя. Если пользователь назвал браузер (Яндекс/Yandex/Chrome/Edge), сначала browser.list_installed_browsers и передай browser_id. Если browser.open_browser / browser.navigate уже были — не открывай новый браузер и не меняй профиль: browser.screenshot/browser.click/type_text/scroll наследуют сессию из tool_outputs (OS fallback при необходимости). Если CDP недоступен из-за уже открытого профиля, будет fallback_used=true, cdp_available=false — продолжай по скриншоту экрана. Automation (profile_mode=automation) — только если явно нужен чистый профиль без авторизации. Для Yandex штатный профиль: %LOCALAPPDATA%\\Yandex\\YandexBrowser\\User Data. Не используй временный user-data-dir. Не передавай profile_name='Default' сам."
     },
     {
       "name": "browser.screenshot",
@@ -717,28 +1102,62 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "viewport_width": {
+            "type": "integer"
+          },
+          "viewport_height": {
+            "type": "integer"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -764,36 +1183,86 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "max_chars": {"type": "integer"},
-          "summary_chars": {"type": "integer"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer"
+          },
+          "summary_chars": {
+            "type": "integer"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "html": {"type": "string"},
-          "html_length": {"type": "integer"},
-          "truncated": {"type": "boolean"},
-          "html_summary": {"type": "string"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"},
-          "cdp_available": {"type": "boolean"},
-          "cdp_url": {"type": "string"},
-          "fallback_used": {"type": "boolean"},
-          "fallback_reason": {"type": "string"},
-          "next_action_hint": {"type": "string"},
-          "warning": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          },
+          "html_length": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "html_summary": {
+            "type": "string"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          },
+          "cdp_available": {
+            "type": "boolean"
+          },
+          "cdp_url": {
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          },
+          "next_action_hint": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -819,31 +1288,72 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "x": {"type": "number"},
-          "y": {"type": "number"},
-          "button": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "button": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["x", "y"]
+        "required": [
+          "x",
+          "y"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "viewport_width": {"type": "integer"},
-          "viewport_height": {"type": "integer"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "viewport_width": {
+            "type": "integer"
+          },
+          "viewport_height": {
+            "type": "integer"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -869,27 +1379,59 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "text": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "text": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["text"]
+        "required": [
+          "text"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -915,27 +1457,59 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "key": {"type": "string"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "key": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         },
-        "required": ["key"]
+        "required": [
+          "key"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -961,36 +1535,92 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "direction": {"type": "string", "enum": ["down", "up", "left", "right"]},
-          "pixels": {"type": "integer"},
-          "x": {"type": "integer"},
-          "y": {"type": "integer"},
-          "browser": {"type": "string"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"},
-          "allow_os_fallback": {"type": "boolean"},
-          "profile_name": {"type": "string"},
-          "user_data_dir": {"type": "string"}
+          "direction": {
+            "type": "string",
+            "enum": [
+              "down",
+              "up",
+              "left",
+              "right"
+            ]
+          },
+          "pixels": {
+            "type": "integer"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          },
+          "allow_os_fallback": {
+            "type": "boolean"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "screenshot_base64": {"type": "string"},
-          "scrolled": {"type": "boolean"},
-          "scroll_top": {"type": "integer"},
-          "scroll_height": {"type": "integer"},
-          "client_height": {"type": "integer"},
-          "at_bottom": {"type": "boolean"},
-          "at_top": {"type": "boolean"},
-          "scroll_target": {"type": "string"},
-          "profile_mode": {"type": "string"},
-          "user_data_dir": {"type": "string"},
-          "used_default_profile": {"type": "boolean"},
-          "command_args_summary": {"type": "array"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "screenshot_base64": {
+            "type": "string"
+          },
+          "scrolled": {
+            "type": "boolean"
+          },
+          "scroll_top": {
+            "type": "integer"
+          },
+          "scroll_height": {
+            "type": "integer"
+          },
+          "client_height": {
+            "type": "integer"
+          },
+          "at_bottom": {
+            "type": "boolean"
+          },
+          "at_top": {
+            "type": "boolean"
+          },
+          "scroll_target": {
+            "type": "string"
+          },
+          "profile_mode": {
+            "type": "string"
+          },
+          "user_data_dir": {
+            "type": "string"
+          },
+          "used_default_profile": {
+            "type": "boolean"
+          },
+          "command_args_summary": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1016,19 +1646,35 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "document_type": {"type": "string"},
-          "number": {"type": "string"},
-          "date_from": {"type": "string"},
-          "date_to": {"type": "string"},
-          "query": {"type": "string"},
-          "status": {"type": "string"},
-          "max_results": {"type": "integer"}
+          "document_type": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "max_results": {
+            "type": "integer"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "documents": {"type": "array"}
+          "documents": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1053,14 +1699,20 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "document_ref": {"type": "string"}
+          "document_ref": {
+            "type": "string"
+          }
         },
-        "required": ["document_ref"]
+        "required": [
+          "document_ref"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "document": {"type": "object"}
+          "document": {
+            "type": "object"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1084,18 +1736,32 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "query": {"type": "string"},
-          "status": {"type": "string"},
-          "responsible": {"type": "string"},
-          "date_from": {"type": "string"},
-          "date_to": {"type": "string"},
-          "max_results": {"type": "integer"}
+          "query": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "responsible": {
+            "type": "string"
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          },
+          "max_results": {
+            "type": "integer"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "tasks": {"type": "array"}
+          "tasks": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1120,14 +1786,20 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "task_ref": {"type": "string"}
+          "task_ref": {
+            "type": "string"
+          }
         },
-        "required": ["task_ref"]
+        "required": [
+          "task_ref"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "task": {"type": "object"}
+          "task": {
+            "type": "object"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1151,21 +1823,42 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "goal": {"type": "string"},
-          "collected_data": {"type": "object"},
-          "analysis_type": {"type": "string"},
-          "output_format": {"type": "string"}
+          "goal": {
+            "type": "string"
+          },
+          "collected_data": {
+            "type": "object"
+          },
+          "analysis_type": {
+            "type": "string"
+          },
+          "output_format": {
+            "type": "string"
+          }
         },
-        "required": ["goal", "collected_data"]
+        "required": [
+          "goal",
+          "collected_data"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "summary": {"type": "string"},
-          "findings": {"type": "array"},
-          "risks": {"type": "array"},
-          "recommendations": {"type": "array"},
-          "confidence": {"type": "number"}
+          "summary": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "array"
+          },
+          "risks": {
+            "type": "array"
+          },
+          "recommendations": {
+            "type": "array"
+          },
+          "confidence": {
+            "type": "number"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1191,17 +1884,29 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "sources": {"type": "object"},
-          "comparison_goal": {"type": "string"}
+          "sources": {
+            "type": "object"
+          },
+          "comparison_goal": {
+            "type": "string"
+          }
         },
-        "required": ["sources"]
+        "required": [
+          "sources"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "matches": {"type": "array"},
-          "conflicts": {"type": "array"},
-          "summary": {"type": "string"}
+          "matches": {
+            "type": "array"
+          },
+          "conflicts": {
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1225,15 +1930,26 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "text": {"type": "string"},
-          "fact_types": {"type": "array", "items": {"type": "string"}}
+          "text": {
+            "type": "string"
+          },
+          "fact_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
-        "required": ["text"]
+        "required": [
+          "text"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "facts": {"type": "array"}
+          "facts": {
+            "type": "array"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1255,14 +1971,20 @@
       "side_effect_level": "dangerous",
       "execution_mode": "external_api",
       "requires_human_approval": true,
-      "input_schema": {"type": "object"},
+      "input_schema": {
+        "type": "object"
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "approved": {"type": "boolean"}
+          "approved": {
+            "type": "boolean"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent"
+      ],
       "examples": [
         "Утвердить документ после отдельного бизнес-подтверждения"
       ],
@@ -1276,15 +1998,27 @@
       "side_effect_level": "read",
       "execution_mode": "local",
       "requires_human_approval": false,
-      "input_schema": {"type": "object", "properties": {}},
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
       "output_schema": {
         "type": "object",
         "properties": {
-          "files": {"type": "array"},
-          "count": {"type": "integer"}
+          "files": {
+            "type": "array"
+          },
+          "count": {
+            "type": "integer"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent",
+        "task_control_agent"
+      ],
       "examples": [
         "Посмотреть, какие файлы уже есть в папке агента"
       ],
@@ -1301,22 +2035,46 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string", "description": "Имя .xlsx в папке агента"},
-          "sheet": {"type": "string", "description": "Имя листа (по умолчанию активный)"},
-          "max_rows": {"type": "integer", "description": "Максимум строк для чтения"}
+          "filename": {
+            "type": "string",
+            "description": "Имя .xlsx в папке агента"
+          },
+          "sheet": {
+            "type": "string",
+            "description": "Имя листа (по умолчанию активный)"
+          },
+          "max_rows": {
+            "type": "integer",
+            "description": "Максимум строк для чтения"
+          }
         },
-        "required": ["filename"]
+        "required": [
+          "filename"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "sheet": {"type": "string"},
-          "sheets": {"type": "array"},
-          "rows": {"type": "array"},
-          "row_count": {"type": "integer"}
+          "sheet": {
+            "type": "string"
+          },
+          "sheets": {
+            "type": "array"
+          },
+          "rows": {
+            "type": "array"
+          },
+          "row_count": {
+            "type": "integer"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent",
+        "task_control_agent"
+      ],
       "examples": [
         "Прочитать таблицу из прикреплённого файла",
         "Считать данные листа Excel для анализа"
@@ -1334,22 +2092,47 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string"},
-          "sheet": {"type": "string"},
-          "headers": {"type": "array", "items": {"type": "string"}},
-          "rows": {"type": "array", "description": "Массив строк, каждая строка — массив значений"},
-          "overwrite": {"type": "boolean"}
+          "filename": {
+            "type": "string"
+          },
+          "sheet": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "description": "Массив строк, каждая строка — массив значений"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
         },
-        "required": ["filename"]
+        "required": [
+          "filename"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string"},
-          "written_rows": {"type": "integer"}
+          "filename": {
+            "type": "string"
+          },
+          "written_rows": {
+            "type": "integer"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent",
+        "task_control_agent"
+      ],
       "examples": [
         "Создать Excel-отчёт с результатами",
         "Сохранить собранные данные в новую таблицу"
@@ -1367,22 +2150,36 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string"},
+          "filename": {
+            "type": "string"
+          },
           "operations": {
             "type": "array",
             "description": "Список операций: {action:'append_row', sheet, values}, {action:'set_cell', sheet, cell, value}, {action:'add_sheet', name}, {action:'delete_sheet', name}"
           }
         },
-        "required": ["filename", "operations"]
+        "required": [
+          "filename",
+          "operations"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string"},
-          "applied": {"type": "array"}
+          "filename": {
+            "type": "string"
+          },
+          "applied": {
+            "type": "array"
+          }
         }
       },
-      "allowed_for_agent_types": ["document_analysis_agent", "task_control_agent"],
+      "allowed_for_agent_types": [
+        "document_analysis_agent",
+        "generic_agent",
+        "meeting_agent",
+        "task_control_agent"
+      ],
       "examples": [
         "Дополнить существующую таблицу новыми строками",
         "Изменить значение ячейки в отчёте"
@@ -1413,20 +2210,40 @@
             "description": "Необязательная подпапка внутри workspace агента"
           }
         },
-        "required": ["command"]
+        "required": [
+          "command"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "ok": {"type": "boolean"},
-          "exit_code": {"type": "integer"},
-          "stdout": {"type": "string"},
-          "stderr": {"type": "string"},
-          "stdout_summary": {"type": "string"},
-          "stderr_summary": {"type": "string"},
-          "cwd": {"type": "string"},
-          "command": {"type": "string"},
-          "timed_out": {"type": "boolean"}
+          "ok": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdout_summary": {
+            "type": "string"
+          },
+          "stderr_summary": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "timed_out": {
+            "type": "boolean"
+          }
         }
       },
       "allowed_for_agent_types": [
@@ -1453,22 +2270,45 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "code": {"type": "string", "description": "Исходный код Python для сохранения"},
-          "filename": {"type": "string", "description": "Имя .py файла в папке code (по умолчанию main.py)"}
+          "code": {
+            "type": "string",
+            "description": "Исходный код Python для сохранения"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Имя .py файла в папке code (по умолчанию main.py)"
+          }
         },
-        "required": ["code"]
+        "required": [
+          "code"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "path": {"type": "string"},
-          "absolute_path": {"type": "string"},
-          "filename": {"type": "string"},
-          "bytes_written": {"type": "integer"},
-          "lines": {"type": "integer"}
+          "path": {
+            "type": "string"
+          },
+          "absolute_path": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "bytes_written": {
+            "type": "integer"
+          },
+          "lines": {
+            "type": "integer"
+          }
         }
       },
-      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent", "meeting_agent"],
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
       "examples": [
         "Записать скрипт разбора выгруженной HTML-таблицы",
         "Сохранить программу обработки данных перед запуском"
@@ -1486,27 +2326,65 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "filename": {"type": "string", "description": "Имя .py файла в папке code (по умолчанию main.py)"},
-          "code": {"type": "string", "description": "Необязательный inline-код: будет сохранён и запущен"},
-          "args": {"type": "array", "items": {"type": "string"}, "description": "Аргументы командной строки"},
-          "timeout_seconds": {"type": "integer", "description": "Таймаут выполнения, максимум 600 секунд"}
+          "filename": {
+            "type": "string",
+            "description": "Имя .py файла в папке code (по умолчанию main.py)"
+          },
+          "code": {
+            "type": "string",
+            "description": "Необязательный inline-код: будет сохранён и запущен"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Аргументы командной строки"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Таймаут выполнения, максимум 600 секунд"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "ok": {"type": "boolean"},
-          "exit_code": {"type": "integer"},
-          "stdout": {"type": "string"},
-          "stderr": {"type": "string"},
-          "stdout_summary": {"type": "string"},
-          "stderr_summary": {"type": "string"},
-          "script": {"type": "string"},
-          "cwd": {"type": "string"},
-          "timed_out": {"type": "boolean"}
+          "ok": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdout_summary": {
+            "type": "string"
+          },
+          "stderr_summary": {
+            "type": "string"
+          },
+          "script": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "timed_out": {
+            "type": "boolean"
+          }
         }
       },
-      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent", "meeting_agent"],
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent",
+        "meeting_agent"
+      ],
       "examples": [
         "Запустить написанный скрипт разбора таблицы и получить результат",
         "Выполнить программу обработки выгруженных данных"
@@ -1524,29 +2402,65 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string", "description": "Необязательный URL: перейти перед выгрузкой"},
-          "dump_name": {"type": "string", "description": "Имя подпапки дампа (по умолчанию из заголовка/URL)"},
-          "browser_id": {"type": "string"},
-          "browser_name": {"type": "string"},
-          "use_default_profile": {"type": "boolean"}
+          "url": {
+            "type": "string",
+            "description": "Необязательный URL: перейти перед выгрузкой"
+          },
+          "dump_name": {
+            "type": "string",
+            "description": "Имя подпапки дампа (по умолчанию из заголовка/URL)"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "browser_name": {
+            "type": "string"
+          },
+          "use_default_profile": {
+            "type": "boolean"
+          }
         }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "url": {"type": "string"},
-          "title": {"type": "string"},
-          "html_path": {"type": "string"},
-          "css_path": {"type": "string"},
-          "dump_dir": {"type": "string"},
-          "html_length": {"type": "integer"},
-          "css_length": {"type": "integer"},
-          "stylesheet_count": {"type": "integer"},
-          "blocked_stylesheets": {"type": "array"},
-          "html_summary": {"type": "string"}
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "html_path": {
+            "type": "string"
+          },
+          "css_path": {
+            "type": "string"
+          },
+          "dump_dir": {
+            "type": "string"
+          },
+          "html_length": {
+            "type": "integer"
+          },
+          "css_length": {
+            "type": "integer"
+          },
+          "stylesheet_count": {
+            "type": "integer"
+          },
+          "blocked_stylesheets": {
+            "type": "array"
+          },
+          "html_summary": {
+            "type": "string"
+          }
         }
       },
-      "allowed_for_agent_types": ["generic_agent", "document_analysis_agent", "task_control_agent"],
+      "allowed_for_agent_types": [
+        "generic_agent",
+        "document_analysis_agent",
+        "task_control_agent"
+      ],
       "examples": [
         "Выгрузить HTML и CSS страницы с большой таблицей для анализа программой",
         "Сохранить исходный код страницы, чтобы разобрать его написанным скриптом"
@@ -1570,18 +2484,33 @@
             "description": "На сколько секунд отложить работу"
           }
         },
-        "required": ["seconds"]
+        "required": [
+          "seconds"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "requested_seconds": {"type": "number"},
-          "waited_seconds": {"type": "number"},
-          "capped": {"type": "boolean"},
-          "cancelled": {"type": "boolean"}
+          "requested_seconds": {
+            "type": "number"
+          },
+          "waited_seconds": {
+            "type": "number"
+          },
+          "capped": {
+            "type": "boolean"
+          },
+          "cancelled": {
+            "type": "boolean"
+          }
         }
       },
-      "allowed_for_agent_types": ["task_control_agent", "meeting_agent", "document_analysis_agent", "generic_agent"],
+      "allowed_for_agent_types": [
+        "task_control_agent",
+        "meeting_agent",
+        "document_analysis_agent",
+        "generic_agent"
+      ],
       "examples": [
         "Подождать 60 секунд, пока придёт письмо с кодом подтверждения",
         "Сделать паузу перед повторной попыткой, чтобы не превысить лимит запросов",

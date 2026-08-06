@@ -237,9 +237,18 @@ def _bool_input(value: object) -> bool:
 
 
 def _profile_options(input_data: dict) -> dict[str, object]:
-    """Вытащить явные настройки профиля для vision worker."""
+    """Вытащить настройки профиля для vision worker.
+
+    По умолчанию (если флаг не передан) используем штатный пользовательский
+    профиль с уже существующей авторизацией, а не новый automation-профиль.
+    Явный ``use_default_profile=false`` оставляет automation.
+    """
+    if "use_default_profile" in input_data:
+        use_default = _bool_input(input_data.get("use_default_profile"))
+    else:
+        use_default = True
     return {
-        "use_default_profile": _bool_input(input_data.get("use_default_profile")),
+        "use_default_profile": use_default,
         "profile_name": str(input_data.get("profile_name") or "").strip() or None,
         "user_data_dir": str(input_data.get("user_data_dir") or "").strip() or None,
     }
@@ -294,9 +303,10 @@ class BrowserNavigateTool(_BaseVisionTool):
                 title="Открыть страницу в браузере (UI)",
                 description=(
                     "Открывает URL в управляемой вкладке браузера и возвращает "
-                    "скриншот страницы. По умолчанию использует стабильный "
-                    "automation-профиль; use_default_profile/profile_name/"
-                    "user_data_dir применяются только при явном указании. Если "
+                    "скриншот страницы. По умолчанию открывает штатный "
+                    "пользовательский профиль (use_default_profile=true), чтобы "
+                    "сохранить уже существующую авторизацию. Новый automation-"
+                    "профиль — только при явном use_default_profile=false. Если "
                     "штатный профиль уже открыт без CDP, может открыть URL обычным "
                     "браузером и перейти в OS fallback: cdp_available=false, "
                     "но screenshot/click/type_text продолжат работать по видимому экрану."

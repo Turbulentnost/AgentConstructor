@@ -8,6 +8,7 @@ from typing import Callable
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -239,6 +240,14 @@ class AgentListWidget(QWidget):
         self.run_button.setEnabled(False)
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setEnabled(False)
+        self.attach_button = QPushButton("Прикрепить файл")
+        self.attach_button.setEnabled(False)
+        self.attach_button.setToolTip(
+            "Прикрепить Excel/CSV/документ — файл попадёт в папку агента и в контекст"
+        )
+        self.clear_attach_button = QPushButton("Очистить файлы")
+        self.clear_attach_button.setEnabled(False)
+        self.clear_attach_button.setVisible(False)
         self.open_workspace_button = QPushButton("Открыть папку")
         self.open_workspace_button.setEnabled(False)
         self.delete_button = QPushButton("Удалить")
@@ -246,9 +255,17 @@ class AgentListWidget(QWidget):
         actions = QHBoxLayout()
         actions.addWidget(self.run_button)
         actions.addWidget(self.stop_button)
+        actions.addWidget(self.attach_button)
+        actions.addWidget(self.clear_attach_button)
         actions.addWidget(self.open_workspace_button)
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
+
+        self.attach_label = QLabel("")
+        self.attach_label.setWordWrap(True)
+        self.attach_label.setVisible(False)
+        self.attach_label.setStyleSheet("color:#93c5fd; font-size:12px; padding:2px 0;")
+        self._attachment_paths: list[str] = []
 
         self.human_panel = HumanInteractionPanel()
 
@@ -286,6 +303,7 @@ class AgentListWidget(QWidget):
         panel_layout.addWidget(self.panel_title)
         panel_layout.addWidget(self.panel_subtitle)
         panel_layout.addLayout(actions)
+        panel_layout.addWidget(self.attach_label)
         panel_layout.addWidget(self.human_panel)
         panel_layout.addWidget(log_label)
         panel_layout.addWidget(self.live_log, 1)
@@ -298,6 +316,8 @@ class AgentListWidget(QWidget):
         """Подключить обработчики кнопок и панели человека."""
         self.run_button.clicked.connect(self.run_current_agent)
         self.stop_button.clicked.connect(self.request_stop)
+        self.attach_button.clicked.connect(self.attach_files)
+        self.clear_attach_button.clicked.connect(self.clear_attachments)
         self.open_workspace_button.clicked.connect(self.open_selected_agent_workspace)
         self.delete_button.clicked.connect(self.delete_current_agent)
         self.human_panel.continue_requested.connect(self.continue_after_human)
@@ -360,17 +380,19 @@ class AgentListWidget(QWidget):
         self._highlight_card(agent.agent_id)
         self._paused_state = None
         self.human_panel.hide_panel()
+        self.clear_attachments()
         self.panel_title.setText(agent.name)
         self.panel_subtitle.setText(
             agent.short_description or agent.description or agent.goal.main_goal
         )
         self.run_button.setEnabled(True)
+        self.attach_button.setEnabled(True)
         self.open_workspace_button.setEnabled(True)
         self.delete_button.setEnabled(True)
         self.live_log.clear()
         self.live_log.append(
-            "Готов к запуску. Работа пойдёт по сохранённой схеме агента "
-            "с актуальными данными."
+            "Готов к запуску. При необходимости прикрепите Excel/документ "
+            "кнопкой «Прикрепить файл», затем нажмите «Запустить»."
         )
         self._load_history(agent.agent_id)
 
@@ -398,8 +420,10 @@ class AgentListWidget(QWidget):
             self.panel_title.setText("Выберите агента слева")
             self.panel_subtitle.clear()
             self.run_button.setEnabled(False)
+            self.attach_button.setEnabled(False)
             self.open_workspace_button.setEnabled(False)
             self.delete_button.setEnabled(False)
+            self.clear_attachments()
             self.live_log.clear()
             self.history_list.clear()
             self._highlight_card(None)
@@ -475,19 +499,66 @@ class AgentListWidget(QWidget):
         self._cancel_event.clear()
         self.live_log.clear()
         self.live_log.append(f"▶ Запуск агента «{agent.name}»…")
+        if self._attachment_paths:
+            from pathlib import Path
+
+            names = ", ".join(Path(path).name for path in self._attachment_paths)
+            self.live_log.append(f"📎 Вложения: {names}")
 
         service = self._container.agent_service
         cancel_event = self._cancel_event
         agent_id = agent.agent_id
+        attachment_paths = list(self._attachment_paths)
 
         def job(progress: Callable[[str], None]) -> object:
             return service.run_saved_agent(
                 agent_id,
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
+                attachment_paths=attachment_paths or None,
             )
 
         self._run_in_background(job, self._on_run_completed, self._on_run_failed)
+
+    def attach_files(self) -> None:
+        """Выбрать файлы, которые попадут в workspace и контекст при запуске."""
+        if self._selected_agent is None:
+            show_error(self, "Агент не выбран", "Сначала откройте карточку агента.")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Прикрепить файлы для агента",
+            "",
+            "Документы (*.xlsx *.xls *.csv *.txt *.json *.md *.docx *.pdf);;"
+            "Excel (*.xlsx *.xls *.csv);;Текст (*.txt *.md *.json);;Все файлы (*.*)",
+        )
+        if not paths:
+            return
+        for path in paths:
+            if path not in self._attachment_paths:
+                self._attachment_paths.append(path)
+        self._update_attach_label()
+
+    def clear_attachments(self) -> None:
+        """Сбросить список вложений для следующего запуска."""
+        self._attachment_paths = []
+        self._update_attach_label()
+
+    def _update_attach_label(self) -> None:
+        """Показать/скрыть подпись с именами прикреплённых файлов."""
+        from pathlib import Path
+
+        if not self._attachment_paths:
+            self.attach_label.clear()
+            self.attach_label.setVisible(False)
+            self.clear_attach_button.setVisible(False)
+            self.clear_attach_button.setEnabled(False)
+            return
+        names = ", ".join(Path(path).name for path in self._attachment_paths)
+        self.attach_label.setText(f"📎 К запуску: {names}")
+        self.attach_label.setVisible(True)
+        self.clear_attach_button.setVisible(True)
+        self.clear_attach_button.setEnabled(True)
 
     def continue_after_human(self, answer: str) -> None:
         """Продолжить приостановленный запуск после ответа/действия человека."""
@@ -601,6 +672,8 @@ class AgentListWidget(QWidget):
         if self._is_busy():
             return
         self.run_button.setEnabled(False)
+        self.attach_button.setEnabled(False)
+        self.clear_attach_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         thread = QThread()
         worker = CreateFlowWorker(job)
@@ -627,4 +700,9 @@ class AgentListWidget(QWidget):
         self._worker = None
         self.stop_button.setEnabled(False)
         self._cancel_event.clear()
-        self.run_button.setEnabled(self._selected_agent is not None)
+        has_agent = self._selected_agent is not None
+        self.run_button.setEnabled(has_agent)
+        self.attach_button.setEnabled(has_agent)
+        self.clear_attach_button.setEnabled(
+            has_agent and bool(self._attachment_paths)
+        )

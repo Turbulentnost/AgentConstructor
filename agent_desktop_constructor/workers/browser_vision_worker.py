@@ -36,6 +36,11 @@ from agent_desktop_constructor.workers.browser_cdp_worker import (
     _resolved_profile_name,
     _resolve_user_data_dir,
 )
+from agent_desktop_constructor.workers.browser_os_window import (
+    capture_browser_window_png,
+    focus_browser_window,
+    foreground_window_info,
+)
 
 DEFAULT_VISION_PORT = 9333
 DEFAULT_VIEWPORT_WIDTH = 1280
@@ -78,6 +83,9 @@ class BrowserVisionWorker:
         self._page_ws_url: str | None = None
         self._os_fallback_active = False
         self._os_fallback_url = ""
+        # Смещение (0,0) картинки OS screenshot → абсолютные экранные координаты.
+        self._os_click_origin: tuple[int, int] = (0, 0)
+        self._os_capture_meta: dict[str, Any] = {}
 
     def activate_os_fallback(
         self,
@@ -237,9 +245,14 @@ class BrowserVisionWorker:
         y = _require_number(input_data.get("y"), "y")
         button = str(input_data.get("button") or "left").strip().casefold()
         if self._os_fallback_active:
+            focus_meta = focus_browser_window(self._os_fallback_url)
+            time.sleep(0.15)
             self._send_os_click(int(x), int(y), button)
             time.sleep(0.25)
-            return self._state_with_os_screenshot()
+            result = self._state_with_os_screenshot()
+            result["focus_before_action"] = focus_meta
+            result["focused_window_after"] = foreground_window_info()
+            return result
         with self._session() as session:
             session.send("Page.enable")
             session.send("Runtime.enable")
@@ -267,9 +280,14 @@ class BrowserVisionWorker:
                 f"text слишком длинный (>{MAX_TEXT_LENGTH} символов)."
             )
         if self._os_fallback_active:
+            focus_meta = focus_browser_window(self._os_fallback_url)
+            time.sleep(0.15)
             self._send_os_text(text)
             time.sleep(0.25)
-            return self._state_with_os_screenshot()
+            result = self._state_with_os_screenshot()
+            result["focus_before_action"] = focus_meta
+            result["focused_window_after"] = foreground_window_info()
+            return result
         with self._session() as session:
             session.send("Input.insertText", {"text": text})
             time.sleep(0.2)
@@ -285,9 +303,14 @@ class BrowserVisionWorker:
                 + ", ".join(sorted({k for k in _SPECIAL_KEYS}))
             )
         if self._os_fallback_active:
+            focus_meta = focus_browser_window(self._os_fallback_url)
+            time.sleep(0.15)
             self._send_os_key(descriptor)
             time.sleep(0.25)
-            return self._state_with_os_screenshot()
+            result = self._state_with_os_screenshot()
+            result["focus_before_action"] = focus_meta
+            result["focused_window_after"] = foreground_window_info()
+            return result
         with self._session() as session:
             session.send("Input.dispatchKeyEvent", {"type": "rawKeyDown", **descriptor})
             if "text" in descriptor:
@@ -391,8 +414,9 @@ class BrowserVisionWorker:
         warning: str = "",
         fallback_reason: str = "default_profile_os_fallback",
     ) -> dict:
-        """Собрать скриншот видимого экрана, когда штатный профиль недоступен через CDP."""
+        """Собрать скриншот виртуального desktop (все мониторы), когда CDP недоступен."""
         screenshot_base64, width, height = self._desktop_screenshot()
+        meta = dict(self._os_capture_meta or {})
         return {
             "url": self._os_fallback_url,
             "title": "",
@@ -400,11 +424,22 @@ class BrowserVisionWorker:
             "screenshot_media_type": "image/png",
             "viewport_width": width,
             "viewport_height": height,
+            "capture_mode": meta.get("capture_mode") or "virtual_desktop",
+            "screen_origin_x": int(meta.get("origin_x") or self._os_click_origin[0]),
+            "screen_origin_y": int(meta.get("origin_y") or self._os_click_origin[1]),
+            "monitor_count": int(meta.get("monitor_count") or 1),
             "warning": (
                 warning
-                or "CDP недоступен для штатного профиля; используется OS fallback "
-                "по видимому окну/экрану."
+                or (
+                    "CDP недоступен для штатного профиля; OS fallback — скриншот "
+                    + (
+                        "окна браузера."
+                        if meta.get("capture_mode") == "browser_window"
+                        else "виртуального desktop (все мониторы)."
+                    )
+                )
             ),
+            "window_title": meta.get("title") or "",
             **self.profile_output(
                 cdp_available=False,
                 fallback_used=True,
@@ -686,48 +721,69 @@ class BrowserVisionWorker:
         }
 
     def _desktop_screenshot(self) -> tuple[str, int, int]:
-        """Сделать PNG-скриншот экрана через Qt, без CDP."""
-        try:
-            from PySide6.QtCore import QByteArray, QBuffer, QIODevice
-            from PySide6.QtGui import QGuiApplication
-        except Exception as exc:  # pragma: no cover - зависит от окружения
-            raise BrowserCdpError(
-                "OS fallback screenshot недоступен: PySide6 не загружен."
-            ) from exc
-        app = QGuiApplication.instance()
-        if app is None:
-            raise BrowserCdpError(
-                "OS fallback screenshot недоступен: QApplication не запущен."
+        """PNG-скриншот окна браузера (предпочтительно) или virtual desktop."""
+        captured = None
+        # E: сначала окно браузера — точнее координаты, меньше лишнего UI.
+        if _is_windows():
+            window_shot = capture_browser_window_png(
+                self._os_fallback_url,
+                focus=True,
             )
-        screen = app.primaryScreen()
-        if screen is None:
-            raise BrowserCdpError("OS fallback screenshot недоступен: нет экрана.")
-        pixmap = screen.grabWindow(0)
-        data = QByteArray()
-        buffer = QBuffer(data)
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        pixmap.save(buffer, "PNG")
+            if window_shot is not None:
+                png_bytes, meta = window_shot
+                self._os_click_origin = (
+                    int(meta["origin_x"]),
+                    int(meta["origin_y"]),
+                )
+                self._os_capture_meta = dict(meta)
+                return (
+                    base64.b64encode(png_bytes).decode("ascii"),
+                    int(meta["width"]),
+                    int(meta["height"]),
+                )
+            captured = _capture_virtual_desktop_win32()
+        if captured is None:
+            captured = _capture_virtual_desktop_qt()
+        if captured is None:
+            raise BrowserCdpError(
+                "OS fallback screenshot недоступен: не удалось снять "
+                "окно браузера или virtual desktop."
+            )
+        png_bytes, width, height, origin_x, origin_y, monitor_count, engine = captured
+        self._os_click_origin = (int(origin_x), int(origin_y))
+        self._os_capture_meta = {
+            "capture_mode": "virtual_desktop",
+            "origin_x": int(origin_x),
+            "origin_y": int(origin_y),
+            "monitor_count": int(monitor_count),
+            "engine": engine,
+            "width": int(width),
+            "height": int(height),
+        }
         return (
-            base64.b64encode(bytes(data)).decode("ascii"),
-            int(pixmap.width()),
-            int(pixmap.height()),
+            base64.b64encode(png_bytes).decode("ascii"),
+            int(width),
+            int(height),
         )
 
     def _send_os_click(self, x: int, y: int, button: str) -> None:
-        """Кликнуть по абсолютным координатам экрана через Win32."""
+        """Кликнуть по координатам скриншота (virtual desktop) через Win32."""
         if not _is_windows():
             raise BrowserCdpError("OS fallback click поддержан только на Windows.")
         import win32api
         import win32con
 
+        origin_x, origin_y = self._os_click_origin
+        abs_x = int(origin_x) + int(x)
+        abs_y = int(origin_y) + int(y)
         down, up = (
             (win32con.MOUSEEVENTF_RIGHTDOWN, win32con.MOUSEEVENTF_RIGHTUP)
             if button == "right"
             else (win32con.MOUSEEVENTF_LEFTDOWN, win32con.MOUSEEVENTF_LEFTUP)
         )
-        win32api.SetCursorPos((x, y))
-        win32api.mouse_event(down, x, y, 0, 0)
-        win32api.mouse_event(up, x, y, 0, 0)
+        win32api.SetCursorPos((abs_x, abs_y))
+        win32api.mouse_event(down, abs_x, abs_y, 0, 0)
+        win32api.mouse_event(up, abs_x, abs_y, 0, 0)
 
     def _send_os_text(self, text: str) -> None:
         """Вставить текст в активное поле через clipboard + Ctrl+V."""
@@ -919,3 +975,142 @@ def _bool_input(value: object, *, default: bool = False) -> bool:
 def _is_windows() -> bool:
     """Проверить, что OS fallback input можно выполнить через Win32."""
     return os.name == "nt"
+
+
+def _png_bytes_from_qimage(image: Any) -> bytes | None:
+    """Сохранить QImage/QPixmap в PNG bytes."""
+    try:
+        from PySide6.QtCore import QByteArray, QBuffer, QIODevice
+    except Exception:
+        return None
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not image.save(buffer, "PNG"):
+        return None
+    raw = bytes(data)
+    return raw or None
+
+
+def _capture_virtual_desktop_win32() -> (
+    tuple[bytes, int, int, int, int, int, str] | None
+):
+    """Снять весь virtual desktop через Win32 BitBlt (физические пиксели)."""
+    try:
+        import win32con
+        import win32gui
+        import win32ui
+        from ctypes import windll
+        from PySide6.QtGui import QImage
+    except Exception:
+        return None
+
+    user32 = windll.user32
+    # SM_XVIRTUALSCREEN / Y / CX / CY
+    left = int(user32.GetSystemMetrics(76))
+    top = int(user32.GetSystemMetrics(77))
+    width = int(user32.GetSystemMetrics(78))
+    height = int(user32.GetSystemMetrics(79))
+    if width <= 0 or height <= 0:
+        return None
+    monitor_count = max(1, int(user32.GetSystemMetrics(80)))  # SM_CMONITORS
+
+    hwnd = win32gui.GetDesktopWindow()
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+    save_dc = mfc_dc.CreateCompatibleDC()
+    bitmap = win32ui.CreateBitmap()
+    bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+    save_dc.SelectObject(bitmap)
+    # SRCCOPY | CAPTUREBLT — захватить layered windows тоже.
+    save_dc.BitBlt(
+        (0, 0),
+        (width, height),
+        mfc_dc,
+        (left, top),
+        win32con.SRCCOPY | getattr(win32con, "CAPTUREBLT", 0x40000000),
+    )
+    bmp_str = bitmap.GetBitmapBits(True)
+    win32gui.DeleteObject(bitmap.GetHandle())
+    save_dc.DeleteDC()
+    mfc_dc.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+    image = QImage(bmp_str, width, height, QImage.Format.Format_RGB32)
+    if image.isNull():
+        return None
+    # Копия владеет памятью — bmp_str иначе может быть собран GC.
+    image = image.copy()
+    png = _png_bytes_from_qimage(image)
+    if not png:
+        return None
+    return png, width, height, left, top, monitor_count, "win32"
+
+
+def _capture_virtual_desktop_qt() -> tuple[bytes, int, int, int, int, int, str] | None:
+    """Склеить скриншоты всех QScreen в один virtual desktop (fallback)."""
+    try:
+        from PySide6.QtCore import QRect, Qt
+        from PySide6.QtGui import QGuiApplication, QPainter, QPixmap
+    except Exception:
+        return None
+
+    app = QGuiApplication.instance()
+    if app is None:
+        return None
+    screens = list(app.screens() or [])
+    if not screens:
+        return None
+
+    # Логическая геометрия virtual desktop.
+    left = min(screen.geometry().x() for screen in screens)
+    top = min(screen.geometry().y() for screen in screens)
+    right = max(
+        screen.geometry().x() + screen.geometry().width() for screen in screens
+    )
+    bottom = max(
+        screen.geometry().y() + screen.geometry().height() for screen in screens
+    )
+    logical_w = max(1, right - left)
+    logical_h = max(1, bottom - top)
+
+    # Рисуем в device pixels primary DPR, чтобы клики оставались согласованы
+    # на типичной конфигурации; смешанный DPI — компромисс Qt-пути.
+    dpr = float(app.primaryScreen().devicePixelRatio() or 1.0)
+    out_w = max(1, int(round(logical_w * dpr)))
+    out_h = max(1, int(round(logical_h * dpr)))
+    canvas = QPixmap(out_w, out_h)
+    canvas.fill(Qt.GlobalColor.black)
+    painter = QPainter(canvas)
+    try:
+        for screen in screens:
+            geo = screen.geometry()
+            grabbed = screen.grabWindow(0)
+            if grabbed.isNull():
+                continue
+            target = QRect(
+                int(round((geo.x() - left) * dpr)),
+                int(round((geo.y() - top) * dpr)),
+                int(round(geo.width() * dpr)),
+                int(round(geo.height() * dpr)),
+            )
+            painter.drawPixmap(target, grabbed)
+    finally:
+        painter.end()
+
+    png = _png_bytes_from_qimage(canvas)
+    if not png:
+        return None
+    # origin в тех же единицах, что и SetCursorPos на Win (физические ≈ logical*dpr
+    # при едином масштабе); для не-Windows клики всё равно недоступны.
+    origin_x = int(round(left * dpr))
+    origin_y = int(round(top * dpr))
+    return (
+        png,
+        out_w,
+        out_h,
+        origin_x,
+        origin_y,
+        len(screens),
+        "qt",
+    )

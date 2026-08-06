@@ -8,6 +8,9 @@ from agent_desktop_constructor.app.context.manager import AgentContextManager
 from agent_desktop_constructor.app.llm.goal_checklist import TOOL_OUTPUT_HISTORY_LIMIT
 from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
+from agent_desktop_constructor.app.runtime.screenshot_compress import (
+    prepare_screenshot_for_llm,
+)
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
@@ -147,17 +150,35 @@ def build_agent_loop_prompt(
 - Outlook и 1С работают только в режиме чтения. email.send заблокирован.
 - Пароли/секреты нельзя запрашивать через LLM — для авторизации верни request_credentials.
 
+Браузер и авторизованная сессия (ОБЯЗАТЕЛЬНО):
+- По умолчанию ВСЕГДА работай в уже существующей пользовательской сессии браузера
+  (cookies/логины пользователя), а НЕ создавай новый пустой automation-профиль.
+- При открытии сайта: browser.open_browser ИЛИ browser.navigate с
+  use_default_profile=true (и нужным browser_id, если браузер назван).
+- НЕ передавай use_default_profile=false и НЕ уходи в automation, если нужна
+  текущая авторизация пользователя. Automation — только если человек явно просит
+  чистый/изолированный профиль без логинов.
+- Если browser уже открыт (есть browser.open_browser / browser.navigate в
+  collected_data/tool_outputs) — НЕ открывай новый браузер и НЕ меняй профиль:
+  наследуй browser_id/url/use_default_profile; для screenshot/click/type_text/
+  scroll/extract_table достаточно продолжить в той же сессии.
+- Не передавай profile_name="Default" сам: активная сессия может быть в другом
+  профиле. profile_name — только если человек явно назвал профиль.
+
 Взаимодействие с UI сайтов (vision-режим):
 - Если для задачи нужно не просто прочитать текст страницы, а взаимодействовать с
   интерфейсом (нажать кнопку, ввести текст, перейти по элементу, открыть раздел),
-  используй vision-инструменты браузера: browser.navigate (открыть URL),
-  browser.screenshot (обновить кадр), browser.get_page_html (HTML/DOM текущей
-  вкладки), browser.click (клик по x,y), browser.type_text (ввод текста в
-  активное поле), browser.press_key (enter/tab/escape/стрелки), browser.scroll
-  (прокрутка).
-- К твоему сообщению прикладывается АКТУАЛЬНЫЙ СКРИНШОТ текущей вкладки, если он
-  есть. Определяй координаты клика по скриншоту в пикселях от левого-верхнего угла;
-  размеры viewport указаны в screen_context.
+  используй vision-инструменты браузера: browser.navigate (открыть URL в
+  пользовательской сессии), browser.screenshot (обновить кадр),
+  browser.get_page_html (HTML/DOM текущей вкладки), browser.click (клик по x,y),
+  browser.type_text (ввод текста в активное поле), browser.press_key
+  (enter/tab/escape/стрелки), browser.scroll (прокрутка).
+- К твоему сообщению прикладывается АКТУАЛЬНЫЙ СКРИНШОТ, если он есть.
+  В OS fallback это либо окно браузера (capture_mode=browser_window), либо
+  virtual desktop. Координаты browser.click/scroll ОБЯЗАТЕЛЬНО в пикселях
+  приложенной картинки: 0 ≤ x < image_width, 0 ≤ y < image_height из
+  screen_context (это размеры именно image, не desktop_*). Runtime сам
+  переведёт их в экранные координаты. Не используй desktop_width/height для клика.
 - browser.get_page_html — когда нужна разметка/селекторы/скрытый текст, а не
   картинка; для визуальных кликов по UI используй screenshot.
 - browser.dump_page_source — когда нужно выгрузить весь HTML и CSS страницы в файлы
@@ -169,8 +190,6 @@ def build_agent_loop_prompt(
   browser.navigate; если CDP не поднялся из-за уже открытого окна, спроси человека
   закрыть это окно и повтори browser.navigate с тем же browser_id/use_default_profile.
   Не переключайся молча на другой браузер/профиль, иначе потеряешь авторизацию.
-  Не передавай profile_name="Default" сам: у пользователя активная сессия может быть
-  в другом профиле. profile_name указывай только если человек явно назвал профиль.
 - browser.extract_table тоже является DOM/CDP-инструментом. Если страница уже открыта
   в нужном браузере, не навигируй в другой браузер и не меняй профиль: инструмент
   унаследует browser_id/url/use_default_profile из tool_outputs. Для текущей таблицы
@@ -189,7 +208,10 @@ def build_agent_loop_prompt(
         runtime_state.variables.get("tool_output_history", [])
     )
     goal_checklist = runtime_state.variables.get("goal_checklist") or []
-    last_screenshot = runtime_state.variables.get("last_screenshot")
+    last_screenshot_raw = runtime_state.variables.get("last_screenshot")
+    last_screenshot = prepare_screenshot_for_llm(
+        last_screenshot_raw if isinstance(last_screenshot_raw, dict) else None
+    )
     executed_steps = [
         {
             "tool_name": record.tool_name,
@@ -237,20 +259,75 @@ def build_agent_loop_prompt(
     if attached_files:
         user_payload["attached_files"] = attached_files
         user_payload["attached_files_note"] = (
-            "Пользователь прикрепил файлы при создании агента. Их содержимое ниже, "
-            "а сами файлы лежат в рабочей папке агента — их можно читать и "
-            "редактировать через инструменты excel.* по имени файла."
+            "Пользователь прикрепил файлы. Краткое содержимое — в attached_files; "
+            "сами файлы лежат в рабочей папке агента. Для Excel (.xlsx): "
+            "excel.list_files → excel.read_workbook(filename=имя) → при необходимости "
+            "excel.edit_workbook / excel.create_workbook. Для текста/CSV содержимое "
+            "уже в attached_files.content; при правках используй excel.* или "
+            "code.write_python/code.run_python по файлу в папке агента."
         )
     if isinstance(last_screenshot, dict) and last_screenshot.get("base64"):
+        capture_mode = last_screenshot.get("capture_mode")
+        monitor_count = last_screenshot.get("monitor_count")
+        image_w = last_screenshot.get("image_width") or last_screenshot.get(
+            "viewport_width"
+        )
+        image_h = last_screenshot.get("image_height") or last_screenshot.get(
+            "viewport_height"
+        )
+        if capture_mode == "browser_window":
+            note = (
+                "Приложен скриншот ОКНА БРАУЗЕРА. Координаты browser.click — "
+                f"в пикселях этой картинки (0..{image_w - 1 if image_w else '?'}, "
+                f"0..{image_h - 1 if image_h else '?'}). Не используй desktop_*."
+            )
+        elif capture_mode == "virtual_desktop" or (
+            isinstance(monitor_count, int) and monitor_count > 1
+        ):
+            note = (
+                "Приложен скриншот virtual desktop "
+                f"(мониторов: {monitor_count or '?'}). Координаты browser.click — "
+                f"ТОЛЬКО в пикселях приложенной картинки "
+                f"({image_w}×{image_h}), не desktop_width/height. "
+                "Runtime масштабирует клик сам."
+            )
+        else:
+            note = (
+                "Приложен скриншот. Координаты browser.click — в пикселях этой "
+                f"картинки ({image_w}×{image_h})."
+            )
         user_payload["screen_context"] = {
             "has_screenshot": True,
             "url": last_screenshot.get("url"),
             "title": last_screenshot.get("title"),
-            "viewport_width": last_screenshot.get("viewport_width"),
-            "viewport_height": last_screenshot.get("viewport_height"),
+            "viewport_width": image_w,
+            "viewport_height": image_h,
+            "image_width": image_w,
+            "image_height": image_h,
+            "desktop_width": last_screenshot.get("desktop_width"),
+            "desktop_height": last_screenshot.get("desktop_height"),
+            "capture_mode": capture_mode,
+            "monitor_count": monitor_count,
+            "screen_origin_x": last_screenshot.get("screen_origin_x"),
+            "screen_origin_y": last_screenshot.get("screen_origin_y"),
+            "coord_space": "image",
+            "note": note,
+        }
+    elif isinstance(last_screenshot_raw, dict) and (
+        last_screenshot_raw.get("base64")
+        or last_screenshot_raw.get("attach_to_llm") is False
+    ):
+        user_payload["screen_context"] = {
+            "has_screenshot": False,
+            "url": last_screenshot_raw.get("url"),
+            "title": last_screenshot_raw.get("title"),
+            "viewport_width": last_screenshot_raw.get("viewport_width"),
+            "viewport_height": last_screenshot_raw.get("viewport_height"),
             "note": (
-                "К этому сообщению приложен скриншот текущей вкладки. Координаты "
-                "для browser.click указывай в пикселях viewport по этому скриншоту."
+                "Скриншот был захвачен, но не приложен к LLM (слишком большой даже "
+                "после сжатия или отключён после timeout). Ориентируйся на "
+                "url/title и observation_history; при необходимости вызови "
+                "browser.screenshot снова или работай через DOM/CDP, если доступен."
             ),
         }
     last_page_html = runtime_state.variables.get("last_page_html")

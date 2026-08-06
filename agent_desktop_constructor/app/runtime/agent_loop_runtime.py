@@ -12,7 +12,10 @@ from agent_desktop_constructor.app.core.models.human_approval import (
 )
 from agent_desktop_constructor.app.core.models.run_events import AgentRunEventType
 from agent_desktop_constructor.app.llm.agent_loop_planner import LLMAgentLoopPlanner
-from agent_desktop_constructor.app.llm.errors import LLMCancelledError
+from agent_desktop_constructor.app.llm.errors import (
+    LLMCancelledError,
+    LLMConnectionError,
+)
 from agent_desktop_constructor.app.llm.goal_checklist import (
     append_tool_output_history,
     apply_checklist_updates,
@@ -25,6 +28,10 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
 )
 from agent_desktop_constructor.app.llm.tool_result_quality import (
     ToolResultQualityEvaluator,
+)
+from agent_desktop_constructor.app.runtime.run_transcript import RunTranscriptLogger
+from agent_desktop_constructor.app.runtime.screenshot_compress import (
+    compress_screenshot_base64,
 )
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.tooling import ToolCallResult
@@ -78,6 +85,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         max_repeat_attempts: int = 2,
         max_decision_retries: int = 3,
         context_manager: AgentContextManager | None = None,
+        transcript_logger: RunTranscriptLogger | None = None,
     ) -> None:
         """Создать LLM-управляемый runtime без прямого доступа LLM к инструментам."""
         super().__init__(
@@ -94,6 +102,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._max_decision_retries = max_decision_retries
         self._context_manager = context_manager or AgentContextManager()
         self._quality_evaluator = ToolResultQualityEvaluator()
+        self._transcript = transcript_logger or RunTranscriptLogger()
+        self._active_agent_spec: AgentSpec | None = None
         self._progress_callback: Callable[[str], None] | None = None
         self._cancel_callback: Callable[[], bool] | None = None
 
@@ -268,7 +278,107 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             state,
             agent_spec,
         )
+        self._active_agent_spec = agent_spec
+        self._init_transcript(agent_spec, state)
         return self._drive_loop(agent_spec, state)
+
+    def _init_transcript(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+    ) -> None:
+        """Создать файлы трассировки и показать путь в UI."""
+        try:
+            paths = self._transcript.ensure_paths(agent_spec, state)
+            self._emit_progress(
+                f"📝 Трассировка шагов: {paths.get('markdown')}",
+                state,
+                agent_spec,
+            )
+        except Exception as exc:
+            state.variables["run_transcript_error"] = str(exc)
+
+    def _log_transcript_decision(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        decision: SupervisorDecision,
+        *,
+        parse_error: str | None = None,
+    ) -> None:
+        """Безопасно записать решение LLM в файлы трассировки."""
+        try:
+            self._transcript.log_decision(
+                agent_spec,
+                state,
+                decision,
+                parse_error=parse_error,
+            )
+        except Exception as exc:
+            state.variables["run_transcript_error"] = str(exc)
+
+    def _log_transcript_tool(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        record: ToolCallRecord,
+    ) -> None:
+        """Безопасно записать результат tool в файлы трассировки."""
+        try:
+            self._transcript.log_tool_result(agent_spec, state, record)
+        except Exception as exc:
+            state.variables["run_transcript_error"] = str(exc)
+
+    def _log_transcript_status(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        note: str | None = None,
+    ) -> None:
+        """Безопасно записать финальный/паузный статус run."""
+        try:
+            self._transcript.log_run_status(agent_spec, state, note=note)
+        except Exception as exc:
+            state.variables["run_transcript_error"] = str(exc)
+
+    def _log_transcript_event(
+        self,
+        agent_spec: AgentSpec,
+        state: AgentRuntimeState,
+        event: str,
+        *,
+        details: dict | None = None,
+        note: str | None = None,
+    ) -> None:
+        """Безопасно записать служебное событие цикла в transcript."""
+        try:
+            self._transcript.log_event(
+                agent_spec, state, event, details=details, note=note
+            )
+        except Exception as exc:
+            state.variables["run_transcript_error"] = str(exc)
+
+    @staticmethod
+    def _screenshot_llm_details(state: AgentRuntimeState) -> dict:
+        """Краткие метрики last_screenshot для логов waiting_llm / timeout."""
+        shot = state.variables.get("last_screenshot")
+        if not isinstance(shot, dict):
+            return {"has_screenshot": False}
+        meta = shot.get("compress_meta") if isinstance(shot.get("compress_meta"), dict) else {}
+        return {
+            "has_screenshot": bool(shot.get("base64")),
+            "attach_to_llm": shot.get("attach_to_llm"),
+            "media_type": shot.get("media_type"),
+            "base64_chars": len(str(shot.get("base64") or "")),
+            "compress_meta": {
+                "original_chars": meta.get("original_chars"),
+                "compressed_chars": meta.get("compressed_chars"),
+                "compressed": meta.get("compressed"),
+                "skipped_for_llm": meta.get("skipped_for_llm"),
+                "engine": meta.get("engine"),
+                "output_size": meta.get("output_size"),
+            },
+        }
 
     def resume_with_human_input(
         self,
@@ -308,6 +418,8 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._emit_progress(
             f"👤 Человек ответил: {answer or default_answer}. Продолжаю работу…"
         )
+        self._active_agent_spec = agent_spec
+        self._init_transcript(agent_spec, state)
         self._refresh_context(state, agent_spec)
 
         pending_tool = state.variables.pop("pending_loop_tool", None)
@@ -441,6 +553,14 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 state,
                 agent_spec,
             )
+            shot_details = self._screenshot_llm_details(state)
+            self._log_transcript_event(
+                agent_spec,
+                state,
+                "waiting_llm",
+                details=shot_details,
+                note="ожидание ответа LLM на шаг планирования",
+            )
             try:
                 decision = self._planner.decide(
                     agent_spec,
@@ -449,13 +569,54 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     repeat_notes=list(repeat_notes),
                 )
             except LLMCancelledError:
+                self._log_transcript_event(
+                    agent_spec,
+                    state,
+                    "llm_cancelled",
+                    details=shot_details,
+                    note="запрос к LLM отменён пользователем",
+                )
                 self._mark_user_cancelled(state)
                 break
             except Exception as exc:
                 if self._is_cancel_requested():
                     self._mark_user_cancelled(state)
                     break
+                error_text = str(exc)
+                is_timeout = isinstance(exc, (TimeoutError, LLMConnectionError)) or (
+                    "timeout" in error_text.lower()
+                    or "timed out" in error_text.lower()
+                )
+                self._log_transcript_event(
+                    agent_spec,
+                    state,
+                    "llm_timeout" if is_timeout else "llm_error",
+                    details={**shot_details, "error": error_text},
+                    note=error_text,
+                )
                 decision_failures += 1
+                if is_timeout and shot_details.get("attach_to_llm"):
+                    # После timeout на vision — следующий шаг без image.
+                    shot = state.variables.get("last_screenshot")
+                    if isinstance(shot, dict):
+                        shot["attach_to_llm"] = False
+                        meta = shot.get("compress_meta")
+                        if isinstance(meta, dict):
+                            meta["skipped_for_llm"] = True
+                            meta["skip_reason"] = "llm_timeout_after_vision"
+                    drop_note = (
+                        "Прошлый вызов LLM завис/timeout на запросе со скриншотом. "
+                        "Скриншот временно отключён — реши следующий шаг по "
+                        "url/title/observation_history или вызови browser.screenshot "
+                        "с меньшим viewport / DOM-инструменты."
+                    )
+                    if drop_note not in repeat_notes:
+                        repeat_notes.append(drop_note)
+                    self._emit_progress(
+                        "⚠ LLM timeout на шаге со скриншотом — "
+                        "следующий запрос пойдёт без image.",
+                        state,
+                    )
                 if decision_failures <= self._max_decision_retries:
                     hint = (
                         "На прошлом шаге твой JSON-ответ не прошёл проверку: "
@@ -463,13 +624,31 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                         "— одно из значений схемы (call_tool/finish_success/…), а имя "
                         "инструмента только в tool_call.tool_name."
                     )
-                    if hint not in repeat_notes:
+                    if not is_timeout and hint not in repeat_notes:
                         repeat_notes.append(hint)
                     self._emit_progress(
                         f"⚠ Ответ LLM не прошёл проверку (попытка "
                         f"{decision_failures}/{self._max_decision_retries}), "
                         f"прошу переформулировать: {exc}"
+                        if not is_timeout
+                        else (
+                            f"⚠ Таймаут/ошибка связи с LLM (попытка "
+                            f"{decision_failures}/{self._max_decision_retries}): {exc}"
+                        )
                     )
+                    if not is_timeout:
+                        try:
+                            self._transcript.log_decision(
+                                agent_spec,
+                                state,
+                                SupervisorDecision(
+                                    decision_type=SupervisorDecisionType.FINISH_FAILED,
+                                    reason=f"parse_error_retry: {exc}",
+                                ),
+                                parse_error=str(exc),
+                            )
+                        except Exception:
+                            pass
                     continue
                 state.mark_failed(f"LLM не смог принять решение: {exc}")
                 self._add_run_event(
@@ -479,12 +658,24 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                     details={"error": str(exc)},
                 )
                 self._emit_progress(f"⚠ LLM не смогла принять решение: {exc}")
+                self._log_transcript_status(
+                    agent_spec, state, note=f"LLM decide failed: {exc}"
+                )
                 break
+
+            self._log_transcript_event(
+                agent_spec,
+                state,
+                "llm_ready",
+                details=shot_details,
+                note="ответ LLM получен",
+            )
 
             decision_failures = 0
             state.variables.setdefault("loop_decisions", []).append(
                 decision.model_dump(mode="json")
             )
+            self._log_transcript_decision(agent_spec, state, decision)
             self._emit_think_progress(decision, state, agent_spec)
             self._emit_decision_progress(decision, state, agent_spec)
             self._refresh_context(state, agent_spec)
@@ -524,6 +715,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         self._refresh_context(state, agent_spec)
         self._add_terminal_event(state)
         self._refresh_context(state, agent_spec)
+        self._log_transcript_status(agent_spec, state, note="loop_finished")
         self._save_checkpoint(state)
         return state
 
@@ -940,8 +1132,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             and self._try_auto_approve_code_run(state, proposed_input)
         ):
             human_approved = True
+        scaled_input = self._scale_vision_coords(state, tool_name, proposed_input)
         input_data = {
-            **proposed_input,
+            **scaled_input,
             "llm_reason": reason,
             "user_request": state.variables.get("user_request"),
             "agent_goal": agent_spec.goal.model_dump(mode="json"),
@@ -1080,6 +1273,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             self._context_manager.save_to_state(state, snapshot)
         except Exception as exc:
             state.variables["context_snapshot_error"] = str(exc)
+        agent_spec = self._active_agent_spec
+        if agent_spec is not None and state.tool_results:
+            self._log_transcript_tool(agent_spec, state, state.tool_results[-1])
 
     def _track_vision_progress(
         self,
@@ -1131,22 +1327,146 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             )
         return "|".join(parts)
 
+    def _scale_vision_coords(
+        self,
+        state: AgentRuntimeState,
+        tool_name: str,
+        proposed_input: dict,
+    ) -> dict:
+        """Перевести x/y из пикселей картинки LLM в пиксели desktop/окна.
+
+        LLM видит сжатый screenshot (image_width×image_height), а OS click
+        ждёт координаты в системе исходного захвата (desktop_width×desktop_height).
+        """
+        if tool_name not in {"browser.click", "browser.scroll"}:
+            return proposed_input
+        if not isinstance(proposed_input, dict):
+            return proposed_input
+        if proposed_input.get("x") is None and proposed_input.get("y") is None:
+            return proposed_input
+        shot = state.variables.get("last_screenshot")
+        if not isinstance(shot, dict):
+            return proposed_input
+        desktop_w = int(shot.get("desktop_width") or 0)
+        desktop_h = int(shot.get("desktop_height") or 0)
+        image_w = int(shot.get("image_width") or 0)
+        image_h = int(shot.get("image_height") or 0)
+        if min(desktop_w, desktop_h, image_w, image_h) <= 0:
+            return proposed_input
+        if desktop_w == image_w and desktop_h == image_h:
+            return proposed_input
+
+        out = dict(proposed_input)
+        try:
+            x = float(out["x"]) if out.get("x") is not None else None
+            y = float(out["y"]) if out.get("y") is not None else None
+        except (TypeError, ValueError):
+            return proposed_input
+
+        # Если координаты явно больше картинки — LLM уже дала desktop-space.
+        in_image_space = True
+        if x is not None and x > image_w * 1.05:
+            in_image_space = False
+        if y is not None and y > image_h * 1.05:
+            in_image_space = False
+        if not in_image_space:
+            out["_coord_space"] = "desktop_as_reported"
+            return out
+
+        scale_x = desktop_w / float(image_w)
+        scale_y = desktop_h / float(image_h)
+        if x is not None:
+            out["x"] = int(round(x * scale_x))
+        if y is not None:
+            out["y"] = int(round(y * scale_y))
+        out["_coord_space"] = "scaled_from_image"
+        out["_coord_scale"] = {
+            "image": [image_w, image_h],
+            "desktop": [desktop_w, desktop_h],
+            "scale": [scale_x, scale_y],
+            "llm_xy": [x, y],
+        }
+        self._emit_progress(
+            f"📐 Координаты масштабированы из image {image_w}×{image_h} → "
+            f"desktop {desktop_w}×{desktop_h}: "
+            f"({x}, {y}) → ({out.get('x')}, {out.get('y')})",
+            state,
+        )
+        return out
+
     def _stash_screenshot(self, state: AgentRuntimeState, output_data: dict) -> dict:
-        """Сохранить base64-скриншот отдельно (для image в промпте) и убрать из текста."""
+        """Сохранить сжатый screenshot для LLM и убрать сырой base64 из текста."""
         if not isinstance(output_data, dict) or "screenshot_base64" not in output_data:
             return output_data
         screenshot = str(output_data.get("screenshot_base64") or "")
         if screenshot:
+            compressed_b64, media_type, meta = compress_screenshot_base64(screenshot)
+            attach = not bool(meta.get("skipped_for_llm"))
+            desktop_w = int(output_data.get("viewport_width") or 0)
+            desktop_h = int(output_data.get("viewport_height") or 0)
+            out_size = meta.get("output_size") if isinstance(meta, dict) else None
+            if (
+                isinstance(out_size, (list, tuple))
+                and len(out_size) >= 2
+                and meta.get("compressed")
+            ):
+                image_w, image_h = int(out_size[0]), int(out_size[1])
+            else:
+                image_w, image_h = desktop_w, desktop_h
             state.variables["last_screenshot"] = {
-                "base64": screenshot,
-                "media_type": output_data.get("screenshot_media_type") or "image/png",
+                # Если слишком большой — не держим мегабайты в state.
+                "base64": compressed_b64 if attach else "",
+                "media_type": media_type,
                 "url": output_data.get("url"),
-                "title": output_data.get("title"),
-                "viewport_width": output_data.get("viewport_width"),
-                "viewport_height": output_data.get("viewport_height"),
+                "title": output_data.get("title") or output_data.get("window_title"),
+                # Для LLM — размеры ПРИЛОЖЕННОЙ картинки (после сжатия).
+                "viewport_width": image_w or desktop_w,
+                "viewport_height": image_h or desktop_h,
+                "image_width": image_w or desktop_w,
+                "image_height": image_h or desktop_h,
+                "desktop_width": desktop_w,
+                "desktop_height": desktop_h,
+                "capture_mode": output_data.get("capture_mode"),
+                "screen_origin_x": output_data.get("screen_origin_x"),
+                "screen_origin_y": output_data.get("screen_origin_y"),
+                "monitor_count": output_data.get("monitor_count"),
+                "compress_meta": meta,
+                "attach_to_llm": attach,
             }
+            if meta.get("compressed"):
+                self._emit_progress(
+                    "🖼 Скриншот сжат для LLM: "
+                    f"{meta.get('original_chars')} → {meta.get('compressed_chars')} символов "
+                    f"({meta.get('engine')}), image {image_w}×{image_h} "
+                    f"(desktop {desktop_w}×{desktop_h})",
+                    state,
+                )
+            elif meta.get("skipped_for_llm"):
+                self._emit_progress(
+                    "⚠ Скриншот слишком большой даже после попытки сжатия — "
+                    "в следующий шаг LLM уйдёт без image (только text/summary).",
+                    state,
+                )
         trimmed = {k: v for k, v in output_data.items() if k != "screenshot_base64"}
         trimmed["screenshot_captured"] = bool(screenshot)
+        if output_data.get("fallback_used") and not output_data.get("cdp_available"):
+            mode = output_data.get("capture_mode") or "virtual_desktop"
+            if mode == "browser_window":
+                note = (
+                    "OS fallback: скриншот — окно браузера. Кликай в пикселях "
+                    "приложенной картинки (image_width×image_height в "
+                    "screen_context). Не создавай automation-профиль."
+                )
+            else:
+                note = (
+                    "OS fallback: скриншот — virtual desktop. Кликай в пикселях "
+                    "приложенной картинки (не desktop_width). Runtime сам "
+                    "масштабирует click в экранные координаты. "
+                    "Не создавай automation-профиль."
+                )
+            notes = state.variables.setdefault("loop_repeat_notes", [])
+            if isinstance(notes, list) and note not in notes:
+                notes.append(note)
         return trimmed
 
     @staticmethod

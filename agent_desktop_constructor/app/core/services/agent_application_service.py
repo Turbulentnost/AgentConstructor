@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Callable
 
+from agent_desktop_constructor.app.core.attachment_tools import ensure_attachment_tools
 from agent_desktop_constructor.app.core.models.human_approval import (
     HumanApprovalRecord,
     HumanApprovalStatus,
@@ -198,6 +199,11 @@ class AgentApplicationService:
         variables = initial_variables or {"user_request": agent_spec.goal.main_goal}
         attached_files = self.ingest_attachments(agent_id, attachment_paths)
         if attached_files:
+            agent_spec = ensure_attachment_tools(
+                agent_spec,
+                attachment_paths=attachment_paths,
+                attached_files=attached_files,
+            )
             variables = {**variables, "attached_files": attached_files}
             if progress_callback is not None:
                 progress_callback(
@@ -396,11 +402,17 @@ class AgentApplicationService:
                 None,
             )
         attached_files = self.ingest_attachments(agent_spec.agent_id, attachment_paths)
-        if attached_files and progress_callback is not None:
-            progress_callback(
-                "📎 Прикреплённые файлы прочитаны и добавлены в контекст: "
-                + ", ".join(item["name"] for item in attached_files)
+        if attached_files:
+            agent_spec = ensure_attachment_tools(
+                agent_spec,
+                attachment_paths=attachment_paths,
+                attached_files=attached_files,
             )
+            if progress_callback is not None:
+                progress_callback(
+                    "📎 Прикреплённые файлы прочитаны и добавлены в контекст: "
+                    + ", ".join(item["name"] for item in attached_files)
+                )
         if progress_callback is not None:
             progress_callback("🔎 План построен. Запускаю пробный прогон агента…")
         validation_result = self.validate_agent(

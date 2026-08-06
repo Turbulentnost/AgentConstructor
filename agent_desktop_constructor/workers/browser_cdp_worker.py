@@ -595,9 +595,11 @@ def _next_action_hint(
         return (
             "URL открыт в штатном профиле без CDP: пользовательская сессия сохранена. "
             "Продолжай через browser.screenshot/browser.click/browser.type_text/"
-            "browser.press_key/browser.scroll в OS fallback; координаты бери с "
-            "видимого скриншота экрана. Не переключайся на automation profile, если "
-            "нужна текущая авторизация пользователя."
+            "browser.press_key/browser.scroll в OS fallback. Скриншот — окно "
+            "браузера (если найдено) или virtual desktop; координаты клика — в "
+            "пикселях приложенной картинки (image_width×image_height). Не "
+            "переключайся на automation profile, если нужна текущая авторизация "
+            "пользователя."
         )
     if profile_mode == "default":
         return (

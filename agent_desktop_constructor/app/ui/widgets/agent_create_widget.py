@@ -1474,10 +1474,13 @@ class AgentCreateWidget(QWidget):
         self,
         container: ApplicationContainer,
         parent: QWidget | None = None,
+        *,
+        auth_session=None,
     ) -> None:
         """Создать страницу создания агента."""
         super().__init__(parent)
         self._container = container
+        self._auth_session = auth_session
         self._preview_agent: AgentSpec | None = None
         self._last_request: str = ""
         self._trial_passed = False
@@ -1512,10 +1515,44 @@ class AgentCreateWidget(QWidget):
         self._request_height_sync_pending = False
 
         self._build_ui()
+        self._configure_agent_media_panels()
         self._connect_signals()
         self._reset_stages()
         self.select_stage(STAGE_REQUEST)
         self._goto_wizard_step(WizardStep.PLANNING)
+        self._apply_auth_session_to_header()
+
+    def set_auth_session(self, session) -> None:
+        """Обновить сессию пользователя и шапку."""
+        self._auth_session = session
+        self._apply_auth_session_to_header()
+
+    def _apply_auth_session_to_header(self) -> None:
+        session = self._auth_session
+        if session is None or not hasattr(self, "_header"):
+            return
+        name = session.user.display_name or session.user.login
+        avatar_bytes = None
+        if session.user.has_avatar and session.proxy_url and session.access_token:
+            try:
+                from agent_desktop_constructor.app.auth.client import AuthClient
+
+                avatar_bytes = AuthClient(session.proxy_url).fetch_avatar(
+                    session.access_token
+                )
+            except Exception:
+                avatar_bytes = None
+        self._header.set_profile(name, avatar_bytes)
+
+    def _open_profile_dialog(self) -> None:
+        if self._auth_session is None:
+            return
+        from agent_desktop_constructor.app.ui.widgets.profile_dialog import ProfileDialog
+
+        dialog = ProfileDialog(self._auth_session, self)
+        if dialog.exec():
+            self._auth_session = dialog.session
+            self._apply_auth_session_to_header()
 
     # ------------------------------------------------------------------ UI
 
@@ -1524,8 +1561,13 @@ class AgentCreateWidget(QWidget):
         self.setObjectName("agentCreateRoot")
         self.setStyleSheet("#agentCreateRoot { background: #0B0B14; }")
 
-        self._header = AppHeaderBar()
+        profile_name = "Пользователь"
+        session = getattr(self, "_auth_session", None)
+        if session is not None and getattr(session, "user", None) is not None:
+            profile_name = session.user.display_name or session.user.login or profile_name
+        self._header = AppHeaderBar(profile_name=profile_name)
         self._header.create_clicked.connect(self._reset_wizard_for_new_agent)
+        self._header.profile_clicked.connect(self._open_profile_dialog)
         self._stepper = WizardStepper()
         self._stepper.step_clicked.connect(self._on_wizard_step_clicked)
         self._wizard_stack = QStackedWidget()
@@ -1615,6 +1657,12 @@ class AgentCreateWidget(QWidget):
             "border-radius:10px; padding:10px 16px; font-size:12px; font-weight:700; }"
             "#wizardPrimary:hover { background:#6a68e0; }"
         )
+
+    def _configure_agent_media_panels(self) -> None:
+        """Прокси для загрузки аватаров агентов в MinIO."""
+        proxy_url = getattr(self._container.config, "llm_proxy_url", None)
+        for panel in (self._agent_card, self._publication_card):
+            panel.set_media_proxy_url(proxy_url)
 
     def _apply_default_splitter_sizes(self) -> None:
         """Задать начальные размеры колонок мастера."""
@@ -2255,7 +2303,17 @@ class AgentCreateWidget(QWidget):
         self._planning_canvas.clear_attachments_requested.connect(self.clear_attachments)
         self._agent_card.save_draft_clicked.connect(self._save_draft)
         self._agent_card.next_clicked.connect(self._start_testing_from_planning)
+        self._agent_card.image_url_changed.connect(self._on_agent_image_changed)
         self._publication_card.next_clicked.connect(self._publish_agent)
+        self._publication_card.image_url_changed.connect(self._on_agent_image_changed)
+
+    def _on_agent_image_changed(self, image_url: str) -> None:
+        """Сохранить URL аватара в текущем preview AgentSpec."""
+        if self._preview_agent is None:
+            return
+        self._preview_agent = self._preview_agent.model_copy(
+            update={"image_url": image_url or None}
+        )
 
     def _on_wizard_step_clicked(self, index: int) -> None:
         """Перейти к уже разблокированному шагу мастера."""

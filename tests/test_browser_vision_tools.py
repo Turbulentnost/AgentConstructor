@@ -305,6 +305,30 @@ def test_sanitize_collected_data_strips_base64() -> None:
     assert sanitized["browser.click"]["screenshot_captured"] is True
 
 
+def test_sanitize_collected_data_omits_large_stdout() -> None:
+    """Полный stdout code.run_python не попадает в промпт — остаётся summary."""
+    huge = "x" * 8000
+    sanitized = _sanitize_collected_data(
+        {
+            "code.run_python": {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": huge,
+                "stderr": "",
+                "stdout_summary": huge[:2000] + "...",
+                "stderr_summary": "",
+                "script": "code/extract_all.py",
+            }
+        }
+    )
+    output = sanitized["code.run_python"]
+    assert "stdout" not in output
+    assert output["stdout_omitted"] is True
+    assert output["stdout_length"] == 8000
+    assert output["stdout_summary"].startswith("x")
+    assert len(output["stdout_summary"]) <= 2010
+
+
 def test_loop_prompt_attaches_screenshot_image() -> None:
     """Последний скриншот из state попадает как image в user-сообщение."""
     catalog = load_tools_catalog()

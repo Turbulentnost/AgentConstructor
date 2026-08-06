@@ -63,6 +63,9 @@ class LLMResponse(BaseModel):
 
     content: str
     raw: dict[str, Any] | None = None
+    # OpenAI: choices[0].finish_reason; Anthropic: stop_reason.
+    # "length" / "max_tokens" означают, что ответ обрезан по лимиту токенов.
+    finish_reason: str | None = None
 
 
 class ToolSelectionItem(BaseModel):

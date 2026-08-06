@@ -92,7 +92,17 @@ class AnthropicLLMClient:
             raise LLMResponseError("LLM endpoint вернул невалидный JSON") from exc
 
         content = self._extract_content(raw_payload)
-        return LLMResponse(content=content, raw=raw_payload)
+        stop_reason = raw_payload.get("stop_reason")
+        finish_reason = (
+            stop_reason.strip()
+            if isinstance(stop_reason, str) and stop_reason.strip()
+            else None
+        )
+        return LLMResponse(
+            content=content,
+            raw=raw_payload,
+            finish_reason=finish_reason,
+        )
 
     def _post_payload(self, endpoint: str, payload: dict) -> bytes:
         """Отправить JSON payload и вернуть raw bytes ответа."""

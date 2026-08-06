@@ -69,7 +69,11 @@ class OpenAICompatibleLLMClient:
             raise LLMResponseError("LLM endpoint вернул невалидный JSON") from exc
 
         content = self._extract_content(raw_payload)
-        return LLMResponse(content=content, raw=raw_payload)
+        return LLMResponse(
+            content=content,
+            raw=raw_payload,
+            finish_reason=_extract_finish_reason(raw_payload),
+        )
 
     def _post_payload(self, endpoint: str, payload: dict) -> bytes:
         """Отправить JSON payload и вернуть raw bytes ответа."""
@@ -156,6 +160,20 @@ def _openai_message(message: LLMMessage) -> dict:
             }
         )
     return {"role": message.role, "content": parts}
+
+
+def _extract_finish_reason(raw_payload: dict) -> str | None:
+    """Достать finish_reason / stop_reason из ответа провайдера, если есть."""
+    try:
+        reason = raw_payload["choices"][0].get("finish_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+    except (KeyError, IndexError, TypeError, AttributeError):
+        pass
+    stop = raw_payload.get("stop_reason")
+    if isinstance(stop, str) and stop.strip():
+        return stop.strip()
+    return None
 
 
 def _strip_markdown_fences(content: str) -> str:

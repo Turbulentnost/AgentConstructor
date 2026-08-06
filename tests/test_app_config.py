@@ -42,7 +42,9 @@ def test_to_llm_config_returns_default_base_url() -> None:
 
 def test_to_llm_config_returns_default_model_name() -> None:
     """to_llm_config возвращает default model_name."""
-    assert AppConfig().to_llm_config().model_name == "openai/gpt-oss-120b"
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
+    assert AppConfig().to_llm_config().model_name == FIXED_LLM_MODEL_NAME
 
 
 def test_load_app_config_from_env_reads_run_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,15 +84,19 @@ def test_claude_key_alone_keeps_lm_studio_default(monkeypatch: pytest.MonkeyPatc
 
     config = load_app_config_from_env()
 
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     assert config.llm_provider == "openai_compatible"
     assert config.llm_base_url == "http://192.168.1.157:1234"
-    assert config.llm_model_name == "openai/gpt-oss-120b"
+    assert config.llm_model_name == FIXED_LLM_MODEL_NAME
     assert config.llm_api_key is None
     assert config.use_llm_planner is False
 
 
 def test_openai_key_selects_openai_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """С OpenAI-ключом выбирается openai_compatible."""
+    """С OpenAI-ключом выбирается openai_compatible, модель остаётся фиксированной."""
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     _clear_llm_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
 
@@ -98,19 +104,22 @@ def test_openai_key_selects_openai_provider(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert config.llm_provider == "openai_compatible"
     assert config.llm_base_url == "https://api.openai.com"
-    assert config.llm_model_name == "gpt-5.5"
+    assert config.llm_model_name == FIXED_LLM_MODEL_NAME
     assert config.llm_api_key == "sk-openai-test"
     assert config.use_llm_planner is True
 
 
 def test_no_keys_keeps_lm_studio_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Без ключей остаётся локальный LM Studio по умолчанию."""
+    """Без ключей base_url остаётся LM Studio, модель — фиксированная Claude."""
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     _clear_llm_env(monkeypatch)
 
     config = load_app_config_from_env()
 
     assert config.llm_provider == "openai_compatible"
     assert config.llm_base_url == "http://192.168.1.157:1234"
+    assert config.llm_model_name == FIXED_LLM_MODEL_NAME
     assert config.use_llm_planner is False
 
 

@@ -92,6 +92,17 @@ def test_build_preview_returns_agent_spec() -> None:
     assert isinstance(agent_spec, AgentSpec)
 
 
+def test_build_planning_preview_returns_agent_spec() -> None:
+    """build_planning_preview строит AgentSpec без запуска runtime."""
+    runtime = FakeRuntime()
+    service = make_service(runtime)
+
+    agent_spec = service.build_planning_preview(TASK_CONTROL_REQUEST)
+
+    assert isinstance(agent_spec, AgentSpec)
+    assert runtime.run_called is False
+
+
 def test_build_preview_does_not_run_runtime() -> None:
     """build_preview не запускает Runtime."""
     runtime = FakeRuntime()

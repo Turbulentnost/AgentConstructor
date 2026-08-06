@@ -162,6 +162,7 @@ class AgentSpec(BaseModel):
     name: str
     description: str
     short_description: str | None = None
+    image_url: str | None = None
     created_at: str | None = None
     goal: AgentGoal
     data_requirements: list[AgentDataRequirement]

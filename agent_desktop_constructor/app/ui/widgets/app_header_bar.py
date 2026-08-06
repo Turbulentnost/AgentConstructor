@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -16,10 +17,18 @@ _TEXT = "#e8eaf2"
 _MUTED = "#8a8fa3"
 
 
+def _initials(name: str) -> str:
+    parts = [p for p in name.split() if p]
+    if not parts:
+        return "?"
+    return "".join(p[0] for p in parts[:2]).upper()
+
+
 class AppHeaderBar(QWidget):
     """Шапка страницы «Создание агента» по референсу."""
 
     create_clicked = Signal()
+    profile_clicked = Signal()
 
     def __init__(
         self,
@@ -31,6 +40,7 @@ class AppHeaderBar(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("appHeaderBar")
+        self._profile_name = profile_name
 
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
@@ -53,21 +63,25 @@ class AppHeaderBar(QWidget):
         bell.setFixedWidth(28)
         bell.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        avatar = QLabel("МД")
-        avatar.setObjectName("hdrAvatar")
-        avatar.setFixedSize(34, 34)
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar = QLabel(_initials(profile_name))
+        self.avatar.setObjectName("hdrAvatar")
+        self.avatar.setFixedSize(34, 34)
+        self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.avatar.mousePressEvent = self._on_profile_press  # type: ignore[method-assign]
 
-        name = QLabel(profile_name)
-        name.setObjectName("hdrProfile")
+        self.name = QLabel(profile_name)
+        self.name.setObjectName("hdrProfile")
+        self.name.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.name.mousePressEvent = self._on_profile_press  # type: ignore[method-assign]
 
         right = QHBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(12)
         right.addWidget(self.create_button)
         right.addWidget(bell)
-        right.addWidget(avatar)
-        right.addWidget(name)
+        right.addWidget(self.avatar)
+        right.addWidget(self.name)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 8)
@@ -87,3 +101,26 @@ class AppHeaderBar(QWidget):
             "font-size: 11px; font-weight: 700; }"
             f"#hdrProfile {{ color: {_TEXT}; font-size: 12px; font-weight: 600; }}"
         )
+
+    def _on_profile_press(self, _event) -> None:
+        self.profile_clicked.emit()
+
+    def set_profile(self, name: str, avatar_bytes: bytes | None = None) -> None:
+        """Обновить отображаемое имя и круглую аватарку."""
+        self._profile_name = name
+        self.name.setText(name)
+        if avatar_bytes:
+            pix = QPixmap()
+            if pix.loadFromData(avatar_bytes):
+                self.avatar.setPixmap(
+                    pix.scaled(
+                        34,
+                        34,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                self.avatar.setText("")
+                return
+        self.avatar.setPixmap(QPixmap())
+        self.avatar.setText(_initials(name))

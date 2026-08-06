@@ -1,4 +1,4 @@
-"""Правая панель «Карточка агента» на этапе планирования / публикации."""
+"""Правая панель «Параметры агента» на этапе планирования / публикации."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,11 +19,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from agent_desktop_constructor.app.ui.resources_paths import (
-    brand_logo_path,
-    brand_logo_svg_fallback_path,
+from agent_desktop_constructor.app.core.agent_image_client import (
+    AgentImageUploadError,
+    fetch_image_bytes,
+    upload_agent_image,
 )
-from agent_desktop_constructor.app.ui.ui_resource_loader import load_scaled_pixmap
+from agent_desktop_constructor.app.ui.helpers import show_error, show_info
+from agent_desktop_constructor.app.ui.widgets.agent_avatar_widget import AgentAvatarWidget
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 
 _CARD = "#161625"
@@ -30,8 +33,6 @@ _ACCENT = "#5856D6"
 _TEXT = "#e8eaf2"
 _MUTED = "#8a8fa3"
 _CHIP = "#2a2a4a"
-_LOGO_BOX = 56
-
 
 _SOURCE_LABELS = {
     "email": "Электронная почта",
@@ -48,10 +49,11 @@ _SOURCE_LABELS = {
 
 
 class AgentCardPanel(QFrame):
-    """Редактируемая карточка агента: название, описание, цель, теги."""
+    """Редактируемые параметры агента: аватар, название, описание, цель, теги."""
 
     save_draft_clicked = Signal()
     next_clicked = Signal()
+    image_url_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,23 +65,22 @@ class AgentCardPanel(QFrame):
         )
         self._agent: AgentSpec | None = None
         self._attachment_names: list[str] = []
+        self._image_url: str | None = None
+        self._media_proxy_url: str | None = None
 
         header = QHBoxLayout()
         header.setSpacing(12)
-        self._logo_label = QLabel()
-        self._logo_label.setObjectName("acIcon")
-        self._logo_label.setFixedSize(_LOGO_BOX, _LOGO_BOX)
-        self._logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._load_logo()
+        self._avatar = AgentAvatarWidget()
+        self._avatar.upload_clicked.connect(self._pick_and_upload_image)
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        title = QLabel("Карточка агента")
+        title = QLabel("Параметры агента")
         title.setObjectName("acTitle")
         hint = QLabel("Заполняется автоматически")
         hint.setObjectName("acHint")
         title_col.addWidget(title)
         title_col.addWidget(hint)
-        header.addWidget(self._logo_label)
+        header.addWidget(self._avatar)
         header.addLayout(title_col, 1)
 
         self.name_edit = QLineEdit()
@@ -140,7 +141,6 @@ class AgentCardPanel(QFrame):
         self.setStyleSheet(
             f"#agentCardPanel {{ background: {_CARD}; border: 1px solid #2a2a3d;"
             "border-radius: 16px; }"
-            "#acIcon { background: #2a2a4a; border-radius: 12px; padding: 4px; }"
             f"#acTitle {{ color: {_TEXT}; font-size: 14px; font-weight: 800; }}"
             f"#acHint {{ color: {_MUTED}; font-size: 11px; }}"
             f"#acLabel {{ color: {_MUTED}; font-size: 11px; font-weight: 600; }}"
@@ -157,6 +157,14 @@ class AgentCardPanel(QFrame):
             f"#acChip {{ background: {_CHIP}; color: #b8bcff; border-radius: 10px;"
             "padding: 4px 10px; font-size: 11px; font-weight: 600; }"
         )
+
+    def set_media_proxy_url(self, url: str | None) -> None:
+        """URL LLM-прокси, через который загружаются изображения в MinIO."""
+        self._media_proxy_url = (url or "").strip() or None
+
+    def current_image_url(self) -> str | None:
+        """Текущий URL изображения агента."""
+        return self._image_url
 
     def set_next_label(self, text: str) -> None:
         """Подпись основной кнопки (зависит от шага мастера)."""
@@ -180,6 +188,8 @@ class AgentCardPanel(QFrame):
             self.name_edit.clear()
             self.description_edit.clear()
             self.goal_edit.clear()
+            self._image_url = None
+            self._avatar.set_placeholder()
             self._set_tags([])
             self.meta_label.setText("0 источников • 0 шагов")
             self.next_button.setEnabled(False)
@@ -188,6 +198,8 @@ class AgentCardPanel(QFrame):
         self.name_edit.setText(agent.name or "")
         self.description_edit.setPlainText(agent.description or "")
         self.goal_edit.setPlainText(agent.goal.main_goal if agent.goal else "")
+        self._image_url = agent.image_url
+        self._load_avatar_preview(agent.image_url)
         tags = self._collect_tags(agent)
         self._set_tags(tags)
         sources = max(len(agent.data_requirements), len(self._attachment_names))
@@ -207,6 +219,7 @@ class AgentCardPanel(QFrame):
                 "description": description,
                 "goal": goal,
                 "short_description": agent.short_description or goal_text[:200],
+                "image_url": self._image_url,
             }
         )
 
@@ -214,24 +227,65 @@ class AgentCardPanel(QFrame):
         """Текущее название из поля ввода."""
         return self.name_edit.text().strip()
 
-    def _load_logo(self) -> None:
-        """Показать логотип приложения в шапке карточки."""
-        inner = _LOGO_BOX - 8
-        logo_path = brand_logo_path()
-        pix = QPixmap()
-        if logo_path.exists():
-            pix = load_scaled_pixmap(logo_path, inner, inner)
-        if pix.isNull():
-            fallback = brand_logo_svg_fallback_path()
-            if fallback.exists():
-                pix = load_scaled_pixmap(fallback, inner, inner)
-        if pix.isNull():
-            self._logo_label.setText("AI")
-            self._logo_label.setStyleSheet(
-                f"color:#c8cbff; font-size:16px; font-weight:800;"
+    def _pick_and_upload_image(self) -> None:
+        if self._agent is None:
+            show_error(
+                self,
+                "Нет агента",
+                "Сначала опишите задачу и дождитесь построения плана.",
             )
             return
-        self._logo_label.setPixmap(pix)
+        if not self._media_proxy_url:
+            show_error(
+                self,
+                "Нет прокси",
+                "В настройках не задан llm_proxy_url для загрузки изображений.",
+            )
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Изображение агента",
+            "",
+            "Изображения (*.png *.jpg *.jpeg *.webp *.gif);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+
+        local_preview = QPixmap(path)
+        if not local_preview.isNull():
+            self._avatar.set_pixmap(local_preview)
+
+        try:
+            image_url = upload_agent_image(
+                self._media_proxy_url,
+                self._agent.agent_id,
+                path,
+            )
+        except AgentImageUploadError as exc:
+            self._load_avatar_preview(self._image_url)
+            show_error(self, "Не удалось загрузить изображение", str(exc))
+            return
+
+        self._image_url = image_url
+        self._load_avatar_preview(image_url)
+        self.image_url_changed.emit(image_url)
+        show_info(self, "Изображение сохранено", "Аватар агента загружен в MinIO.")
+
+    def _load_avatar_preview(self, image_url: str | None) -> None:
+        if not image_url:
+            self._avatar.set_placeholder()
+            return
+        try:
+            payload = fetch_image_bytes(image_url)
+        except AgentImageUploadError:
+            self._avatar.set_placeholder()
+            return
+        pixmap = QPixmap()
+        if pixmap.loadFromData(payload):
+            self._avatar.set_pixmap(pixmap)
+        else:
+            self._avatar.set_placeholder()
 
     def _field_label(self, text: str) -> QLabel:
         label = QLabel(text)

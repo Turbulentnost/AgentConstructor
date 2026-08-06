@@ -5,6 +5,8 @@ Endpoint ``POST /v1/chat/completions`` принимает OpenAI-compatible за
 успешный ответ в OpenAI-формате. Обработка асинхронная: параллельные запросы
 обслуживаются событийным циклом, а один общий httpx.AsyncClient переиспользует
 соединения.
+
+Также: auth пользователей (1С), синхронизация в Postgres, аватарки в MinIO.
 """
 
 from __future__ import annotations
@@ -17,7 +19,16 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from llm_proxy_service.agent_media import router as agent_media_router
+from llm_proxy_service.auth_api import router as auth_router
 from llm_proxy_service.config import ProxyConfig, load_proxy_config
+from llm_proxy_service.db import init_db
+from llm_proxy_service.minio_storage import AgentImageStorage, MinioStorageError
+from llm_proxy_service.sync_users import (
+    get_sync_status,
+    run_scheduled_sync,
+    sync_users_from_onec,
+)
 from llm_proxy_service.upstream import UpstreamError, call_backend
 
 logger = logging.getLogger("llm_proxy")
@@ -30,18 +41,116 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Создать общий httpx.AsyncClient на время жизни приложения."""
+        app.state.agent_image_storage = None
+        app.state.scheduler = None
+        if proxy_config.auth is not None and proxy_config.auth.database_url:
+            try:
+                init_db(proxy_config.auth.database_url)
+                logger.info("Postgres users DB ready")
+            except Exception as exc:
+                logger.warning("Postgres init failed: %s", exc)
+
+        if proxy_config.minio is not None:
+            try:
+                app.state.agent_image_storage = AgentImageStorage(
+                    endpoint=proxy_config.minio.endpoint,
+                    access_key=proxy_config.minio.access_key,
+                    secret_key=proxy_config.minio.secret_key,
+                    bucket=proxy_config.minio.bucket,
+                    secure=proxy_config.minio.secure,
+                )
+                logger.info(
+                    "MinIO для аватаров: %s / %s",
+                    proxy_config.minio.endpoint,
+                    proxy_config.minio.bucket,
+                )
+            except MinioStorageError as exc:
+                logger.warning("MinIO недоступен: %s", exc)
+
+        if (
+            proxy_config.auth is not None
+            and proxy_config.onec is not None
+            and proxy_config.auth.database_url
+        ):
+            if proxy_config.auth.sync_on_startup:
+                try:
+                    sync_users_from_onec(proxy_config.onec)
+                except Exception as exc:
+                    logger.warning("Startup 1C user sync failed: %s", exc)
+            try:
+                from apscheduler.schedulers.background import BackgroundScheduler
+                from apscheduler.triggers.cron import CronTrigger
+
+                scheduler = BackgroundScheduler()
+                cron = (proxy_config.auth.sync_cron or "").strip()
+                if cron:
+                    # "мин час день месяц день_недели" — ежедневно без Celery/Redis.
+                    parts = cron.split()
+                    if len(parts) != 5:
+                        raise ValueError(
+                            f"USER_SYNC_CRON должен быть из 5 полей, получено: {cron!r}"
+                        )
+                    trigger = CronTrigger(
+                        minute=parts[0],
+                        hour=parts[1],
+                        day=parts[2],
+                        month=parts[3],
+                        day_of_week=parts[4],
+                    )
+                    scheduler.add_job(
+                        run_scheduled_sync,
+                        trigger=trigger,
+                        args=[proxy_config.onec],
+                        id="onec_user_sync",
+                        replace_existing=True,
+                        max_instances=1,
+                        coalesce=True,
+                    )
+                    logger.info("Scheduled 1C user sync cron=%s", cron)
+                else:
+                    hours = max(proxy_config.auth.sync_interval_hours, 1.0)
+                    scheduler.add_job(
+                        run_scheduled_sync,
+                        "interval",
+                        hours=hours,
+                        args=[proxy_config.onec],
+                        id="onec_user_sync",
+                        replace_existing=True,
+                        max_instances=1,
+                        coalesce=True,
+                    )
+                    logger.info("Scheduled 1C user sync every %s hours", hours)
+                scheduler.start()
+                app.state.scheduler = scheduler
+            except Exception as exc:
+                logger.warning("Scheduler not started: %s", exc)
+
         async with httpx.AsyncClient() as client:
             app.state.http_client = client
             yield
 
+        scheduler = getattr(app.state, "scheduler", None)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+
     app = FastAPI(title="AgentConstructor LLM Proxy", lifespan=lifespan)
     app.state.proxy_config = proxy_config
+    app.include_router(agent_media_router)
+    app.include_router(auth_router)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
         """Вернуть статус и текущую цепочку backend-ов."""
         return {
             "status": "ok",
+            "minio": proxy_config.minio is not None
+            and getattr(app.state, "agent_image_storage", None) is not None,
+            "auth_db": bool(proxy_config.auth and proxy_config.auth.database_url),
+            "onec": bool(proxy_config.onec),
+            "user_sync": get_sync_status(),
+            "user_sync_cron": (
+                proxy_config.auth.sync_cron if proxy_config.auth else None
+            ),
             "chain": [
                 {
                     "name": backend.name,

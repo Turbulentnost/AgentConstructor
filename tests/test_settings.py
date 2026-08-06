@@ -74,24 +74,28 @@ def test_save_llm_model_name_updates_only_model_name(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     save_llm_model_name("chatgpt:reason", str(path))
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload == {
         "run_mode": "offline",
         "custom_key": {"enabled": True},
-        "llm_model_name": "chatgpt:reason",
+        "llm_model_name": FIXED_LLM_MODEL_NAME,
     }
 
 
 def test_save_llm_model_name_creates_minimal_settings(tmp_path: Path) -> None:
-    """save_llm_model_name создаёт минимальный settings.json."""
+    """save_llm_model_name создаёт минимальный settings.json с фиксированной LLM."""
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     path = tmp_path / "nested" / "settings.json"
 
     save_llm_model_name("lmstudio", str(path))
 
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "llm_model_name": "lmstudio"
+        "llm_model_name": FIXED_LLM_MODEL_NAME
     }
 
 
@@ -190,8 +194,10 @@ def test_frozen_settings_merges_user_overrides_with_bundled_proxy(
 
     config = load_settings()
 
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     assert config.llm_proxy_url == "http://192.168.2.135:8080"
-    assert config.llm_model_name == "claude-opus-4.6:internal"
+    assert config.llm_model_name == FIXED_LLM_MODEL_NAME
     assert config.run_mode == AppRunMode.OUTLOOK_READONLY
 
 
@@ -221,9 +227,11 @@ def test_save_llm_model_name_preserves_bundled_proxy_when_user_settings_missing(
         str(settings_path),
     )
 
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     save_llm_model_name("lmstudio")
 
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     assert payload["llm_proxy_url"] == "http://192.168.2.135:8080"
-    assert payload["llm_model_name"] == "lmstudio"
+    assert payload["llm_model_name"] == FIXED_LLM_MODEL_NAME
 

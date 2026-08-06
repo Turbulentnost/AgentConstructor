@@ -58,14 +58,16 @@ def test_config_is_collected_from_fields(qt_app, tmp_path: Path) -> None:
     widget.database_path_edit.setText("./data/ui.db")
     widget.use_llm_planner_checkbox.setChecked(False)
     widget.llm_base_url_edit.setText("http://localhost:1234")
-    widget.llm_model_name_edit.setText("local-model")
     widget.com_safe_mode_checkbox.setChecked(True)
     widget.com_worker_timeout_spin.setValue(44)
 
     config = widget.config_from_fields()
 
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
+
     assert config.run_mode == AppRunMode.OUTLOOK_READONLY
     assert config.database_path == "./data/ui.db"
+    assert config.llm_model_name == FIXED_LLM_MODEL_NAME
     assert config.com_worker_timeout_seconds == 44
 
 

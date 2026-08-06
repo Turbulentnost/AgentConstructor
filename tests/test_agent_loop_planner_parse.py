@@ -24,12 +24,30 @@ from agent_desktop_constructor.tools.catalog_loader import load_tools_catalog
 class _FakeLLMClient:
     """Минимальный LLM-клиент, отдающий заранее заданный JSON решения."""
 
-    def __init__(self, content: str) -> None:
-        self._content = content
-        self.config = SimpleNamespace(temperature=0.0, model_name="fake")
+    def __init__(
+        self,
+        content: str,
+        *,
+        finish_reason: str | None = None,
+        contents: list[str] | None = None,
+    ) -> None:
+        self._contents = list(contents) if contents is not None else [content]
+        self._finish_reason = finish_reason
+        self.config = SimpleNamespace(
+            temperature=0.0,
+            model_name="fake",
+            max_tokens=4096,
+        )
+        self.requests: list = []
 
     def complete(self, request):  # noqa: ANN001 - тестовый двойник
-        return SimpleNamespace(content=self._content)
+        self.requests.append(request)
+        index = min(len(self.requests) - 1, len(self._contents) - 1)
+        return SimpleNamespace(
+            content=self._contents[index],
+            finish_reason=self._finish_reason if index == 0 else None,
+            raw=None,
+        )
 
 
 def test_parse_plain_json_decision() -> None:
@@ -228,3 +246,66 @@ def test_thought_synonym_thinking_key_is_accepted() -> None:
 
     assert decision.thought is not None
     assert decision.thought.understanding == "Задача ясна"
+
+
+def test_decide_retries_on_truncated_json() -> None:
+    """Обрезанный JSON (Unterminated string) → compact retry с валидным ответом."""
+    from agent_desktop_constructor.builder.agent_builder import AgentBuilder
+    from agent_desktop_constructor.core.models.runtime_state import (
+        AgentRunStatus,
+        AgentRuntimeState,
+    )
+
+    catalog = load_tools_catalog()
+    agent_spec = AgentBuilder().build_from_request("проверь сегодняшнюю погоду")
+    state = AgentRuntimeState(
+        run_id="run-1",
+        agent_id=agent_spec.agent_id,
+        status=AgentRunStatus.RUNNING,
+        variables={"user_request": "погода"},
+    )
+    truncated = (
+        '{"thought": {"understanding": "Данные собраны"}, '
+        '"decision_type": "finish_success", "reason": "ok", '
+        '"final_message": "очень длинный незакрытый'
+    )
+    valid = (
+        '{"thought": {"understanding": "Данные собраны"}, '
+        '"decision_type": "finish_success", "reason": "ok", '
+        '"final_message": "Краткий итог, файл result.json"}'
+    )
+    client = _FakeLLMClient(truncated, contents=[truncated, valid])
+    planner = LLMAgentLoopPlanner(client, catalog)
+
+    decision = planner.decide(agent_spec, state)
+
+    assert decision.decision_type == SupervisorDecisionType.FINISH_SUCCESS
+    assert decision.final_message == "Краткий итог, файл result.json"
+    assert len(client.requests) == 2
+    assert client.requests[0].max_tokens >= 8000
+    assert client.requests[1].max_tokens >= 12000
+    assert "короткий" in client.requests[1].messages[-1].content.casefold()
+
+
+def test_decide_raises_when_compact_retry_also_fails() -> None:
+    """Если и compact retry битый — ошибка агрегируется."""
+    from agent_desktop_constructor.builder.agent_builder import AgentBuilder
+    from agent_desktop_constructor.core.models.runtime_state import (
+        AgentRunStatus,
+        AgentRuntimeState,
+    )
+
+    catalog = load_tools_catalog()
+    agent_spec = AgentBuilder().build_from_request("проверь сегодняшнюю погоду")
+    state = AgentRuntimeState(
+        run_id="run-1",
+        agent_id=agent_spec.agent_id,
+        status=AgentRunStatus.RUNNING,
+        variables={"user_request": "погода"},
+    )
+    truncated = '{"decision_type": "finish_success", "final_message": "обрезан'
+    client = _FakeLLMClient(truncated, contents=[truncated, truncated])
+    planner = LLMAgentLoopPlanner(client, catalog)
+
+    with pytest.raises(LLMInvalidJSONError, match="дважды"):
+        planner.decide(agent_spec, state)

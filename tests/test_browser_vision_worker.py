@@ -372,3 +372,197 @@ def test_click_requires_numeric_coords(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(BrowserCdpError):
         worker.click({"x": "left", "y": 10})
+
+
+def test_os_fallback_screenshot_reports_virtual_desktop_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OS screenshot помечает capture_mode=virtual_desktop и размеры всего стола."""
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(executable_path="C:/Chrome/chrome.exe", use_default_profile=True)
+    )
+    worker._os_fallback_active = True
+    worker._os_fallback_url = "https://chat.deepseek.com"
+
+    def fake_desktop_screenshot():
+        worker._os_click_origin = (-1920, 0)
+        worker._os_capture_meta = {
+            "capture_mode": "virtual_desktop",
+            "origin_x": -1920,
+            "origin_y": 0,
+            "monitor_count": 2,
+            "engine": "win32",
+            "width": 3840,
+            "height": 1080,
+        }
+        return ("VDESKB64", 3840, 1080)
+
+    monkeypatch.setattr(worker, "_desktop_screenshot", fake_desktop_screenshot)
+    result = worker.screenshot({})
+
+    assert result["screenshot_base64"] == "VDESKB64"
+    assert result["capture_mode"] == "virtual_desktop"
+    assert result["monitor_count"] == 2
+    assert result["screen_origin_x"] == -1920
+    assert result["screen_origin_y"] == 0
+    assert result["viewport_width"] == 3840
+    assert "virtual desktop" in result["warning"].casefold() or "монитор" in result[
+        "warning"
+    ].casefold()
+    assert "virtual desktop" in result["next_action_hint"].casefold()
+
+
+def test_os_click_applies_virtual_desktop_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Клик в координатах картинки сдвигается на origin virtual desktop."""
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(executable_path="C:/Chrome/chrome.exe", use_default_profile=True)
+    )
+    worker._os_click_origin = (-1920, 100)
+    positions: list[tuple[int, int]] = []
+
+    class FakeWin32Api:
+        @staticmethod
+        def SetCursorPos(pos):
+            positions.append(pos)
+
+        @staticmethod
+        def mouse_event(*_args):
+            return None
+
+    class FakeWin32Con:
+        MOUSEEVENTF_LEFTDOWN = 2
+        MOUSEEVENTF_LEFTUP = 4
+        MOUSEEVENTF_RIGHTDOWN = 8
+        MOUSEEVENTF_RIGHTUP = 16
+
+    monkeypatch.setattr(vision_worker, "_is_windows", lambda: True)
+    monkeypatch.setitem(__import__("sys").modules, "win32api", FakeWin32Api)
+    monkeypatch.setitem(__import__("sys").modules, "win32con", FakeWin32Con)
+
+    worker._send_os_click(50, 80, "left")
+
+    assert positions == [(-1870, 180)]
+
+
+def test_desktop_screenshot_prefers_browser_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_desktop_screenshot предпочитает окно браузера virtual desktop."""
+    worker = BrowserVisionWorker()
+    worker._os_fallback_url = "https://chat.deepseek.com"
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    monkeypatch.setattr(vision_worker, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        vision_worker,
+        "capture_browser_window_png",
+        lambda url_hint="", focus=True: (
+            png,
+            {
+                "capture_mode": "browser_window",
+                "origin_x": 100,
+                "origin_y": 50,
+                "monitor_count": 1,
+                "engine": "win32_window",
+                "width": 1200,
+                "height": 800,
+                "title": "DeepSeek",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        vision_worker,
+        "_capture_virtual_desktop_win32",
+        lambda: (_ for _ in ()).throw(AssertionError("virtual must not run")),
+    )
+
+    b64, width, height = worker._desktop_screenshot()
+
+    assert width == 1200 and height == 800
+    assert worker._os_click_origin == (100, 50)
+    assert worker._os_capture_meta["capture_mode"] == "browser_window"
+    assert b64
+
+
+def test_desktop_screenshot_falls_back_to_win32_virtual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если окно браузера не найдено — virtual desktop win32."""
+    worker = BrowserVisionWorker()
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    monkeypatch.setattr(vision_worker, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        vision_worker,
+        "capture_browser_window_png",
+        lambda url_hint="", focus=True: None,
+    )
+    monkeypatch.setattr(
+        vision_worker,
+        "_capture_virtual_desktop_win32",
+        lambda: (png, 3840, 1080, -1920, 0, 2, "win32"),
+    )
+    monkeypatch.setattr(
+        vision_worker,
+        "_capture_virtual_desktop_qt",
+        lambda: (_ for _ in ()).throw(AssertionError("qt path must not run")),
+    )
+
+    _b64, width, height = worker._desktop_screenshot()
+
+    assert width == 3840 and height == 1080
+    assert worker._os_click_origin == (-1920, 0)
+    assert worker._os_capture_meta["engine"] == "win32"
+
+
+def test_os_click_focuses_browser_before_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OS click/type вызывают focus окна браузера перед действием."""
+    events: list[str] = []
+    worker = BrowserVisionWorker(
+        BrowserLaunchConfig(executable_path="C:/Chrome/chrome.exe", use_default_profile=True)
+    )
+    worker._os_fallback_active = True
+    worker._os_fallback_url = "https://chat.deepseek.com"
+    monkeypatch.setattr(worker, "_desktop_screenshot", lambda: ("OSB64", 800, 600))
+    monkeypatch.setattr(
+        vision_worker,
+        "focus_browser_window",
+        lambda url: events.append(f"focus:{url}") or {"ok": True, "title": "DeepSeek"},
+    )
+    monkeypatch.setattr(
+        vision_worker,
+        "foreground_window_info",
+        lambda: {"ok": True, "title": "DeepSeek"},
+    )
+    monkeypatch.setattr(
+        worker,
+        "_send_os_click",
+        lambda x, y, button: events.append(f"click:{x},{y}"),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_send_os_text",
+        lambda text: events.append(f"text:{text}"),
+    )
+
+    click_result = worker.click({"x": 10, "y": 20})
+    type_result = worker.type_text({"text": "hello"})
+
+    assert events == [
+        "focus:https://chat.deepseek.com",
+        "click:10,20",
+        "focus:https://chat.deepseek.com",
+        "text:hello",
+    ]
+    assert click_result["focus_before_action"]["ok"] is True
+    assert type_result["focused_window_after"]["title"] == "DeepSeek"

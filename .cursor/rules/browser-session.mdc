@@ -1,0 +1,18 @@
+---
+description: Браузерные инструменты должны по умолчанию использовать уже авторизованную пользовательскую сессию
+globs: agent_desktop_constructor/tools/**/*browser*
+alwaysApply: true
+---
+
+# Браузер: авторизованная сессия по умолчанию
+
+При выборе и реализации browser-инструментов агент **не должен** каждый раз создавать новый пустой automation-профиль.
+
+## Правила
+
+- По умолчанию открывать/продолжать работу в **штатном пользовательском профиле** (`use_default_profile=true`), где уже есть cookies и логины.
+- Предпочитать `browser.open_browser` или `browser.navigate` с `use_default_profile=true`.
+- Если в `tool_outputs` уже есть `browser.open_browser` / `browser.navigate` — **наследовать** `browser_id`, `url`, `use_default_profile`; не открывать другой браузер и не менять профиль.
+- `use_default_profile=false` / automation — только если нужен изолированный профиль без логинов (явно).
+- Не навязывать `profile_name="Default"`: активная сессия пользователя может быть в другом профиле.
+- Промпт agent-loop и `planner_hint` в каталоге должны говорить то же самое; при правках browser tools не возвращать текст «по умолчанию automation».

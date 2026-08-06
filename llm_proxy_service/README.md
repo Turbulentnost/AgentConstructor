@@ -70,6 +70,43 @@ curl http://192.168.2.135:8080/health
   `<model>:internal` и `<model>:reason`.
 - `GET /health` — статус и текущая цепочка backend-ов.
 
+## Пользователи (1С → Postgres + MinIO)
+
+При настройке `DATABASE_URL`, `DB_SERVER`/`DB_NAME` и `JWT_SECRET`:
+
+- синхронизация пользователей из `v8users` (erp_pm) **в Postgres**:
+  - при старте (`USER_SYNC_ON_STARTUP=true`);
+  - ежедневно по cron `USER_SYNC_CRON` (по умолчанию `0 3 * * *` = 03:00) через
+    **APScheduler** внутри процесса прокси — отдельный Celery/Redis не нужен;
+- каталог для экрана входа: `GET /v1/auth/users`;
+- логин по хэшу пароля 1С (`POST /v1/auth/login`) против локальной копии `password_data`;
+- профиль: email и круглая аватарка (`/v1/auth/me`, `/v1/auth/me/avatar`);
+- ФИО и подразделение из 1С, пользователем не меняются;
+- ручной sync: `POST /v1/admin/users/sync` с заголовком `X-Admin-Token`;
+- статус последней синхронизации: поле `user_sync` в `GET /health`.
+
+Для доступа к SQL Server 1С либо Windows-login текущей учётки должен быть
+разрешён на `erp_pm`, либо в `.env` задайте `TrustedConnection=no` и
+`DB_USER`/`DB_PASSWORD` (SQL-логин с `db_datareader`).
+
+См. переменные в `.env.example` (`DATABASE_URL`, `JWT_*`, `ADMIN_TOKEN`, `DB_*`, `MINIO_*`, `USER_SYNC_*`).
+
+## Изображения агентов (MinIO)
+
+При настройке `MINIO_*` в `.env` прокси сохраняет аватары агентов в MinIO:
+
+- `POST /v1/agents/{agent_id}/image` — multipart upload (`file`)
+- `GET /v1/agents/{agent_id}/image` — отдать сохранённое изображение
+
+Ответ upload:
+
+```json
+{"agent_id": "...", "image_url": "http://host:8080/v1/agents/.../image"}
+```
+
+Desktop-приложение использует `llm_proxy_url` для загрузки аватара на этапе
+«Параметры агента».
+
 ## Подключение приложения
 
 В `data/settings.json` укажите:

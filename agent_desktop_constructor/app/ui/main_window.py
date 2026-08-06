@@ -33,10 +33,13 @@ class MainWindow(QMainWindow):
         self,
         container: ApplicationContainer,
         parent=None,
+        *,
+        auth_session=None,
     ) -> None:
         """Создать окно с навигацией и страницами."""
         super().__init__(parent)
         self._container = container
+        self._auth_session = auth_session
         self.setWindowTitle("Конструктор ИИ-агентов")
         self.setMinimumSize(1280, 820)
         self.setStyleSheet(
@@ -58,7 +61,7 @@ class MainWindow(QMainWindow):
 
         self._home = HomePlaceholderWidget()
         self._agent_list = AgentListWidget(container)
-        self._create_agent = AgentCreateWidget(container)
+        self._create_agent = AgentCreateWidget(container, auth_session=auth_session)
         self._run_list = RunListWidget(container)
         self._analytics = AnalyticsPlaceholderWidget()
         self._settings = SettingsWidget()

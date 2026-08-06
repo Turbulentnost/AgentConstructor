@@ -6,8 +6,6 @@ import importlib
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
 from agent_desktop_constructor.app.core.app_mode import AppRunMode
@@ -67,8 +65,16 @@ def test_ui_modules_import() -> None:
     module_names = [
         "agent_desktop_constructor.app.ui.app",
         "agent_desktop_constructor.app.ui.main_window",
+        "agent_desktop_constructor.app.ui.teams_nav_sidebar",
         "agent_desktop_constructor.app.ui.widgets.agent_list_widget",
         "agent_desktop_constructor.app.ui.widgets.agent_create_widget",
+        "agent_desktop_constructor.app.ui.widgets.agent_card_panel",
+        "agent_desktop_constructor.app.ui.widgets.composer_panel",
+        "agent_desktop_constructor.app.ui.widgets.planning_canvas",
+        "agent_desktop_constructor.app.ui.widgets.wizard_stepper",
+        "agent_desktop_constructor.app.ui.widgets.workflow_diagram_widget",
+        "agent_desktop_constructor.app.ui.widgets.placeholder_page",
+        "agent_desktop_constructor.app.ui.widgets.app_header_bar",
         "agent_desktop_constructor.app.ui.widgets.run_list_widget",
         "agent_desktop_constructor.app.ui.widgets.run_details_widget",
         "agent_desktop_constructor.app.ui.widgets.run_events_widget",
@@ -89,25 +95,23 @@ def test_main_window_can_be_created(qt_app, fake_container) -> None:
     window = MainWindow(fake_container)
 
     assert window.windowTitle() == "Конструктор ИИ-агентов"
-    assert window.pages.count() == 5
-    assert window.nav.count() == 5
+    assert window.pages.count() == 6
+    assert window.nav.count() == 6
     assert [item.title for item in NAV_ITEMS] == [
-        "Агенты",
-        "Создать агента",
-        "Запуски",
-        "События",
+        "Главная",
+        "Доступные агенты",
+        "Конструктор",
+        "Мои задания",
+        "Аналитика",
         "Настройки",
     ]
 
 
 def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
-    """AgentCreateWidget можно создать."""
-    from PySide6.QtCore import QPoint
-
+    """AgentCreateWidget можно создать; выбор LLM скрыт."""
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
     from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
-        MODEL_BADGE_STYLE,
         AgentCreateWidget,
-        BadgeSelect,
     )
 
     widget = AgentCreateWidget(fake_container)
@@ -117,48 +121,10 @@ def test_agent_create_widget_can_be_created(qt_app, fake_container) -> None:
     qt_app.processEvents()
 
     assert widget.request_edit is not None
-    assert isinstance(widget.model_combo, BadgeSelect)
-    assert isinstance(widget.reason_combo, BadgeSelect)
     assert widget.context_indicator is not None
-    assert "border-radius: 9px" in MODEL_BADGE_STYLE
-    assert widget.model_combo.isEnabled()
-    assert widget.model_combo.count() >= 2
-
-    composer = widget.request_edit.parentWidget()
-    toolbar = composer.layout().itemAt(1).layout()
-    attach_index = None
-    model_index = None
-    for index in range(toolbar.count()):
-        item_widget = toolbar.itemAt(index).widget()
-        if item_widget is widget.attach_button:
-            attach_index = index
-        if item_widget is widget.model_combo:
-            model_index = index
-    assert attach_index is not None
-    assert model_index is not None
-    assert model_index > attach_index
-
-    widget.model_combo.showPopup()
-    qt_app.processEvents()
-    menu = widget.model_combo.view()
-    assert menu.isVisible()
-    combo_top = widget.model_combo.mapToGlobal(QPoint(0, 0)).y()
-    assert combo_top > 0
-    assert menu.frameGeometry().bottom() <= combo_top + 2
-
-    changed_index = None
-    def _capture(index: int) -> None:
-        nonlocal changed_index
-        changed_index = index
-
-    widget.model_combo.currentIndexChanged.connect(_capture)
-    for action in menu.actions():
-        if action.text() != widget.model_combo.currentText():
-            action.trigger()
-            break
-    qt_app.processEvents()
-    assert changed_index is not None
-    widget.model_combo.hidePopup()
+    assert widget.model_combo.isHidden()
+    assert widget.reason_combo.isHidden()
+    assert widget._selected_model_id() == FIXED_LLM_MODEL_NAME
 
 
 def test_agent_create_layout_narrow_sidebar_without_workflow_bar(
@@ -284,104 +250,13 @@ def test_context_indicator_usage_color_thresholds() -> None:
     assert _usage_color(95) == "#ef4444"
 
 
-def test_agent_create_widget_keeps_proxy_claude_models(monkeypatch) -> None:
-    """Селект моделей сохраняет конкретные Claude-модели из прокси."""
-    from agent_desktop_constructor.app.ui.widgets import agent_create_widget
-    from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
-        AgentCreateWidget,
-        _merge_default_model_options,
-    )
-
-    payload = {
-        "data": [
-            {
-                "id": "chatgpt",
-                "metadata": {
-                    "display_name": "Chat-GPT 5.5",
-                    "supports_reasoning": True,
-                },
-            },
-            {
-                "id": "claude",
-                "metadata": {
-                    "display_name": "Claude",
-                    "supports_reasoning": True,
-                },
-            },
-            {
-                "id": "claude-sonnet-4.6",
-                "metadata": {
-                    "display_name": "Claude Sonnet 4.6",
-                    "supports_reasoning": True,
-                },
-            },
-            {
-                "id": "claude-sonnet-4.6:reason",
-                "metadata": {
-                    "display_name": "Claude Sonnet 4.6",
-                    "supports_reasoning": True,
-                },
-            },
-            {
-                "id": "claude-opus-4.1",
-                "metadata": {
-                    "display_name": "Claude Opus 4.1",
-                    "supports_reasoning": True,
-                },
-            },
-            {
-                "id": "lmstudio",
-                "metadata": {
-                    "display_name": "LM Studio (gpt-oss-120b)",
-                    "supports_reasoning": False,
-                },
-            },
-        ]
-    }
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps(payload).encode("utf-8")
-
-    requested_urls: list[str] = []
-
-    def fake_urlopen(url: str, timeout: int):
-        requested_urls.append(url)
-        assert timeout == 3
-        return FakeResponse()
-
-    monkeypatch.setattr(agent_create_widget.request, "urlopen", fake_urlopen)
-    dummy = SimpleNamespace(
-        _container=SimpleNamespace(
-            config=SimpleNamespace(llm_proxy_url="http://192.168.2.135:8080")
-        )
-    )
-
-    proxy_options = AgentCreateWidget._load_proxy_model_options(dummy)
-    options = _merge_default_model_options(proxy_options)
-    ids = [option.model_id for option in options]
-
-    assert requested_urls == ["http://192.168.2.135:8080/v1/models"]
-    assert "claude" not in ids
-    assert "claude-sonnet-4.6" in ids
-    assert "claude-opus-4.1" in ids
-    sonnet = next(option for option in options if option.model_id == "claude-sonnet-4.6")
-    assert sonnet.supports_reasoning is True
-    assert sonnet.modes == ("reason",)
-
-
-def test_agent_create_widget_persists_selected_model_id(
+def test_agent_create_widget_uses_fixed_llm_model(
     qt_app,
     fake_container,
     monkeypatch,
 ) -> None:
-    """Смена модели/reason сохраняет полный model id."""
+    """LLM всегда claude-sonnet-4.6, селекты скрыты."""
+    from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
     from agent_desktop_constructor.app.ui.widgets import agent_create_widget
     from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
         AgentCreateWidget,
@@ -391,20 +266,14 @@ def test_agent_create_widget_persists_selected_model_id(
     monkeypatch.setattr(agent_create_widget, "save_llm_model_name", saved_models.append)
     widget = AgentCreateWidget(fake_container)
 
-    reason_index = widget.reason_combo.findData("reason")
-    widget.reason_combo.setCurrentIndex(reason_index)
-    qt_app.processEvents()
-
-    lmstudio_index = widget.model_combo.findData("lmstudio")
-    widget.model_combo.setCurrentIndex(lmstudio_index)
-    qt_app.processEvents()
-
-    assert saved_models[-2:] == ["chatgpt:reason", "lmstudio"]
+    assert widget.model_combo.isHidden()
+    assert widget.reason_combo.isHidden()
+    assert widget._selected_model_id() == FIXED_LLM_MODEL_NAME
 
     widget._ensure_selected_model_container()
 
-    assert widget._container.config.llm_model_name == "lmstudio"
-    assert saved_models[-1] == "lmstudio"
+    assert widget._container.config.llm_model_name == FIXED_LLM_MODEL_NAME
+    assert saved_models[-1] == FIXED_LLM_MODEL_NAME
 
 
 def test_agent_list_widget_can_be_created(qt_app, fake_container) -> None:
@@ -606,9 +475,9 @@ def test_agent_list_auto_refreshes_on_nav(qt_app, fake_container) -> None:
 
     assert len(window._agent_list._agents) >= 0
 
-    window.nav.setCurrentIndex(1)
+    window.nav.setCurrentIndex(2)
     qt_app.processEvents()
-    window.nav.setCurrentIndex(0)
+    window.nav.setCurrentIndex(1)
     for _ in range(5):
         qt_app.processEvents()
 

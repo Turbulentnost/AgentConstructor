@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from agent_desktop_constructor.app.llm.agent_loop_prompts import build_agent_loop_prompt
 from agent_desktop_constructor.app.llm.client import OpenAICompatibleLLMClient
 from agent_desktop_constructor.app.llm.errors import LLMInvalidJSONError
-from agent_desktop_constructor.app.llm.models import LLMRequest
+from agent_desktop_constructor.app.llm.models import LLMMessage, LLMRequest, LLMResponse
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
@@ -17,6 +17,11 @@ from agent_desktop_constructor.app.llm.supervisor_models import (
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
 from agent_desktop_constructor.core.models.runtime_state import AgentRuntimeState
 from agent_desktop_constructor.tools.catalog import ToolsCatalog
+
+# Решение цикла содержит thought + tool_call; дефолтный llm_max_tokens=4096
+# часто обрезает JSON на середине строки после больших tool-результатов.
+_MIN_LOOP_MAX_TOKENS = 8000
+_COMPACT_RETRY_MAX_TOKENS = 12000
 
 
 class LLMAgentLoopPlanner:
@@ -46,14 +51,57 @@ class LLMAgentLoopPlanner:
             executed_signatures=executed_signatures or [],
             repeat_notes=repeat_notes or [],
         )
+        loop_max_tokens = max(
+            self._llm_client.config.max_tokens or 0,
+            _MIN_LOOP_MAX_TOKENS,
+        )
         response = self._llm_client.complete(
             LLMRequest(
                 messages=messages,
                 temperature=self._llm_client.config.temperature,
                 model_name=self._llm_client.config.model_name,
                 response_format="json_object",
+                max_tokens=loop_max_tokens,
             )
         )
+        try:
+            return self._decision_from_response(response)
+        except LLMInvalidJSONError as exc:
+            if not _should_compact_retry(exc, response):
+                raise
+            # Типичный сбой: модель начала писать длинный final_message/thought
+            # с дампами данных и упёрлась в max_tokens → Unterminated string.
+            # Второй проход просит короткий валидный JSON без копирования выводов.
+            compact_response = self._llm_client.complete(
+                LLMRequest(
+                    messages=_build_compact_decision_retry_messages(messages, str(exc)),
+                    temperature=0.0,
+                    model_name=self._llm_client.config.model_name,
+                    response_format="json_object",
+                    max_tokens=max(
+                        self._llm_client.config.max_tokens or 0,
+                        _COMPACT_RETRY_MAX_TOKENS,
+                    ),
+                )
+            )
+            try:
+                return self._decision_from_response(compact_response)
+            except LLMInvalidJSONError as retry_exc:
+                raise LLMInvalidJSONError(
+                    "LLM дважды вернула невалидный JSON решения цикла. "
+                    f"Первичная ошибка: {exc}. "
+                    f"Ошибка compact retry: {retry_exc}"
+                ) from retry_exc
+
+    def _decision_from_response(self, response: LLMResponse) -> SupervisorDecision:
+        """Распарсить ответ LLM и проверить обязательный THINK."""
+        if _is_truncated_finish(response.finish_reason) and not _content_looks_complete(
+            response.content
+        ):
+            raise LLMInvalidJSONError(
+                "LLM вернул невалидный JSON решения цикла: ответ обрезан по "
+                f"лимиту токенов (finish_reason={response.finish_reason})"
+            )
         decision = _parse_agent_loop_decision(response.content, self._tools_catalog)
         _require_thought(decision)
         if decision.tool_call is not None:
@@ -289,3 +337,65 @@ def _extract_first_json_object(text: str) -> str | None:
             if depth == 0:
                 return text[start : index + 1]
     return None
+
+
+def _is_truncated_finish(finish_reason: str | None) -> bool:
+    """Провайдер сообщил, что генерация остановилась из‑за лимита токенов."""
+    if not finish_reason:
+        return False
+    return finish_reason.strip().casefold() in {
+        "length",
+        "max_tokens",
+        "max_token",
+    }
+
+
+def _content_looks_complete(content: str) -> bool:
+    """Грубая проверка: текст похож на законченный JSON-объект."""
+    text = (content or "").strip()
+    if not text.startswith("{"):
+        return False
+    return _extract_first_json_object(text) is not None
+
+
+def _should_compact_retry(exc: LLMInvalidJSONError, response: LLMResponse) -> bool:
+    """Нужен ли короткий повтор после обрыва/битого JSON (а не после ошибки схемы)."""
+    message = str(exc).casefold()
+    truncation_markers = (
+        "unterminated string",
+        "обрезан",
+        "finish_reason=length",
+        "finish_reason=max_tokens",
+        "expecting ',' delimiter",
+        "expecting property name",
+        "unterminated",
+    )
+    if any(marker in message for marker in truncation_markers):
+        return True
+    if _is_truncated_finish(response.finish_reason):
+        return True
+    # Обрезанный объект без закрывающей } тоже даёт JSONDecodeError.
+    if "невалидный json" in message and not _content_looks_complete(response.content):
+        return True
+    return False
+
+
+def _build_compact_decision_retry_messages(
+    original_messages: list[LLMMessage],
+    previous_error: str,
+) -> list[LLMMessage]:
+    """Собрать повторный запрос: короткий валидный JSON без дампов данных."""
+    retry_note = (
+        "Предыдущий ответ был ОТКЛОНЁН: JSON решения цикла невалиден "
+        f"({previous_error}). Часто это обрыв по лимиту токенов, когда модель "
+        "копирует stdout/таблицы в thought или final_message.\n"
+        "Верни ОДИН короткий валидный JSON по схеме решения. Правила:\n"
+        "- thought.understanding / why / reason / final_message — кратко "
+        "(несколько предложений), без сырых дампов;\n"
+        "- criteria_evidence — короткие ссылки на summary/пути файлов, не весь вывод;\n"
+        "- не копируй stdout/stderr/JSON-таблицы в поля ответа;\n"
+        "- decision_type только из схемы; имя инструмента только в tool_call.tool_name."
+    )
+    messages = list(original_messages)
+    messages.append(LLMMessage(role="user", content=retry_note))
+    return messages

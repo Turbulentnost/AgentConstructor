@@ -627,12 +627,32 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                         state,
                     )
                 if decision_failures <= self._max_decision_retries:
-                    hint = (
-                        "На прошлом шаге твой JSON-ответ не прошёл проверку: "
-                        f"{exc}. Верни строго валидный JSON решения: decision_type "
-                        "— одно из значений схемы (call_tool/finish_success/…), а имя "
-                        "инструмента только в tool_call.tool_name."
+                    error_lower = error_text.casefold()
+                    truncated_json = any(
+                        marker in error_lower
+                        for marker in (
+                            "unterminated string",
+                            "обрезан",
+                            "finish_reason=length",
+                            "finish_reason=max_tokens",
+                        )
                     )
+                    if truncated_json:
+                        hint = (
+                            "На прошлом шаге JSON-ответ был обрезан или невалиден "
+                            f"({exc}). Верни КОРОТКИЙ валидный JSON: не копируй "
+                            "stdout/таблицы/дампы в thought/final_message/"
+                            "criteria_evidence — только краткий итог и пути к файлам. "
+                            "decision_type — из схемы, имя инструмента только в "
+                            "tool_call.tool_name."
+                        )
+                    else:
+                        hint = (
+                            "На прошлом шаге твой JSON-ответ не прошёл проверку: "
+                            f"{exc}. Верни строго валидный JSON решения: decision_type "
+                            "— одно из значений схемы (call_tool/finish_success/…), а имя "
+                            "инструмента только в tool_call.tool_name."
+                        )
                     if not is_timeout and hint not in repeat_notes:
                         repeat_notes.append(hint)
                     self._emit_progress(

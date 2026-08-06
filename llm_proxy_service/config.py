@@ -110,12 +110,59 @@ class BackendConfig:
 
 
 @dataclass(frozen=True)
+class MinioConfig:
+    """Настройки MinIO для аватаров агентов/пользователей."""
+
+    endpoint: str
+    access_key: str
+    secret_key: str
+    bucket: str
+    secure: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.endpoint and self.access_key and self.secret_key and self.bucket)
+
+
+@dataclass(frozen=True)
+class OneCConfig:
+    """Параметры read-only подключения к SQL Server 1С (erp_pm)."""
+
+    server: str
+    database: str
+    trusted: bool = True
+    user: str = ""
+    password: str = ""
+    driver: str = "ODBC Driver 18 for SQL Server"
+    port: int | None = None
+    department_sql: str = ""
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    """JWT и синхронизация пользователей."""
+
+    jwt_secret: str
+    jwt_ttl_hours: int = 72
+    admin_token: str = ""
+    sync_interval_hours: float = 24.0
+    # Cron 5 полей (мин час день месяц день_недели), например "0 3 * * *" = 03:00 ежедневно.
+    # Если задан — имеет приоритет над sync_interval_hours.
+    sync_cron: str = "0 3 * * *"
+    sync_on_startup: bool = True
+    database_url: str = ""
+
+
+@dataclass(frozen=True)
 class ProxyConfig:
     """Итоговая конфигурация прокси-сервиса."""
 
     host: str
     port: int
     chain: list[BackendConfig] = field(default_factory=list)
+    minio: MinioConfig | None = None
+    onec: OneCConfig | None = None
+    auth: AuthConfig | None = None
 
 
 def _env(name: str, default: str = "") -> str:
@@ -210,6 +257,82 @@ def _backend_from_env(name: str, default_timeout: float) -> BackendConfig:
     )
 
 
+def load_minio_config() -> MinioConfig | None:
+    """Загрузить MinIO-конфиг; None если endpoint не задан."""
+    _load_dotenv_once()
+    endpoint = _env("MINIO_ENDPOINT")
+    if not endpoint:
+        return None
+    access_key = _env("MINIO_ACCESS_KEY", _env("MINIO_ROOT_USER", "minioadmin"))
+    secret_key = _env("MINIO_SECRET_KEY", _env("MINIO_ROOT_PASSWORD", "minioadmin"))
+    bucket = _env("MINIO_BUCKET", "agent-constructor")
+    secure = _env_bool("MINIO_SECURE")
+    config = MinioConfig(
+        endpoint=endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
+        bucket=bucket,
+        secure=secure,
+    )
+    return config if config.enabled else None
+
+
+def load_onec_config() -> OneCConfig | None:
+    """Загрузить конфиг 1С; None если DB_SERVER не задан."""
+    _load_dotenv_once()
+    # Подхватить export_1c_users/.env если переменные ещё не заданы.
+    export_env = Path(__file__).resolve().parents[1] / "export_1c_users" / ".env"
+    if export_env.exists():
+        for line in export_env.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+    server = _env("DB_SERVER") or _env("ONC_DB_SERVER")
+    if not server:
+        return None
+    database = _env("DB_NAME", _env("ONC_DB_NAME", "erp_pm")) or "erp_pm"
+    trusted = _env("TrustedConnection", "yes").lower() in {"1", "true", "yes", "y"}
+    port_raw = _env("DB_PORT", _env("ONC_DB_PORT", ""))
+    port = int(port_raw) if port_raw.isdigit() else None
+    return OneCConfig(
+        server=server,
+        database=database,
+        trusted=trusted,
+        user=_env("DB_USER"),
+        password=_env("DB_PASSWORD"),
+        driver=_env("ODBC_DRIVER", "ODBC Driver 18 for SQL Server"),
+        port=port,
+        department_sql=_env("ONC_DEPARTMENT_SQL"),
+    )
+
+
+def load_auth_config() -> AuthConfig | None:
+    """Загрузить auth/DB конфиг; None если DATABASE_URL пуст."""
+    _load_dotenv_once()
+    database_url = _env(
+        "DATABASE_URL",
+        "postgresql+psycopg://agent:agent@127.0.0.1:5432/agent_constructor",
+    )
+    if not database_url:
+        return None
+    jwt_secret = _env("JWT_SECRET", "change-me-agent-constructor-jwt")
+    ttl_raw = _env("JWT_TTL_HOURS", "72")
+    sync_raw = _env("USER_SYNC_INTERVAL_HOURS", "24")
+    sync_cron = _env("USER_SYNC_CRON", "0 3 * * *") or "0 3 * * *"
+    return AuthConfig(
+        jwt_secret=jwt_secret,
+        jwt_ttl_hours=int(ttl_raw) if ttl_raw else 72,
+        admin_token=_env("ADMIN_TOKEN"),
+        sync_interval_hours=float(sync_raw) if sync_raw else 24.0,
+        sync_cron=sync_cron,
+        sync_on_startup=_env_bool("USER_SYNC_ON_STARTUP", "true"),
+        database_url=database_url,
+    )
+
+
 def load_proxy_config() -> ProxyConfig:
     """Загрузить ProxyConfig из окружения."""
     _load_dotenv_once()
@@ -231,4 +354,11 @@ def load_proxy_config() -> ProxyConfig:
             continue
         chain.append(backend)
 
-    return ProxyConfig(host=host, port=port, chain=chain)
+    return ProxyConfig(
+        host=host,
+        port=port,
+        chain=chain,
+        minio=load_minio_config(),
+        onec=load_onec_config(),
+        auth=load_auth_config(),
+    )

@@ -50,7 +50,7 @@ def test_catalog_browser_open_browser_schema_guides_yandex() -> None:
 
 
 def test_catalog_browser_navigate_profile_schema_guides_sessions() -> None:
-    """Vision navigate подсказывает стабильные профили и явный default profile."""
+    """Vision navigate по умолчанию ведёт в авторизованную пользовательскую сессию."""
     catalog = load_tools_catalog()
 
     tool = catalog.get_tool("browser.navigate")
@@ -58,15 +58,18 @@ def test_catalog_browser_navigate_profile_schema_guides_sessions() -> None:
     assert "use_default_profile" in tool.input_schema["properties"]
     assert "profile_name" in tool.input_schema["properties"]
     assert "user_data_dir" in tool.input_schema["properties"]
-    assert "profile_mode=automation" in tool.planner_hint
-    assert "YandexBrowser\\User Data" in tool.planner_hint
     assert "use_default_profile=true" in tool.planner_hint
+    assert "авторизован" in tool.planner_hint.casefold() or (
+        "пользовательск" in tool.planner_hint.casefold()
+    )
+    assert "YandexBrowser\\User Data" in tool.planner_hint
     assert "allow_open_browser_fallback" in tool.input_schema["properties"]
     assert "cdp_available" in tool.output_schema["properties"]
     assert "fallback_used" in tool.output_schema["properties"]
     assert "browser.open_browser" in tool.planner_hint
     assert "OS fallback" in tool.planner_hint
     assert "browser.screenshot" in tool.planner_hint
+    assert "automation" in tool.planner_hint.casefold()
 
 
 def test_catalog_contains_onec_tools() -> None:

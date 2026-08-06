@@ -132,6 +132,11 @@ def build_agent_loop_prompt(
 - Если скрипт упал (см. stderr в результате code.run_python) — обдумай ошибку в THINK,
   перепиши код через code.write_python и запусти снова. Реши сам, когда данных
   достаточно и пора завершать.
+- НИКОГДА не копируй сырой stdout/stderr, JSON-дампы или большие таблицы в поля
+  thought / reason / final_message / criteria_evidence / tool_call.input_data.
+  В промпте для объёмных выводов остаются только summary и пути к файлам —
+  опирайся на них. В final_message дай краткий итог и ссылки на сохранённые файлы;
+  иначе JSON-ответ обрежется по лимиту токенов и станет невалидным.
 
 Взаимодействие с человеком (ask_human / request_credentials):
 - Используй ask_human в двух случаях: (1) когда нужно, чтобы человек ЧТО-ТО СДЕЛАЛ
@@ -497,14 +502,28 @@ def _sanitize_observation_history(history: object) -> list[dict]:
     return sanitized
 
 
+# Поля с полным текстом вывода → предпочитаемый ключ summary (если уже есть).
+_FULL_TEXT_TO_SUMMARY = (
+    ("stdout", "stdout_summary"),
+    ("stderr", "stderr_summary"),
+)
+# Любая строка/сериализованное значение длиннее порога сжимается в промпте.
+_MAX_COLLECTED_FIELD_CHARS = 2_500
+
+
 def _sanitize_collected_data(collected_data: dict) -> dict:
-    """Убрать тяжёлые base64/HTML из данных, отправляемых текстом в промпт."""
+    """Убрать тяжёлые base64/HTML/stdout из данных, отправляемых текстом в промпт.
+
+    Полные дампы (stdout скрипта, HTML страницы) раздувают контекст и провоцируют
+    модель вставлять их обратно в JSON решения — ответ обрезается по max_tokens
+    («Unterminated string»). В промпте оставляем summary + длины/флаги.
+    """
     if not isinstance(collected_data, dict):
         return collected_data
     sanitized: dict = {}
     for tool_name, output in collected_data.items():
         if not isinstance(output, dict):
-            sanitized[tool_name] = output
+            sanitized[tool_name] = _trim_prompt_value(output)
             continue
         trimmed = dict(output)
         if "screenshot_base64" in trimmed:
@@ -519,8 +538,45 @@ def _sanitize_collected_data(collected_data: dict) -> dict:
                 trimmed["html_summary"] = html[:4000]
             if "truncated" not in trimmed:
                 trimmed["truncated"] = len(html) > 4000
-        sanitized[tool_name] = trimmed
+        for full_key, summary_key in _FULL_TEXT_TO_SUMMARY:
+            value = trimmed.get(full_key)
+            if not isinstance(value, str):
+                continue
+            trimmed.pop(full_key, None)
+            if summary_key not in trimmed or not str(trimmed.get(summary_key) or "").strip():
+                trimmed[summary_key] = value[:2000] + ("…" if len(value) > 2000 else "")
+            trimmed[f"{full_key}_length"] = len(value)
+            trimmed[f"{full_key}_omitted"] = True
+            if len(value) > 2000:
+                trimmed[f"{full_key}_truncated"] = True
+        sanitized[tool_name] = {
+            key: _trim_prompt_value(value) for key, value in trimmed.items()
+        }
     return sanitized
+
+
+def _trim_prompt_value(value: object) -> object:
+    """Сжать слишком длинные строки/структуры в collected_data для промпта."""
+    if isinstance(value, str):
+        if len(value) <= _MAX_COLLECTED_FIELD_CHARS:
+            return value
+        return (
+            value[:_MAX_COLLECTED_FIELD_CHARS]
+            + f"… [truncated {len(value) - _MAX_COLLECTED_FIELD_CHARS} chars]"
+        )
+    if isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+        if len(text) <= _MAX_COLLECTED_FIELD_CHARS:
+            return value
+        return {
+            "_summary": text[:_MAX_COLLECTED_FIELD_CHARS] + "…",
+            "_truncated": True,
+            "_original_chars": len(text),
+        }
+    return value
 
 
 def _summarize_output(output_data: dict | None, max_chars: int = 600) -> str:

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from agent_desktop_constructor.app.core.app_mode import AppRunMode
-from agent_desktop_constructor.app.core.config import AppConfig
+from agent_desktop_constructor.app.core.config import AppConfig, FIXED_LLM_MODEL_NAME
 from agent_desktop_constructor.app.core.settings import load_settings, save_settings
 from agent_desktop_constructor.app.ui.helpers import show_error, show_info
 
@@ -42,6 +42,11 @@ class SettingsWidget(QWidget):
         self.use_llm_planner_checkbox = QCheckBox()
         self.llm_base_url_edit = QLineEdit()
         self.llm_model_name_edit = QLineEdit()
+        self.llm_model_name_edit.setReadOnly(True)
+        self.llm_model_name_edit.setText(FIXED_LLM_MODEL_NAME)
+        self.llm_model_name_edit.setToolTip(
+            "LLM зафиксирована в приложении и не выбирается пользователем."
+        )
         self.llm_proxy_url_edit = QLineEdit()
         self.llm_proxy_url_edit.setPlaceholderText(
             "http://192.168.2.135:8080 (пусто = напрямую к LLM)"
@@ -153,7 +158,7 @@ class SettingsWidget(QWidget):
         self.database_path_edit.setText(config.database_path)
         self.use_llm_planner_checkbox.setChecked(config.use_llm_planner)
         self.llm_base_url_edit.setText(config.llm_base_url)
-        self.llm_model_name_edit.setText(config.llm_model_name)
+        self.llm_model_name_edit.setText(FIXED_LLM_MODEL_NAME)
         self.llm_proxy_url_edit.setText(config.llm_proxy_url or "")
         self.com_safe_mode_checkbox.setChecked(config.com_safe_mode)
         self.com_worker_timeout_spin.setValue(config.com_worker_timeout_seconds)
@@ -173,7 +178,7 @@ class SettingsWidget(QWidget):
             database_path=self.database_path_edit.text().strip(),
             use_llm_planner=self.use_llm_planner_checkbox.isChecked(),
             llm_base_url=self.llm_base_url_edit.text().strip(),
-            llm_model_name=self.llm_model_name_edit.text().strip(),
+            llm_model_name=FIXED_LLM_MODEL_NAME,
             llm_proxy_url=self.llm_proxy_url_edit.text().strip() or None,
             com_safe_mode=self.com_safe_mode_checkbox.isChecked(),
             com_worker_timeout_seconds=self.com_worker_timeout_spin.value(),

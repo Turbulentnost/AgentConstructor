@@ -65,6 +65,12 @@ VISION_INTERACTION_TOOLS = {
     "browser.scroll",
 }
 
+# Read-only discovery: состояние папки/данных может измениться после ответа человека
+# или поздней загрузки вложений — повтор с теми же параметрами допустим.
+DISCOVERY_REPEATABLE_TOOLS = {
+    "excel.list_files",
+}
+
 CODE_RUN_PYTHON_TOOL = "code.run_python"
 DEFAULT_CODE_RUN_AUTO_APPROVE_BUDGET = 3
 
@@ -415,6 +421,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
                 "step": state.step_counter,
             }
         )
+        # После ответа человека discovery-инструменты снова разрешены:
+        # вложения могли появиться в папке, пока агент ждал.
+        _clear_discovery_signatures(state)
         self._emit_progress(
             f"👤 Человек ответил: {answer or default_answer}. Продолжаю работу…"
         )
@@ -843,7 +852,12 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         is_vision_tool = proposal.tool_name in VISION_INTERACTION_TOOLS
         # Паузу (agent.wait) можно повторять — например, периодически ждать
         # письмо/код. Дедупликация по сигнатуре её не блокирует.
-        allow_repeat = is_vision_tool or proposal.tool_name == WAIT_TOOL_NAME
+        # Discovery (excel.list_files) тоже: папка могла наполниться позже.
+        allow_repeat = (
+            is_vision_tool
+            or proposal.tool_name == WAIT_TOOL_NAME
+            or proposal.tool_name in DISCOVERY_REPEATABLE_TOOLS
+        )
         fail_counts = state.variables.setdefault("loop_tool_fail_counts", {})
         if not isinstance(fail_counts, dict):
             fail_counts = {}
@@ -1507,6 +1521,23 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         if tool_name not in agent_spec.allowed_tool_names():
             return f"Инструмент {tool_name!r} не разрешён в AgentSpec"
         return None
+
+
+def _clear_discovery_signatures(state: AgentRuntimeState) -> None:
+    """Снять дедуп с discovery-инструментов после ответа человека."""
+    signatures = state.variables.get("loop_executed_signatures")
+    if not isinstance(signatures, list) or not signatures:
+        return
+    kept: list[str] = []
+    for signature in signatures:
+        text = str(signature)
+        if any(
+            text.startswith(f"{name}::") or text == name
+            for name in DISCOVERY_REPEATABLE_TOOLS
+        ):
+            continue
+        kept.append(text)
+    state.variables["loop_executed_signatures"] = kept
 
 
 def _action_signature(tool_name: str, input_data: dict) -> str:

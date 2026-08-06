@@ -256,15 +256,25 @@ def build_agent_loop_prompt(
         "decision_schema": AGENT_LOOP_SCHEMA_DESCRIPTION,
     }
     attached_files = runtime_state.variables.get("attached_files")
+    workspace_files = runtime_state.variables.get("workspace_files")
+    if workspace_files:
+        user_payload["workspace_files"] = workspace_files
     if attached_files:
         user_payload["attached_files"] = attached_files
         user_payload["attached_files_note"] = (
             "Пользователь прикрепил файлы. Краткое содержимое — в attached_files; "
-            "сами файлы лежат в рабочей папке агента. Для Excel (.xlsx): "
-            "excel.list_files → excel.read_workbook(filename=имя) → при необходимости "
-            "excel.edit_workbook / excel.create_workbook. Для текста/CSV содержимое "
-            "уже в attached_files.content; при правках используй excel.* или "
-            "code.write_python/code.run_python по файлу в папке агента."
+            "сами файлы лежат в рабочей папке агента (см. также workspace_files). "
+            "Если workspace_files уже непустой — не утверждай, что папка пуста: "
+            "сразу читай нужные файлы через excel.read_workbook(filename=имя). "
+            "excel.list_files можно вызывать повторно после ответа человека. "
+            "Для текста/CSV содержимое уже в attached_files.content; при правках "
+            "используй excel.* или code.write_python/code.run_python."
+        )
+    elif workspace_files:
+        user_payload["attached_files_note"] = (
+            "В рабочей папке агента уже есть файлы (workspace_files). "
+            "Читай их через excel.read_workbook(filename=имя из списка). "
+            "Не завершай задачу с ошибкой «файлов нет», пока workspace_files непустой."
         )
     if isinstance(last_screenshot, dict) and last_screenshot.get("base64"):
         capture_mode = last_screenshot.get("capture_mode")

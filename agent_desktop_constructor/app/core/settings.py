@@ -8,7 +8,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from agent_desktop_constructor.app.core.config import AppConfig, runtime_base_dir
+from agent_desktop_constructor.app.core.config import (
+    AppConfig,
+    FIXED_LLM_MODEL_NAME,
+    runtime_base_dir,
+)
 
 DEFAULT_SETTINGS_PATH = str(runtime_base_dir() / "data" / "settings.json")
 
@@ -47,6 +51,9 @@ def load_settings(path: str | None = None) -> AppConfig:
     if not payload:
         return AppConfig()
 
+    # LLM в приложении всегда фиксирована — игнорируем старые значения из UI.
+    payload["llm_model_name"] = FIXED_LLM_MODEL_NAME
+
     try:
         return AppConfig.model_validate(payload)
     except ValidationError as exc:
@@ -78,11 +85,8 @@ def save_settings(config: AppConfig, path: str | None = None) -> None:
 
 
 def save_llm_model_name(model_name: str, path: str | None = None) -> None:
-    """Обновить только llm_model_name в settings.json."""
-    clean_model_name = model_name.strip()
-    if not clean_model_name:
-        raise ValueError("llm_model_name не должен быть пустым")
-
+    """Сохранить фиксированную LLM в settings.json (выбор пользователя отключён)."""
+    del model_name  # аргумент оставлен для совместимости вызовов
     settings_path = Path(path or DEFAULT_SETTINGS_PATH)
     if settings_path.exists():
         payload = _read_settings_payload(settings_path)
@@ -92,7 +96,7 @@ def save_llm_model_name(model_name: str, path: str | None = None) -> None:
         payload = {}
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    payload["llm_model_name"] = clean_model_name
+    payload["llm_model_name"] = FIXED_LLM_MODEL_NAME
     settings_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

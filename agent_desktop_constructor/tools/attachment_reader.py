@@ -34,6 +34,46 @@ def ingest_attachment(workspace: AgentWorkspace, source_path: str) -> dict:
     return {"name": name, "content": _summarize(target)}
 
 
+def read_attachment_sources(attachment_paths: list[str] | None) -> list[dict]:
+    """Прочитать вложения по исходным путям без копирования в workspace.
+
+    Используется на этапе планирования, когда AgentSpec ещё не создан.
+    """
+    if not attachment_paths:
+        return []
+    results: list[dict] = []
+    for raw_path in attachment_paths:
+        path = str(raw_path or "").strip()
+        if not path:
+            continue
+        source = Path(path)
+        name = source.name
+        try:
+            if not source.is_file():
+                content = f"(файл не найден: {path})"
+            else:
+                content = _summarize(source)
+        except Exception as exc:  # noqa: BLE001
+            content = f"(не удалось прочитать файл: {exc})"
+        results.append({"name": name, "content": content})
+    return results
+
+
+def format_attachments_for_planning(attached_files: list[dict]) -> str:
+    """Сформировать блок текста с содержимым вложений для LLM-планировщика."""
+    if not attached_files:
+        return ""
+    blocks: list[str] = [
+        "---",
+        "Прикреплённые файлы (используй как инструкции при составлении плана):",
+    ]
+    for item in attached_files:
+        name = str(item.get("name") or "файл").strip()
+        content = str(item.get("content") or "").strip()
+        blocks.append(f"\n### {name}\n{content or '(содержимое пусто)'}")
+    return "\n".join(blocks)
+
+
 def _summarize(path: Path) -> str:
     """Извлечь краткое текстовое представление файла для контекста LLM."""
     suffix = path.suffix.lower()

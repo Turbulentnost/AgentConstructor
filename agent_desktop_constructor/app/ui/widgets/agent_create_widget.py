@@ -31,7 +31,6 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -49,6 +48,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTableWidget,
+    QStackedWidget,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -59,7 +59,10 @@ from agent_desktop_constructor.app.core.bootstrap import (
     ApplicationContainer,
     build_application_container,
 )
+from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
 from agent_desktop_constructor.app.core.settings import save_llm_model_name
+from agent_desktop_constructor.app.ui.widgets.agent_card_panel import AgentCardPanel
+from agent_desktop_constructor.app.ui.widgets.app_header_bar import AppHeaderBar
 from agent_desktop_constructor.app.ui.widgets.context_indicator import ContextIndicator
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
@@ -69,6 +72,18 @@ from agent_desktop_constructor.app.ui.helpers import (
     set_table_rows,
     show_error,
     show_info,
+)
+from agent_desktop_constructor.app.ui.widgets.composer_panel import (
+    COMPOSER_PANEL_STYLESHEET,
+    ComposerIconButton,
+)
+from agent_desktop_constructor.app.ui.widgets.planning_canvas import PlanningCanvas
+from agent_desktop_constructor.app.ui.widgets.wizard_stepper import (
+    WizardStep,
+    WizardStepper,
+)
+from agent_desktop_constructor.app.ui.widgets.workflow_diagram_widget import (
+    WorkflowDiagramWidget,
 )
 from agent_desktop_constructor.app.ui.workers.create_flow_worker import CreateFlowWorker
 from agent_desktop_constructor.core.models.agent_spec import AgentSpec
@@ -262,12 +277,6 @@ REF_BORDER = "#16304f"
 REF_BLUE = "#2f7cff"
 REF_TEXT = "#e7eefc"
 REF_MUTED = "#7f8ea5"
-
-COMPOSER_ICONS_DIR = Path(__file__).resolve().parent.parent / "resources" / "icons"
-COMPOSER_ICON_FILES: dict[str, tuple[str, str]] = {
-    "attach": ("paperclip-default.svg", "paperclip-active.svg"),
-    "database": ("server-default.svg", "server-active.svg"),
-}
 
 
 def _short(text: object, max_len: int = 90) -> str:
@@ -1413,82 +1422,6 @@ class BadgeSelect(QPushButton):
             self.currentIndexChanged.emit(index)
 
 
-class ComposerIconButton(QPushButton):
-    """Квадратная кнопка с SVG-иконкой для нижней панели composer."""
-
-    _ICON_SIZE = 18
-    _svg_cache: dict[str, tuple[QSvgRenderer, QSvgRenderer]] = {}
-
-    def __init__(self, kind: str, tooltip: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._kind = kind
-        self.setText("")
-        self.setObjectName("composerIconButton")
-        self.setToolTip(tooltip)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(30, 30)
-
-    @classmethod
-    def _svg_renderers(cls, kind: str) -> tuple[QSvgRenderer, QSvgRenderer] | None:
-        files = COMPOSER_ICON_FILES.get(kind)
-        if files is None:
-            return None
-        if kind not in cls._svg_cache:
-            default_path = COMPOSER_ICONS_DIR / files[0]
-            active_path = COMPOSER_ICONS_DIR / files[1]
-            cls._svg_cache[kind] = (
-                QSvgRenderer(str(default_path)),
-                QSvgRenderer(str(active_path)),
-            )
-        return cls._svg_cache[kind]
-
-    def _use_active_icon(self) -> bool:
-        return self.underMouse() or self.isDown()
-
-    def enterEvent(self, event) -> None:  # noqa: N802
-        super().enterEvent(event)
-        self.update()
-
-    def leaveEvent(self, event) -> None:  # noqa: N802
-        super().leaveEvent(event)
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        renderers = self._svg_renderers(self._kind)
-        if renderers is not None:
-            renderer = renderers[1] if self._use_active_icon() else renderers[0]
-            if renderer.isValid():
-                painter = QPainter(self)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                offset = (self.width() - self._ICON_SIZE) / 2
-                renderer.render(
-                    painter,
-                    QRectF(offset, offset, self._ICON_SIZE, self._ICON_SIZE),
-                )
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = QColor("#94a3b8")
-        pen = QPen(color, 1.35)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._kind == "grid":
-            painter.drawRect(QRectF(7, 7, 7, 7))
-            painter.drawRect(QRectF(16, 7, 7, 7))
-            painter.drawRect(QRectF(7, 16, 7, 7))
-            painter.drawRect(QRectF(16, 16, 7, 7))
-        else:
-            painter.drawLine(QPointF(10, 10), QPointF(8, 10))
-            painter.drawLine(QPointF(8, 10), QPointF(8, 20))
-            painter.drawLine(QPointF(8, 20), QPointF(10, 20))
-            painter.drawLine(QPointF(20, 10), QPointF(22, 10))
-            painter.drawLine(QPointF(22, 10), QPointF(22, 20))
-            painter.drawLine(QPointF(22, 20), QPointF(20, 20))
-
-
 class MetricChipIcon(QWidget):
     """Line-icon для метрик шапки timeline (часы, шаг, ETA)."""
 
@@ -1533,11 +1466,9 @@ class MetricChipIcon(QWidget):
 
 
 class AgentCreateWidget(QWidget):
-    """Пошаговый экран создания и проверки агента.
+    """Мастер создания агента: Планирование → Тестирование → Workflow → Публикация."""
 
-    Внутренняя логика конструктора не меняется — виджет только визуализирует
-    результаты вызовов ``agent_service``.
-    """
+    agent_published = Signal()
 
     def __init__(
         self,
@@ -1549,6 +1480,7 @@ class AgentCreateWidget(QWidget):
         self._container = container
         self._preview_agent: AgentSpec | None = None
         self._last_request: str = ""
+        self._trial_passed = False
         self._stage_cards: dict[str, StageCard] = {}
         self._stage_details: dict[str, str] = {}
         self._selected_stage: str | None = None
@@ -1583,35 +1515,136 @@ class AgentCreateWidget(QWidget):
         self._connect_signals()
         self._reset_stages()
         self.select_stage(STAGE_REQUEST)
+        self._goto_wizard_step(WizardStep.PLANNING)
 
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        """Собрать трёхзонную компоновку: центр + правая панель деталей."""
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(self._build_center())
-        splitter.addWidget(self._build_details_panel())
-        # Центр доминирует; правая колонка узкая и почти не растягивается.
-        splitter.setStretchFactor(0, 7)
-        splitter.setStretchFactor(1, 1)
-        splitter.setHandleWidth(1)
-        splitter.setChildrenCollapsible(False)
-        self._main_splitter = splitter
+        """Собрать мастер: header, stepper и 4 шага."""
+        self.setObjectName("agentCreateRoot")
+        self.setStyleSheet("#agentCreateRoot { background: #0B0B14; }")
+
+        self._header = AppHeaderBar()
+        self._header.create_clicked.connect(self._reset_wizard_for_new_agent)
+        self._stepper = WizardStepper()
+        self._stepper.step_clicked.connect(self._on_wizard_step_clicked)
+        self._wizard_stack = QStackedWidget()
+
+        self._planning_canvas = PlanningCanvas()
+        self._agent_card = AgentCardPanel()
+        self._agent_card.set_next_label("Далее: запустить тест →")
+        planning_splitter = QSplitter(Qt.Orientation.Horizontal)
+        planning_splitter.addWidget(self._planning_canvas)
+        planning_splitter.addWidget(self._agent_card)
+        planning_splitter.setStretchFactor(0, 3)
+        planning_splitter.setStretchFactor(1, 2)
+        planning_splitter.setHandleWidth(1)
+        planning_splitter.setChildrenCollapsible(False)
+        self._planning_splitter = planning_splitter
+        self._wizard_stack.addWidget(planning_splitter)
+
+        testing_splitter = QSplitter(Qt.Orientation.Horizontal)
+        testing_splitter.addWidget(self._build_center())
+        testing_splitter.addWidget(self._build_details_panel())
+        testing_splitter.setStretchFactor(0, 7)
+        testing_splitter.setStretchFactor(1, 1)
+        testing_splitter.setHandleWidth(1)
+        testing_splitter.setChildrenCollapsible(False)
+        self._main_splitter = testing_splitter
+        self._wizard_stack.addWidget(testing_splitter)
         QTimer.singleShot(0, self._apply_default_splitter_sizes)
+
+        self._workflow_diagram = WorkflowDiagramWidget()
+        workflow_page = QWidget()
+        workflow_layout = QVBoxLayout(workflow_page)
+        workflow_layout.setContentsMargins(16, 8, 16, 16)
+        workflow_layout.addWidget(self._workflow_diagram, 1)
+        workflow_actions = QHBoxLayout()
+        self._workflow_next_button = QPushButton("Далее: опубликовать →")
+        self._workflow_next_button.setObjectName("wizardPrimary")
+        self._workflow_next_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._workflow_next_button.clicked.connect(
+            lambda: self._goto_wizard_step(WizardStep.PUBLICATION, unlock=True)
+        )
+        workflow_actions.addStretch(1)
+        workflow_actions.addWidget(self._workflow_next_button)
+        workflow_layout.addLayout(workflow_actions)
+        self._wizard_stack.addWidget(workflow_page)
+
+        publication_page = QWidget()
+        pub_layout = QVBoxLayout(publication_page)
+        pub_layout.setContentsMargins(16, 8, 16, 16)
+        pub_layout.setSpacing(12)
+        pub_title = QLabel("Публикация агента")
+        pub_title.setStyleSheet(
+            "color:#e8eaf2; font-size:18px; font-weight:800;"
+        )
+        self._publication_summary = QLabel(
+            "После успешного теста сохраните агента — workflow появится в каталоге."
+        )
+        self._publication_summary.setWordWrap(True)
+        self._publication_summary.setStyleSheet("color:#8a8fa3; font-size:13px;")
+        self._publication_card = AgentCardPanel()
+        self._publication_card.set_next_label("Опубликовать агента")
+        self._publication_card.draft_button.setVisible(False)
+        self._publication_card.setMinimumWidth(420)
+        pub_row = QHBoxLayout()
+        pub_row.addWidget(self._publication_card, 1)
+        pub_row.addStretch(1)
+        pub_layout.addWidget(pub_title)
+        pub_layout.addWidget(self._publication_summary)
+        pub_layout.addLayout(pub_row, 1)
+        self._wizard_stack.addWidget(publication_page)
+
+        chrome = QWidget()
+        chrome_layout = QVBoxLayout(chrome)
+        chrome_layout.setContentsMargins(18, 12, 18, 0)
+        chrome_layout.setSpacing(4)
+        chrome_layout.addWidget(self._header)
+        chrome_layout.addWidget(self._stepper)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(splitter)
+        root.setSpacing(0)
+        root.addWidget(chrome, 0)
+        root.addWidget(self._wizard_stack, 1)
+
+        self.setStyleSheet(
+            self.styleSheet()
+            + "#wizardPrimary { background:#5856D6; color:white; border:none;"
+            "border-radius:10px; padding:10px 16px; font-size:12px; font-weight:700; }"
+            "#wizardPrimary:hover { background:#6a68e0; }"
+        )
 
     def _apply_default_splitter_sizes(self) -> None:
-        """Задать начальные размеры: центр шире, план справа уже."""
-        splitter = self._main_splitter
+        """Задать начальные размеры колонок мастера."""
+        self._apply_splitter_sizes(
+            self._planning_splitter,
+            right_min=360,
+            right_max=440,
+            right_ratio=0.38,
+        )
+        self._apply_splitter_sizes(
+            self._main_splitter,
+            right_min=260,
+            right_max=300,
+            right_ratio=0.25,
+        )
+
+    def _apply_splitter_sizes(
+        self,
+        splitter: QSplitter | None,
+        *,
+        right_min: int,
+        right_max: int,
+        right_ratio: float,
+    ) -> None:
+        """Разделить ширину splitter между центром и правой панелью."""
         if splitter is None:
             return
         total = max(splitter.width(), 900)
-        right = min(300, max(260, total // 4))
-        left = max(total - right, total - 320)
-        splitter.setSizes([left, right])
+        right = min(right_max, max(right_min, int(total * right_ratio)))
+        splitter.setSizes([total - right, right])
 
     def _build_center(self) -> QWidget:
         """Центральная рабочая область в стиле run timeline из референса."""
@@ -1726,6 +1759,7 @@ class AgentCreateWidget(QWidget):
         panel_layout.addWidget(self.files_label)
 
         layout.addWidget(live_section, 1)
+        layout.addSpacing(18)
         layout.addWidget(self._build_bottom_composer(), 0)
 
         container.setStyleSheet(
@@ -1832,10 +1866,10 @@ class AgentCreateWidget(QWidget):
         toolbar.addWidget(ComposerIconButton("database", "Источники данных"))
 
         self._init_model_controls()
-        toolbar.addSpacing(4)
-        toolbar.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
-        toolbar.addWidget(self.reason_combo, 0, Qt.AlignmentFlag.AlignVCenter)
-        toolbar.addWidget(self.refresh_models_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        # LLM зафиксирована на FIXED_LLM_MODEL_NAME — селекты не показываем.
+        self.model_combo.setVisible(False)
+        self.reason_combo.setVisible(False)
+        self.refresh_models_button.setVisible(False)
         self.context_indicator = ContextIndicator()
         toolbar.addWidget(self.context_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -1860,46 +1894,7 @@ class AgentCreateWidget(QWidget):
         attach_row.addWidget(self.attach_clear_button, 0)
         layout.addLayout(attach_row)
 
-        composer.setStyleSheet(
-            "#composerPanel {"
-            f"background:{REF_PANEL}; border:1px solid {REF_BORDER};"
-            "border-radius:14px;"
-            "}"
-            "#requestEdit {"
-            "background:transparent; color:#cbd5e1; border:none;"
-            "padding:0; margin:0; font-size:13px; line-height:1.2;"
-            "selection-background-color:#2f7cff;"
-            "}"
-            "#composerIconButton {"
-            "background:#0c1828; color:#94a3b8; border:1px solid #1a2a40;"
-            "border-radius:7px;"
-            "}"
-            "#composerIconButton:hover { background:#132238; border-color:#2a4060; }"
-            "#launchSplit { background:#2f80ff; border-radius:9px; }"
-            "#launchSplitMain {"
-            "background:transparent; color:#ffffff; border:none;"
-            "padding:4px 10px; font-size:12px; font-weight:700;"
-            "}"
-            "#launchSplitMain:hover { background:rgba(255,255,255,0.06); }"
-            "#launchSplitMain:disabled { color:#b8ccf5; }"
-            "#launchSplitMenu {"
-            "background:transparent; color:#ffffff; border:none;"
-            "border-top-right-radius:9px; border-bottom-right-radius:9px;"
-            "}"
-            "#launchSplitMenu::menu-indicator { width:0px; height:0px; border:none; }"
-            "#launchSplitDivider { background:rgba(0,0,0,0.22); min-width:1px; max-width:1px; }"
-            "#launchSplitMenu:hover { background:rgba(255,255,255,0.08); }"
-            "#launchSplitStop {"
-            "background:#5a2630; color:#ffc4ce; border:1px solid #8b3342;"
-            "border-radius:7px; padding:8px 12px; font-size:12px; font-weight:700;"
-            "}"
-            "#attachLabel { color:#93c5fd; font-size:12px; }"
-            "#attachClearButton {"
-            "background:transparent; color:#94a3b8; border:1px solid #1a2a40;"
-            "border-radius:6px; padding:3px 8px; font-size:11px;"
-            "}"
-            "#attachClearButton:hover { color:#e2e8f0; border-color:#2a4060; }"
-        )
+        composer.setStyleSheet(COMPOSER_PANEL_STYLESHEET)
         return composer
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
@@ -2246,7 +2241,7 @@ class AgentCreateWidget(QWidget):
         return host
 
     def _connect_signals(self) -> None:
-        """Связать кнопки со слотами (логика конструктора не меняется)."""
+        """Связать кнопки со слотами мастера и тестового экрана."""
         self.create_button.clicked.connect(self.create_validate_and_run)
         self.save_button.clicked.connect(self.save_agent)
         self.reset_button.clicked.connect(self.clear)
@@ -2255,6 +2250,97 @@ class AgentCreateWidget(QWidget):
         self.refresh_models_button.clicked.connect(self._reload_model_options)
         self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
         self.reason_combo.currentIndexChanged.connect(self._on_reason_combo_changed)
+        self._planning_canvas.submit_requested.connect(self._on_planning_submit)
+        self._planning_canvas.attach_requested.connect(self.attach_files)
+        self._planning_canvas.clear_attachments_requested.connect(self.clear_attachments)
+        self._agent_card.save_draft_clicked.connect(self._save_draft)
+        self._agent_card.next_clicked.connect(self._start_testing_from_planning)
+        self._publication_card.next_clicked.connect(self._publish_agent)
+
+    def _on_wizard_step_clicked(self, index: int) -> None:
+        """Перейти к уже разблокированному шагу мастера."""
+        self._goto_wizard_step(WizardStep(index), unlock=False)
+
+    def _goto_wizard_step(self, step: WizardStep, *, unlock: bool = False) -> None:
+        """Показать шаг мастера и синхронизировать stepper."""
+        if int(step) > int(self._stepper.max_reached()) and not unlock:
+            return
+        if step == WizardStep.WORKFLOW and not self._trial_passed and not unlock:
+            return
+        self._stepper.set_step(step, unlock=unlock)
+        self._wizard_stack.setCurrentIndex(int(step))
+        if step == WizardStep.WORKFLOW and self._preview_agent is not None:
+            self._workflow_diagram.set_graph(self._preview_agent.graph_nodes)
+        if step == WizardStep.PUBLICATION and self._preview_agent is not None:
+            self._publication_card.bind_agent_spec(
+                self._preview_agent,
+                self._attachment_paths,
+            )
+            self._publication_card.set_next_enabled(True)
+
+    def _reset_wizard_for_new_agent(self) -> None:
+        """Сбросить мастер для нового агента."""
+        self.clear()
+        self._trial_passed = False
+        self._stepper.reset()
+        self._goto_wizard_step(WizardStep.PLANNING)
+
+    def _on_planning_submit(self, text: str) -> None:
+        """Построить preview по запросу с холста планирования."""
+        self.request_edit.setPlainText(text)
+        self._planning_canvas.set_displayed_request(text)
+        self.build_preview()
+
+    def _start_testing_from_planning(self) -> None:
+        """Перейти к тестированию и запустить пробный прогон."""
+        if self._preview_agent is None:
+            show_error(self, "Нет плана", "Сначала опишите задачу и дождитесь плана.")
+            return
+        self._preview_agent = self._agent_card.apply_edits_to_spec(self._preview_agent)
+        request = self._last_request or self.request_edit.toPlainText().strip()
+        if request:
+            self.request_edit.setPlainText(request)
+        self._goto_wizard_step(WizardStep.TESTING, unlock=True)
+        self.create_validate_and_run()
+
+    def _save_draft(self) -> None:
+        """Сохранить черновик агента локально без публикации в каталог."""
+        if self._preview_agent is None:
+            show_error(self, "Нет черновика", "Сначала постройте план агента.")
+            return
+        agent = self._agent_card.apply_edits_to_spec(self._preview_agent)
+        self._preview_agent = agent
+        drafts_dir = Path("data") / "drafts"
+        drafts_dir.mkdir(parents=True, exist_ok=True)
+        path = drafts_dir / f"{agent.agent_id}.json"
+        payload = {
+            "user_request": self._last_request,
+            "attachment_paths": list(self._attachment_paths),
+            "agent_spec": agent.model_dump(mode="json"),
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        show_info(self, "Черновик сохранён", f"Файл: {path}")
+
+    def _publish_agent(self) -> None:
+        """Опубликовать агента в каталог и уведомить главное окно."""
+        if self._preview_agent is None:
+            show_error(self, "Нечего публиковать", "Сначала пройдите тестирование.")
+            return
+        if not self._trial_passed:
+            show_error(
+                self,
+                "Тест не пройден",
+                "Опубликовать можно только после успешного пробного запуска.",
+            )
+            return
+        self._preview_agent = self._publication_card.apply_edits_to_spec(
+            self._preview_agent
+        )
+        self.save_agent()
+        self.agent_published.emit()
 
     def _toggle_dev(self, checked: bool) -> None:
         """Показать или скрыть раздел разработчика."""
@@ -2387,40 +2473,34 @@ class AgentCreateWidget(QWidget):
         self._fit_combo_to_contents(self.reason_combo)
 
     def _selected_model_id(self) -> str:
-        """Сформировать model id для LLM config из селектов UI."""
-        option = self._current_model_option()
-        if option is None:
-            config = getattr(self._container, "config", None)
-            return getattr(config, "llm_model_name", "chatgpt:internal")
-        if option.supports_reasoning:
-            mode = str(self.reason_combo.currentData() or "internal")
-            return f"{option.model_id}:{mode}"
-        return option.model_id
+        """Вернуть фиксированную LLM (выбор в UI отключён)."""
+        return FIXED_LLM_MODEL_NAME
 
     def _ensure_selected_model_container(self) -> None:
-        """Пересобрать container, если в UI выбрана другая LLM-модель."""
+        """Гарантировать, что container использует фиксированную LLM."""
         config = getattr(self._container, "config", None)
         if config is None:
             return
-        selected_model = self._selected_model_id()
+        selected_model = FIXED_LLM_MODEL_NAME
         self._persist_selected_model_choice(selected_model)
         if selected_model == config.llm_model_name:
             return
-        self._append_log(f"⚙ Переключаю LLM-модель на {selected_model}…")
+        self._append_log(f"⚙ LLM зафиксирована: {selected_model}")
         new_config = config.model_copy(
             update={"llm_model_name": selected_model}
         )
+        # Не сбрасываем preview: иначе пробный запуск создаст нового агента
+        # без уже подготовленной карточки/вложений в workspace.
         self._container = build_application_container(new_config)
-        self._preview_agent = None
         self._update_workspace_button()
 
     def _persist_selected_model_choice(self, model_name: str | None = None) -> None:
-        """Запомнить выбранный model id в локальных настройках."""
-        selected_model = model_name or self._selected_model_id()
+        """Сохранить фиксированный model id в локальных настройках."""
+        selected_model = FIXED_LLM_MODEL_NAME
         try:
             save_llm_model_name(selected_model)
         except (OSError, ValueError) as exc:
-            self._append_log(f"⚠ Не удалось сохранить выбранную LLM-модель: {exc}")
+            self._append_log(f"⚠ Не удалось сохранить LLM-модель: {exc}")
 
     # ---------------------------------------------------- background flow
 
@@ -2718,12 +2798,21 @@ class AgentCreateWidget(QWidget):
         service = self._container.agent_service
         cancel_event = self._cancel_event
 
+        attachment_paths = list(self._attachment_paths)
+
         def job(progress: Callable[[str], None]) -> object:
             progress("🧩 Строю план агента через LLM…")
-            spec = service.build_preview(
-                user_request,
-                cancel_callback=cancel_event.is_set,
-            )
+            if hasattr(service, "build_planning_preview"):
+                spec = service.build_planning_preview(
+                    user_request,
+                    attachment_paths=attachment_paths,
+                    cancel_callback=cancel_event.is_set,
+                )
+            else:
+                spec = service.build_preview(
+                    user_request,
+                    cancel_callback=cancel_event.is_set,
+                )
             progress("✅ План построен.")
             return spec
 
@@ -2733,11 +2822,18 @@ class AgentCreateWidget(QWidget):
         """Отобразить построенный preview AgentSpec."""
         assert isinstance(spec, AgentSpec)
         self._preview_agent = spec
+        self._trial_passed = False
         self._update_workspace_button()
         self._render_preview(spec)
         self._render_plan_stages(spec)
+        self._planning_canvas.set_attachments(self._attachment_paths)
+        self._planning_canvas.bind_preview(spec)
+        self._agent_card.bind_agent_spec(spec, self._attachment_paths)
+        self._agent_card.set_next_label("Далее: запустить тест →")
+        self._agent_card.set_next_enabled(True)
         self.select_stage(STAGE_PLAN)
         self._pause_elapsed_timer()
+        self._goto_wizard_step(WizardStep.PLANNING)
 
     def _on_preview_failed(self, message: str) -> None:
         """Показать ошибку построения плана."""
@@ -2861,9 +2957,9 @@ class AgentCreateWidget(QWidget):
         show_error(self, "Ошибка проверки агента", message)
 
     def create_validate_and_run(self) -> None:
-        """Собрать, проверить и запустить агента в фоне при успешной проверке."""
-        user_request = self.request_edit.toPlainText().strip()
-        if not user_request:
+        """Собрать (если нужно), проверить и запустить агента в фоне."""
+        user_request = self.request_edit.toPlainText().strip() or self._last_request
+        if not user_request and self._preview_agent is None:
             show_error(self, "Пустой запрос", "Введите запрос для создания агента.")
             return
         if self._is_busy():
@@ -2875,18 +2971,35 @@ class AgentCreateWidget(QWidget):
         self._ensure_selected_model_container()
         self.files_label.setVisible(False)
         self._cancel_event.clear()
-        self._last_request = user_request
-        self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
-        self._set_running(STAGE_PLAN)
+        self._trial_passed = False
+        if user_request:
+            self._last_request = user_request
+            self._set_stage(STAGE_REQUEST, "passed", _short(user_request), user_request)
+        if self._preview_agent is not None:
+            self._set_stage(STAGE_PLAN, "passed", "План уже построен", user_request)
+            self._set_running(STAGE_TRIAL)
+        else:
+            self._set_running(STAGE_PLAN)
         self.select_stage(STAGE_TRIAL)
+        self._goto_wizard_step(WizardStep.TESTING, unlock=True)
 
         service = self._container.agent_service
         cancel_event = self._cancel_event
         attachment_paths = list(self._attachment_paths)
+        existing_spec = self._preview_agent
+        request = self._last_request or user_request
 
         def job(progress: Callable[[str], None]) -> object:
+            if existing_spec is not None and hasattr(service, "run_trial"):
+                return service.run_trial(
+                    existing_spec,
+                    request,
+                    progress_callback=progress,
+                    cancel_callback=cancel_event.is_set,
+                    attachment_paths=attachment_paths,
+                )
             return service.create_validate_and_run_once(
-                user_request,
+                request,
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
                 attachment_paths=attachment_paths,
@@ -2906,6 +3019,7 @@ class AgentCreateWidget(QWidget):
         self._render_preview(agent_spec)
         self._render_plan_stages(agent_spec)
         self._apply_validation(validation)
+        self._agent_card.bind_agent_spec(agent_spec, self._attachment_paths)
         self.select_stage(STAGE_RESULT)
         if self._is_run_cancelled(validation, state):
             self._hide_human_panel()
@@ -2928,10 +3042,22 @@ class AgentCreateWidget(QWidget):
         self._hide_human_panel()
         self._show_produced_files(agent_spec, state)
         self._pause_elapsed_timer()
+        status_value = getattr(getattr(validation, "status", None), "value", None)
+        if status_value == "passed":
+            self._trial_passed = True
+            self._workflow_diagram.set_graph(agent_spec.graph_nodes)
+            self._goto_wizard_step(WizardStep.WORKFLOW, unlock=True)
+            show_info(
+                self,
+                "Тест пройден",
+                "Пробный запуск успешен. Можно сохранить workflow.",
+            )
+            return
         show_info(
             self,
             "Агент запущен",
-            f"Проверка пройдена, run_id={state.run_id}, status={state.status.value}",
+            f"Проверка: {validation.summary}; run_id={state.run_id}, "
+            f"status={state.status.value}",
         )
 
     def _show_produced_files(self, agent_spec: AgentSpec, state: object) -> None:
@@ -3099,6 +3225,8 @@ class AgentCreateWidget(QWidget):
         service = self._container.agent_service
         cancel_event = self._cancel_event
 
+        attachment_paths = list(self._attachment_paths)
+
         def job(progress: Callable[[str], None]) -> object:
             return service.resume_after_human(
                 agent_spec,
@@ -3107,6 +3235,7 @@ class AgentCreateWidget(QWidget):
                 approved=True,
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
+                attachment_paths=attachment_paths,
             )
 
         self._run_in_background(
@@ -3197,16 +3326,55 @@ class AgentCreateWidget(QWidget):
             if path not in self._attachment_paths:
                 self._attachment_paths.append(path)
         self._update_attach_label()
+        self._ingest_attachments_now(paths)
 
     def clear_attachments(self) -> None:
         """Убрать все прикреплённые файлы."""
         self._attachment_paths = []
         self._update_attach_label()
 
+    def _ingest_attachments_now(self, paths: list[str]) -> None:
+        """Сразу скопировать вложения в workspace текущего preview/paused агента."""
+        agent = self._preview_agent or self._paused_agent
+        if agent is None or not paths:
+            return
+        service = self._container.agent_service
+        if not hasattr(service, "ingest_attachments"):
+            return
+        try:
+            attached = service.ingest_attachments(agent.agent_id, paths)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"⚠ Не удалось скопировать вложения: {exc}")
+            return
+        if attached:
+            names = ", ".join(item["name"] for item in attached)
+            self._append_log(f"📎 Файлы скопированы в папку агента: {names}")
+            from agent_desktop_constructor.app.core.attachment_tools import (
+                ensure_attachment_tools,
+            )
+
+            updated = ensure_attachment_tools(
+                agent,
+                attachment_paths=paths,
+                attached_files=attached,
+            )
+            if self._preview_agent is not None and (
+                self._preview_agent.agent_id == updated.agent_id
+            ):
+                self._preview_agent = updated
+            if self._paused_agent is not None and (
+                self._paused_agent.agent_id == updated.agent_id
+            ):
+                self._paused_agent = updated
+
     def _update_attach_label(self) -> None:
         """Показать список прикреплённых файлов под композером."""
         from pathlib import Path
 
+        if hasattr(self, "_planning_canvas"):
+            self._planning_canvas.set_attachments(self._attachment_paths)
+        if self._preview_agent is not None and hasattr(self, "_agent_card"):
+            self._agent_card.bind_agent_spec(self._preview_agent, self._attachment_paths)
         if not self._attachment_paths:
             self.attach_button.setToolTip(
                 "Прикрепить документ (Excel, CSV, TXT…) — агент получит его в рабочую папку"
@@ -3229,10 +3397,11 @@ class AgentCreateWidget(QWidget):
     def clear(self) -> None:
         """Очистить запрос, preview и ленту стадий."""
         if self._is_busy():
-            show_info(self, "Идёт выполнение", "Дождитесь завершения операции.")
+            show_info(self, "Идёт процесс", "Дождитесь завершения операции.")
             return
         self._preview_agent = None
         self._last_request = ""
+        self._trial_passed = False
         self._update_workspace_button()
         self.clear_attachments()
         self._hide_human_panel()
@@ -3248,6 +3417,19 @@ class AgentCreateWidget(QWidget):
         set_table_rows(self.graph_table, [], self._graph_headers())
         self._reset_stages()
         self.select_stage(STAGE_REQUEST)
+        if hasattr(self, "_planning_canvas"):
+            self._planning_canvas.set_displayed_request("")
+            self._planning_canvas.set_request_text("")
+            self._planning_canvas.bind_preview(None)
+        if hasattr(self, "_agent_card"):
+            self._agent_card.bind_agent_spec(None)
+        if hasattr(self, "_workflow_diagram"):
+            self._workflow_diagram.set_graph([])
+        if hasattr(self, "_publication_card"):
+            self._publication_card.bind_agent_spec(None)
+        if hasattr(self, "_stepper"):
+            self._stepper.reset()
+            self._goto_wizard_step(WizardStep.PLANNING)
 
     # ------------------------------------------------------- stage helpers
 

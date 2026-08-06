@@ -11,7 +11,10 @@ from agent_desktop_constructor.app.ui.widgets.agent_create_widget import (
     AgentCreateWidget,
 )
 from agent_desktop_constructor.app.ui.widgets.agent_list_widget import AgentListWidget
-from agent_desktop_constructor.app.ui.widgets.run_events_widget import RunEventsWidget
+from agent_desktop_constructor.app.ui.widgets.placeholder_page import (
+    AnalyticsPlaceholderWidget,
+    HomePlaceholderWidget,
+)
 from agent_desktop_constructor.app.ui.widgets.run_list_widget import RunListWidget
 from agent_desktop_constructor.app.ui.widgets.settings_widget import SettingsWidget
 
@@ -19,7 +22,12 @@ from agent_desktop_constructor.app.ui.widgets.settings_widget import SettingsWid
 class MainWindow(QMainWindow):
     """Главное окно конструктора ИИ-агентов."""
 
-    _AGENTS_PAGE_INDEX = 0
+    _HOME_PAGE_INDEX = 0
+    _AGENTS_PAGE_INDEX = 1
+    _CONSTRUCTOR_PAGE_INDEX = 2
+    _TASKS_PAGE_INDEX = 3
+    _ANALYTICS_PAGE_INDEX = 4
+    _SETTINGS_PAGE_INDEX = 5
 
     def __init__(
         self,
@@ -33,33 +41,43 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1280, 820)
         self.setStyleSheet(
             "* { font-family: 'Segoe UI'; }"
-            "QMainWindow { background: #06101d; }"
-            "QScrollBar:vertical { background:#071426; width:8px; margin:0; border:none; }"
-            "QScrollBar::handle:vertical { background:#1b3b61; border-radius:4px; min-height:28px; }"
+            "QMainWindow { background: #0B0B14; }"
+            "QScrollBar:vertical { background:#0f0f1a; width:8px; margin:0; border:none; }"
+            "QScrollBar::handle:vertical { background:#2a2a4a; border-radius:4px; min-height:28px; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }"
-            "QScrollBar:horizontal { background:#071426; height:8px; margin:0; border:none; }"
-            "QScrollBar::handle:horizontal { background:#1b3b61; border-radius:4px; min-width:28px; }"
+            "QScrollBar:horizontal { background:#0f0f1a; height:8px; margin:0; border:none; }"
+            "QScrollBar::handle:horizontal { background:#2a2a4a; border-radius:4px; min-width:28px; }"
             "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }"
             "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background:transparent; }"
         )
 
         self.nav = TeamsNavSidebar()
         self.pages = QStackedWidget()
-        self.pages.setStyleSheet("QStackedWidget { background: #06101d; }")
+        self.pages.setStyleSheet("QStackedWidget { background: #0B0B14; }")
+
+        self._home = HomePlaceholderWidget()
         self._agent_list = AgentListWidget(container)
         self._create_agent = AgentCreateWidget(container)
         self._run_list = RunListWidget(container)
-        self._run_events = RunEventsWidget(container)
+        self._analytics = AnalyticsPlaceholderWidget()
+        self._settings = SettingsWidget()
 
-        for _title, widget in [
-            ("Агенты", self._agent_list),
-            ("Создать агента", self._create_agent),
-            ("Запуски", self._run_list),
-            ("События", self._run_events),
-            ("Настройки", SettingsWidget()),
-        ]:
+        for widget in (
+            self._home,
+            self._agent_list,
+            self._create_agent,
+            self._run_list,
+            self._analytics,
+            self._settings,
+        ):
             self.pages.addWidget(widget)
+
+        self._home.go_to_constructor.connect(
+            lambda: self.nav.setCurrentIndex(self._CONSTRUCTOR_PAGE_INDEX)
+        )
+        if hasattr(self._create_agent, "agent_published"):
+            self._create_agent.agent_published.connect(self._on_agent_published)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.nav)
@@ -70,7 +88,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         self.nav.currentIndexChanged.connect(self._on_nav_changed)
-        self.nav.setCurrentIndex(self._AGENTS_PAGE_INDEX)
+        self.nav.setCurrentIndex(self._HOME_PAGE_INDEX)
 
     def _on_nav_changed(self, index: int) -> None:
         """Переключить страницу и обновить данные при входе на экран агентов."""
@@ -79,3 +97,8 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         if index == self._AGENTS_PAGE_INDEX:
             QTimer.singleShot(0, self._agent_list, self._agent_list.refresh)
+
+    def _on_agent_published(self) -> None:
+        """После публикации перейти в каталог агентов."""
+        self.nav.setCurrentIndex(self._AGENTS_PAGE_INDEX)
+        QTimer.singleShot(0, self._agent_list, self._agent_list.refresh)

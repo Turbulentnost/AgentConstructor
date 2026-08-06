@@ -19,6 +19,8 @@ DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com"
 DEFAULT_OPENAI_MODEL = "gpt-5.5"
+# Единственная LLM, доступная приложению через API-прокси.
+FIXED_LLM_MODEL_NAME = "claude-sonnet-4.6"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -55,7 +57,7 @@ class AppConfig(BaseModel):
     use_llm_planner: bool = False
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "http://192.168.1.157:1234"
-    llm_model_name: str = "openai/gpt-oss-120b"
+    llm_model_name: str = FIXED_LLM_MODEL_NAME
     llm_api_key: str | None = None
     llm_proxy_url: str | None = None
     llm_temperature: float = Field(default=0.2, ge=0, le=2)
@@ -197,7 +199,7 @@ def _apply_llm_provider_defaults(values: dict[str, Any]) -> None:
     if openai_key:
         values.setdefault("llm_provider", "openai_compatible")
         values.setdefault("llm_base_url", DEFAULT_OPENAI_BASE_URL)
-        values.setdefault("llm_model_name", DEFAULT_OPENAI_MODEL)
+        values.setdefault("llm_model_name", FIXED_LLM_MODEL_NAME)
         values.setdefault("llm_api_key", openai_key)
         values.setdefault("use_llm_planner", True)
 

@@ -172,6 +172,14 @@ class ContextIndicator(QWidget):
         header = menu.addAction("Контекст агента")
         header.setEnabled(False)
         menu.addAction(f"Всего: {total_percent:.1f}% - {total_chars}/{total_limit} симв.")
+        prompt_chars = self._usage.get("prompt_payload_chars")
+        prompt_limit = self._usage.get("prompt_payload_limit")
+        if isinstance(prompt_chars, int) and prompt_chars > 0:
+            prompt_percent = float(self._usage.get("prompt_payload_percent") or 0.0)
+            menu.addAction(
+                f"LLM prompt: {prompt_percent:.1f}% - "
+                f"{prompt_chars}/{int(prompt_limit or 0)} симв."
+            )
         menu.addSeparator()
         section_chars = self._usage.get("section_chars") or {}
         section_percent = self._usage.get("section_percent") or {}
@@ -223,8 +231,18 @@ class ContextIndicator(QWidget):
         total_percent = float(self._usage.get("total_percent") or 0.0)
         total_chars = int(self._usage.get("total_chars") or 0)
         total_limit = int(self._usage.get("total_limit") or 0)
+        prompt_chars = self._usage.get("prompt_payload_chars")
+        prompt_extra = ""
+        if isinstance(prompt_chars, int) and prompt_chars > 0:
+            prompt_limit = int(self._usage.get("prompt_payload_limit") or 0)
+            prompt_percent = float(self._usage.get("prompt_payload_percent") or 0.0)
+            prompt_extra = (
+                f" LLM prompt: {prompt_percent:.1f}% "
+                f"({prompt_chars}/{prompt_limit})."
+            )
         return (
             "Использование контекста агента: "
-            f"{total_percent:.1f}% ({total_chars}/{total_limit} симв.). "
+            f"{total_percent:.1f}% ({total_chars}/{total_limit} симв.)."
+            f"{prompt_extra} "
             "Нажмите, чтобы увидеть разбивку по секциям."
         )

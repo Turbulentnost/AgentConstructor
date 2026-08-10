@@ -47,13 +47,8 @@ datas = [
     ("data/settings.json", "data"),
 ]
 
-# .env с LLM-ключами вшивается в бандл, чтобы Claude/OpenAI работали на других
-# ПК без ручной настройки. ВНИМАНИЕ: ключи попадают внутрь exe — распространяйте
-# сборку только на доверенные машины. Файл опционален (сборка не падает без него).
-import os as _os
-
-if _os.path.exists(".env"):
-    datas.append((".env", "."))
+# .env не вшиваем в desktop-сборку: клиенты ходят в llm_proxy_url, а ключи,
+# Postgres/MinIO/1C-настройки остаются только на сервере с прокси и Docker.
 
 a = Analysis(
     ["agent_desktop_constructor/app/ui/desktop_entry.py"],

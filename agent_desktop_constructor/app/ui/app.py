@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from agent_desktop_constructor.app.auth.client import (
@@ -60,54 +60,16 @@ def _try_restore_session(proxy_url: str):
     return None
 
 
-def _wait_for_login(shell: LoginDialog) -> bool:
-    """Дождаться успешного входа без закрытия окна. False — выход."""
-    loop = QEventLoop(shell)
-    result = {"ok": False}
-
-    def on_authenticated() -> None:
-        result["ok"] = True
-        loop.quit()
-
-    def on_rejected() -> None:
-        result["ok"] = False
-        loop.quit()
-
-    shell.authenticated.connect(on_authenticated)
-    shell.rejected.connect(on_rejected)
-    loop.exec()
-    shell.authenticated.disconnect(on_authenticated)
-    shell.rejected.disconnect(on_rejected)
-    return bool(result["ok"] and shell.session is not None)
-
-
-def _open_main_window(
-    app: QApplication,
-    shell: LoginDialog,
-    app_config: AppConfig,
-    auth_session,
-) -> MainWindow:
-    """Собрать MainWindow поверх экрана загрузки и закрыть shell."""
-    shell.show_loading("Загрузка конструктора…")
-    app.processEvents()
-
-    container = build_application_container(app_config)
-    app.processEvents()
-
-    window = MainWindow(container, auth_session=auth_session)
-    if shell.isMaximized():
-        window.showMaximized()
-    else:
-        window.setGeometry(shell.geometry())
-        window.show()
-    app.processEvents()
-    shell.close()
-    return window
-
-
 def run_desktop_app(config: AppConfig | None = None) -> int:
-    """Собрать container, показать MainWindow и запустить event loop."""
+    """Собрать container, показать MainWindow и запустить event loop.
+
+    «Выйти» не завершает процесс — снова открывается окно входа.
+    Закрытие крестиком главного окна или «Выход» на логине завершает приложение.
+    """
     app = create_qt_app()
+    # Иначе при закрытии MainWindow Qt гасит весь процесс до показа логина.
+    app.setQuitOnLastWindowClosed(False)
+
     load_dotenv_into_environ()
     app_config = config
     if app_config is None:
@@ -124,21 +86,105 @@ def run_desktop_app(config: AppConfig | None = None) -> int:
             )
             app_config = AppConfig()
     app_config = apply_llm_api_key_from_env(app_config)
-
     proxy_url = _resolve_proxy_url(app_config)
-    shell = LoginDialog(proxy_url)
-    shell.show_loading("Проверка сессии…")
-    shell.show()
-    app.processEvents()
 
-    auth_session = _try_restore_session(proxy_url)
-    if auth_session is None:
-        shell.show_login_form()
+    ctx: dict = {"shell": None, "window": None}
+
+    def _dispose_window() -> None:
+        window = ctx.get("window")
+        ctx["window"] = None
+        if window is None:
+            return
+        window.hide()
+        window.deleteLater()
+
+    def _dispose_shell() -> None:
+        shell = ctx.get("shell")
+        ctx["shell"] = None
+        if shell is None:
+            return
+        shell.hide()
+        shell.close()
+        shell.deleteLater()
+
+    def _open_main(session, shell: LoginDialog) -> None:
+        shell.show_loading(
+            "Загружаем пользовательские данные",
+            hint="Собираем интерфейс конструктора",
+        )
         app.processEvents()
-        if not _wait_for_login(shell):
-            shell.close()
-            return 0
-        auth_session = shell.session
+        container = build_application_container(app_config)
+        app.processEvents()
+        shell.show_loading(
+            "Открываем конструктор",
+            hint="Почти готово",
+            cycle_phrases=False,
+        )
+        app.processEvents()
 
-    _open_main_window(app, shell, app_config, auth_session)
+        window = MainWindow(container, auth_session=session)
+        ctx["window"] = window
+        window.logout_requested.connect(_on_logout)
+        window.exit_requested.connect(_on_exit_app)
+
+        if shell.isMaximized():
+            window.showMaximized()
+        else:
+            window.setGeometry(shell.geometry())
+            window.show()
+        app.processEvents()
+        _dispose_shell()
+
+    def _on_logout() -> None:
+        """Выйти из учётки → снова окно входа (приложение не гасим)."""
+        clear_session()
+        _dispose_window()
+        # После deleteLater показать логин на следующем тике event loop.
+        QTimer.singleShot(0, lambda: _show_login(force_login=True))
+
+    def _on_exit_app() -> None:
+        """Полный выход из приложения."""
+        _dispose_window()
+        _dispose_shell()
+        app.quit()
+
+    def _show_login(*, force_login: bool = False) -> None:
+        _dispose_shell()
+        shell = LoginDialog(proxy_url)
+        ctx["shell"] = shell
+
+        def on_authenticated() -> None:
+            session = shell.session
+            if session is None:
+                return
+            _open_main(session, shell)
+
+        def on_rejected() -> None:
+            _on_exit_app()
+
+        shell.authenticated.connect(on_authenticated)
+        shell.rejected.connect(on_rejected)
+
+        if force_login:
+            clear_session()
+            shell.show_login_form()
+            shell.show()
+            app.processEvents()
+            return
+
+        shell.show_loading(
+            "Загружаем пользовательские данные",
+            hint="Проверяем сохранённую сессию",
+        )
+        shell.show()
+        app.processEvents()
+
+        session = _try_restore_session(proxy_url)
+        if session is None:
+            shell.show_login_form()
+            app.processEvents()
+            return
+        _open_main(session, shell)
+
+    _show_login(force_login=False)
     return app.exec()

@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from llm_proxy_service.models_user import Base
 
+# Регистрация таблиц каталога на том же Base (create_all).
+from llm_proxy_service import models_catalog as _models_catalog  # noqa: E402, F401
+
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
 

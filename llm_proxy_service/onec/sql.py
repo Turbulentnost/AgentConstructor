@@ -325,22 +325,222 @@ def find_user_by_login(conn: Any, login: str) -> OneCUserRow | None:
     )
 
 
+def _add_dept_keys(mapping: dict[str, str], *, user_id: str, login: str, display_name: str, dept: str) -> None:
+    dept = (dept or "").strip()
+    if not dept:
+        return
+    for key in (user_id, login, display_name):
+        normalized = " ".join((key or "").strip().split()).lower()
+        if normalized and normalized not in mapping:
+            mapping[normalized] = dept
+
+
+def _department_map_from_rows(rows: list[Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for row in rows:
+        # Формат A: MapKey + Department
+        key = str(getattr(row, "MapKey", "") or "").strip().lower()
+        dept = str(getattr(row, "Department", "") or "").strip()
+        if key and dept:
+            mapping[key] = dept
+            continue
+        # Формат B: UserId/Login/DisplayName + Department (join к v8users)
+        _add_dept_keys(
+            mapping,
+            user_id=str(getattr(row, "UserId", "") or ""),
+            login=str(getattr(row, "Login", "") or ""),
+            display_name=str(getattr(row, "DisplayName", "") or ""),
+            dept=str(getattr(row, "Department", "") or ""),
+        )
+    return mapping
+
+
+def _load_department_map_via_ib_users_catalog(conn: Any) -> tuple[dict[str, str], str]:
+    """Подразделение через Справочник.Пользователи: v8users.ID → подразделение.
+
+    В SQL 1С имена вида _ReferenceNNN / _FldXXXX. Для erp_pm (и типичных УТ/ERP):
+    - справочник пользователей содержит binary-поле с ID из v8users;
+    - RRef-поле указывает на справочник подразделений (_Description).
+    """
+    v8 = ensure_v8users(conn)
+    users_count_row = fetchone(conn, f"SELECT COUNT(*) AS Cnt FROM {v8}")
+    users_count = int(getattr(users_count_row, "Cnt", 0) or 0)
+    if users_count <= 0:
+        return {}, ""
+
+    # Быстрый путь для известной конфигурации erp_pm.
+    known_sql = f"""
+        SELECT
+            CONVERT(varchar(64), u.ID, 2) AS UserId,
+            CAST(u.Name AS nvarchar(128)) AS Login,
+            CAST(u.Descr AS nvarchar(256)) AS DisplayName,
+            CAST(d.[_Description] AS nvarchar(400)) AS Department
+        FROM {v8} u
+        INNER JOIN dbo.[_Reference366] uc ON uc.[_Fld11001] = u.ID
+        INNER JOIN dbo.[_Reference513] d ON d.[_IDRRef] = uc.[_Fld10996RRef]
+        WHERE d.[_Description] IS NOT NULL
+          AND LEN(LTRIM(RTRIM(CAST(d.[_Description] AS nvarchar(400))))) > 1
+    """
+    try:
+        rows = fetchall(conn, known_sql)
+        mapping = _department_map_from_rows(rows)
+        if len(mapping) >= max(10, users_count // 5):
+            return mapping, "ib_users_catalog:erp_pm(_Reference366/_Reference513)"
+    except Exception as exc:
+        logger.info("Known erp_pm department SQL failed: %s", exc)
+
+    # Автопоиск: таблица пользователей ИБ по числу совпадений binary-поля с v8users.ID.
+    candidates = fetchall(
+        conn,
+        """
+        SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS c
+        WHERE c.TABLE_NAME LIKE '_Reference%'
+          AND c.TABLE_NAME NOT LIKE '%X%'
+          AND c.DATA_TYPE = 'binary'
+          AND c.CHARACTER_MAXIMUM_LENGTH = 16
+          AND c.COLUMN_NAME NOT IN ('_IDRRef', '_PredefinedID', '_ParentIDRRef', '_OwnerIDRRef')
+          AND EXISTS (
+              SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS d
+              WHERE d.TABLE_SCHEMA = c.TABLE_SCHEMA
+                AND d.TABLE_NAME = c.TABLE_NAME
+                AND d.COLUMN_NAME = '_Description'
+          )
+        ORDER BY c.TABLE_NAME
+        """,
+    )
+    best_user_table = None
+    best_ib_col = None
+    best_hits = 0
+    for schema, table, col in candidates:
+        try:
+            row = fetchone(
+                conn,
+                f"""
+                SELECT COUNT(*) AS Cnt
+                FROM {v8} u
+                INNER JOIN [{schema}].[{table}] uc
+                  ON uc.[{col}] = u.ID
+                """,
+            )
+        except Exception:
+            continue
+        hits = int(getattr(row, "Cnt", 0) or 0)
+        if hits > best_hits:
+            best_hits = hits
+            best_user_table = (schema, table)
+            best_ib_col = col
+            if hits >= int(users_count * 0.8):
+                break
+    if not best_user_table or not best_ib_col or best_hits < max(10, users_count // 5):
+        return {}, ""
+
+    schema, user_table = best_user_table
+    rref_cols = fetchall(
+        conn,
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+          AND DATA_TYPE = 'binary'
+          AND CHARACTER_MAXIMUM_LENGTH = 16
+          AND COLUMN_NAME LIKE '%RRef'
+          AND COLUMN_NAME NOT IN ('_IDRRef', '_PredefinedID', '_ParentIDRRef', '_OwnerIDRRef')
+        """,
+        (schema, user_table),
+    )
+    dept_tables = fetchall(
+        conn,
+        """
+        SELECT TABLE_SCHEMA, TABLE_NAME
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_TYPE = 'BASE TABLE'
+          AND TABLE_NAME LIKE '_Reference%'
+          AND TABLE_NAME NOT LIKE '%X%'
+          AND EXISTS (
+              SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS c
+              WHERE c.TABLE_SCHEMA = TABLES.TABLE_SCHEMA
+                AND c.TABLE_NAME = TABLES.TABLE_NAME
+                AND c.COLUMN_NAME = '_Description'
+          )
+        """,
+    )
+
+    best_mapping: dict[str, str] = {}
+    best_note = ""
+    best_score = -1
+    markers = ("отдел", "служб", "цех", "управлен", "сектор", "участ", "директ")
+    for rref in rref_cols:
+        rref_col = rref.COLUMN_NAME
+        for dept_schema, dept_table in dept_tables:
+            sql = f"""
+                SELECT
+                    CONVERT(varchar(64), u.ID, 2) AS UserId,
+                    CAST(u.Name AS nvarchar(128)) AS Login,
+                    CAST(u.Descr AS nvarchar(256)) AS DisplayName,
+                    CAST(d.[_Description] AS nvarchar(400)) AS Department
+                FROM {v8} u
+                INNER JOIN [{schema}].[{user_table}] uc
+                  ON uc.[{best_ib_col}] = u.ID
+                INNER JOIN [{dept_schema}].[{dept_table}] d
+                  ON d.[_IDRRef] = uc.[{rref_col}]
+                WHERE d.[_Description] IS NOT NULL
+                  AND LEN(LTRIM(RTRIM(CAST(d.[_Description] AS nvarchar(400))))) > 1
+            """
+            try:
+                rows = fetchall(conn, sql)
+            except Exception:
+                continue
+            user_keys = {
+                str(getattr(r, "UserId", "") or "").strip().lower()
+                for r in rows
+                if str(getattr(r, "Department", "") or "").strip()
+            }
+            if len(user_keys) < max(10, users_count // 10):
+                continue
+            dept_names = [
+                str(getattr(r, "Department", "") or "")
+                for r in rows[:100]
+                if str(getattr(r, "Department", "") or "").strip()
+            ]
+            marker_hits = sum(
+                1 for name in dept_names if any(m in name.casefold() for m in markers)
+            )
+            score = len(user_keys) * 10 + marker_hits
+            if score <= best_score:
+                continue
+            best_score = score
+            best_mapping = _department_map_from_rows(rows)
+            best_note = (
+                f"ib_users_catalog:{user_table}.{best_ib_col}"
+                f"->{dept_table} via {rref_col} ({len(user_keys)} users)"
+            )
+            if len(user_keys) >= int(users_count * 0.7) and marker_hits >= 5:
+                return best_mapping, best_note
+
+    return best_mapping, best_note
+
+
 def load_department_map(conn: Any, explicit_sql: str = "") -> dict[str, str]:
     """Построить map login/name/id → подразделение.
 
-    Если задан explicit_sql — выполнить его (должен вернуть MapKey, Department).
-    Иначе — best-effort поиск по колонкам с 'подразд' / 'department'.
+    Порядок:
+    1) explicit_sql (MapKey/Department или UserId/Login/DisplayName/Department);
+    2) join Справочник.Пользователи (v8users.ID) → справочник подразделений;
+    3) устаревший best-effort по именам колонок (обычно пусто в SQL 1С).
     """
-    mapping: dict[str, str] = {}
     if explicit_sql.strip():
         rows = fetchall(conn, explicit_sql)
-        for row in rows:
-            key = str(getattr(row, "MapKey", "") or "").strip().lower()
-            dept = str(getattr(row, "Department", "") or "").strip()
-            if key and dept:
-                mapping[key] = dept
+        mapping = _department_map_from_rows(rows)
+        if mapping:
+            return mapping
+
+    mapping, note = _load_department_map_via_ib_users_catalog(conn)
+    if mapping:
+        logger.info("Departments loaded via %s (%s keys)", note, len(mapping))
         return mapping
 
+    mapping = {}
     try:
         cols = fetchall(
             conn,
@@ -401,9 +601,11 @@ def attach_departments(users: list[OneCUserRow], dept_map: dict[str, str]) -> in
     """Проставить department из map; вернуть число совпадений."""
     matched = 0
     for user in users:
+        login_key = " ".join(user.login.split()).lower()
+        name_key = " ".join(user.display_name.split()).lower()
         dept = (
-            dept_map.get(user.login.lower())
-            or dept_map.get(user.display_name.lower())
+            dept_map.get(login_key)
+            or dept_map.get(name_key)
             or dept_map.get(user.user_id.lower())
         )
         if dept:

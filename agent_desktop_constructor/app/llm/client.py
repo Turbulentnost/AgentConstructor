@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from threading import Lock
 from typing import Callable
 from urllib import error, request
 
@@ -27,6 +28,7 @@ class OpenAICompatibleLLMClient:
         """Сохранить конфигурацию локальной LLM."""
         self._config = config
         self._cancel_callback: Callable[[], bool] | None = None
+        self._request_lock = Lock()
 
     @property
     def config(self) -> LLMConfig:
@@ -42,6 +44,11 @@ class OpenAICompatibleLLMClient:
 
     def complete(self, llm_request: LLMRequest) -> LLMResponse:
         """Выполнить chat completion запрос и вернуть текст ответа."""
+        with self._request_lock:
+            return self._complete_locked(llm_request)
+
+    def _complete_locked(self, llm_request: LLMRequest) -> LLMResponse:
+        """Выполнить запрос под lock: следующий запрос ждёт результат текущего."""
         endpoint = self._build_endpoint()
         payload = self._build_payload(llm_request)
         try:

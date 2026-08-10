@@ -7,6 +7,16 @@ import json
 from agent_desktop_constructor.app.context.manager import AgentContextManager
 from agent_desktop_constructor.app.llm.goal_checklist import TOOL_OUTPUT_HISTORY_LIMIT
 from agent_desktop_constructor.app.llm.models import LLMImageContent, LLMMessage
+from agent_desktop_constructor.app.llm.run_memory import (
+    DEFAULT_RECENT_STEPS,
+    PROMPT_PAYLOAD_CHARS_KEY,
+    PROMPT_PAYLOAD_LIMIT_KEY,
+    PROMPT_SOFT_LIMIT_CHARS,
+    build_executed_steps_for_prompt,
+    ensure_run_memory,
+    resolve_recent_limit,
+    shrink_payload_if_needed,
+)
 from agent_desktop_constructor.app.llm.temporal_context import build_temporal_context
 from agent_desktop_constructor.app.runtime.screenshot_compress import (
     prepare_screenshot_for_llm,
@@ -42,7 +52,8 @@ AGENT_LOOP_SCHEMA_DESCRIPTION = """
   "human_question": null,
   "human_options": [],
   "confidence": 0.0,
-  "warnings": []
+  "warnings": [],
+  "memory_notes": ["короткий факт для памяти (опционально), без дампов stdout"]
 }
 
 ОБЯЗАТЕЛЬНЫЙ этап THINK:
@@ -66,6 +77,8 @@ AGENT_LOOP_SCHEMA_DESCRIPTION = """
 - finish_success разрешён только с criteria_evidence по обязательным критериям
   goal_checklist (или после checklist_updates status=done). Без доказательств
   Runtime отклонит завершение и попросит продолжить.
+- memory_notes (опционально): 0–3 коротких факта для rolling memory
+  (пути к файлам, роли листов, выводы). Без сырого stdout/таблиц.
 """.strip()
 
 
@@ -116,9 +129,12 @@ def build_agent_loop_prompt(
 - Поле confidence: ставь честную оценку 0..1. Если уверенность ниже порога
   агента (low_confidence_threshold), Runtime отклонит finish_success — тогда
   собери ещё данные или спроси человека (ask_human).
-- Смотри observation_history: там не только последний вызов tool, но и предыдущие
-  результаты/ошибки того же инструмента. В executed_steps при ошибке читай
-  error_message целиком.
+- Смотри observation_history / executed_steps: это ОКНЕЕ окно шагов, не вся
+  история. Ранние шаги сжаты в run_memory (facts/artifacts/last_failures).
+  В executed_steps при ошибке читай error_message целиком.
+- Полные выводы инструментов лежат в workspace и transcript на диске. При сомнении
+  ПЕРЕЧИТАЙ файл инструментом (excel.*, code.run_python, attachment.* и т.п.) —
+  не проси Runtime вернуть весь stdout в JSON и не копируй дампы в свой ответ.
 - Если нужный инструмент недоступен или данных получить нельзя — finish_failed или ask_human.
 - write/dangerous действия исполняются только с подтверждением человека.
 
@@ -209,29 +225,24 @@ def build_agent_loop_prompt(
     collected_data = _sanitize_collected_data(
         runtime_state.variables.get("tool_outputs", {})
     )
+    prior_chars = runtime_state.variables.get(PROMPT_PAYLOAD_CHARS_KEY)
+    recent_limit = resolve_recent_limit(
+        prior_chars if isinstance(prior_chars, int) else None
+    )
     observation_history = _sanitize_observation_history(
-        runtime_state.variables.get("tool_output_history", [])
+        runtime_state.variables.get("tool_output_history", []),
+        recent_limit=recent_limit,
     )
     goal_checklist = runtime_state.variables.get("goal_checklist") or []
+    run_memory = ensure_run_memory(runtime_state.variables)
     last_screenshot_raw = runtime_state.variables.get("last_screenshot")
     last_screenshot = prepare_screenshot_for_llm(
         last_screenshot_raw if isinstance(last_screenshot_raw, dict) else None
     )
-    executed_steps = [
-        {
-            "tool_name": record.tool_name,
-            "ok": record.ok,
-            "error_type": record.error_type,
-            "error_message": (record.error_message or "")[:2000]
-            if not record.ok
-            else None,
-            "output_summary": _summarize_output(
-                record.output_data,
-                max_chars=1600 if not record.ok else 600,
-            ),
-        }
-        for record in runtime_state.tool_results
-    ]
+    executed_steps = build_executed_steps_for_prompt(
+        runtime_state.tool_results,
+        recent_limit=recent_limit,
+    )
     try:
         agent_context = AgentContextManager().build_llm_context(
             agent_spec=agent_spec,
@@ -250,8 +261,24 @@ def build_agent_loop_prompt(
         "user_request": runtime_state.variables.get("user_request"),
         "goal": agent_spec.goal.model_dump(mode="json"),
         "goal_checklist": goal_checklist,
+        "run_memory": {
+            "facts": run_memory.get("facts", []),
+            "artifacts": run_memory.get("artifacts", []),
+            "last_failures": run_memory.get("last_failures", []),
+            "open_questions": run_memory.get("open_questions", []),
+            "compacted_steps": run_memory.get("compacted_steps", 0),
+            "note": (
+                "Сжатая память ранних шагов. Полные выводы — в workspace/transcript; "
+                "при необходимости читай файлы инструментами, не проси весь stdout."
+            ),
+        },
         "available_tools": tools_context,
         "executed_steps": executed_steps,
+        "executed_steps_note": (
+            f"Показаны только последние {recent_limit} шагов "
+            f"(всего выполнено {len(runtime_state.tool_results)}). "
+            "Раньше — в run_memory и на диске."
+        ),
         "executed_actions": executed_signatures,
         "your_recent_steps": _recent_reasoning(runtime_state),
         "collected_data": collected_data,
@@ -362,12 +389,25 @@ def build_agent_loop_prompt(
                 "вызови browser.get_page_html снова."
             ),
         }
+    shrink_payload_if_needed(user_payload, soft_limit=PROMPT_SOFT_LIMIT_CHARS)
+    budget = user_payload.get("_prompt_budget")
+    if isinstance(budget, dict):
+        runtime_state.variables[PROMPT_PAYLOAD_CHARS_KEY] = int(
+            budget.get("chars") or 0
+        )
+        runtime_state.variables[PROMPT_PAYLOAD_LIMIT_KEY] = int(
+            budget.get("limit") or PROMPT_SOFT_LIMIT_CHARS
+        )
+
     user_prompt = (
         "Определи следующий безопасный шаг агента и верни JSON-решение. "
         "Инструменты выбирай сам, опираясь на их описание (description) и "
         "when_to_use в available_tools, на цель пользователя и на уже собранные "
-        "данные (collected_data). Не полагайся на подсказки по конкретным задачам "
-        "— их нет; сам реши, какой инструмент и с какими параметрами нужен сейчас. "
+        "данные (collected_data / run_memory). Не полагайся на подсказки по "
+        "конкретным задачам — их нет; сам реши, какой инструмент и с какими "
+        "параметрами нужен сейчас. Полные выводы ранних шагов на диске "
+        "(workspace/transcript) — при сомнении читай файл инструментом, "
+        "не проси вернуть весь stdout в JSON. "
         "Для относительных дат ('сегодня', 'на этой неделе', 'за июнь') используй "
         "temporal_context; если input_data инструмента содержит дату, передавай её "
         "в формате YYYY-MM-DD.\n"
@@ -476,12 +516,17 @@ def _recent_reasoning(runtime_state: AgentRuntimeState, limit: int = 8) -> list[
     return paired[-limit:]
 
 
-def _sanitize_observation_history(history: object) -> list[dict]:
+def _sanitize_observation_history(
+    history: object,
+    *,
+    recent_limit: int = DEFAULT_RECENT_STEPS,
+) -> list[dict]:
     """Сжать историю наблюдений для промпта (без тяжёлых html/base64)."""
     if not isinstance(history, list):
         return []
+    window = min(max(1, recent_limit), TOOL_OUTPUT_HISTORY_LIMIT)
     sanitized: list[dict] = []
-    for item in history[-TOOL_OUTPUT_HISTORY_LIMIT:]:
+    for item in history[-window:]:
         if not isinstance(item, dict):
             continue
         output = item.get("output")

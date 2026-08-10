@@ -43,7 +43,10 @@ def main() -> int:
         return 2
 
     print(f"Готово: {exe_path}")
-    print("Для LLM-ключей положите .env рядом с exe или задайте переменные окружения.")
+    print(
+        "Desktop-сборка обращается к llm_proxy_url из data/settings.json; "
+        "LLM-ключи и Docker-настройки остаются только на сервере прокси."
+    )
     print(f"Временная директория сборки: {BUILD_DIR}")
     return 0
 

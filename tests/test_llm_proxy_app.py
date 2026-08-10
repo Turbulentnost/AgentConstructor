@@ -249,6 +249,118 @@ def test_selected_model_routes_to_that_backend(
     assert response.json()["choices"][0]["message"]["content"] == "ответ chatgpt"
 
 
+def test_claude_rate_limit_falls_back_to_next_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """429 на всех Claude-моделях — берём следующий backend (chatgpt)."""
+    config = ProxyConfig(
+        host="127.0.0.1",
+        port=8080,
+        chain=[
+            _backend("chatgpt"),
+            BackendConfig(
+                name="claude",
+                style=STYLE_ANTHROPIC,
+                base_url="https://api.anthropic.com",
+                model="claude-sonnet-4-6",
+                api_key="sk-test",
+                timeout_seconds=5.0,
+                display_name="Claude",
+                configured_models=(
+                    "claude-sonnet-4-6",
+                    "claude-opus-4-6",
+                    "claude-sonnet-5",
+                ),
+            ),
+            _backend("lmstudio"),
+        ],
+    )
+    calls: list[str] = []
+
+    async def fake_call_backend(client, backend, body):
+        calls.append(f"{backend.name}:{backend.upstream_model}")
+        if backend.name == "claude":
+            raise UpstreamError("HTTP 429: Rate limit exceeded", status_code=429)
+        if backend.name == "chatgpt":
+            return build_openai_response("ok chatgpt", backend.model)
+        raise UpstreamError("не должен вызываться")
+
+    # Без реальных sleep на retry 429.
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(proxy_app, "call_backend", fake_call_backend)
+    monkeypatch.setattr(proxy_app.asyncio, "sleep", no_sleep)
+
+    payload = _payload()
+    payload["model"] = "claude-sonnet-4-6"
+    with TestClient(proxy_app.create_app(config)) as client:
+        response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ok chatgpt"
+    assert calls[0].startswith("claude:")
+    assert "chatgpt:chatgpt" in calls
+    # Сначала перебираем Claude-модели, потом chatgpt.
+    claude_models = [c.split(":", 1)[1] for c in calls if c.startswith("claude:")]
+    assert "claude-sonnet-4-6" in claude_models
+    assert "claude-opus-4-6" in claude_models
+    assert "claude-sonnet-5" in claude_models
+
+
+def test_claude_falls_back_sonnet_to_opus_to_sonnet5(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ошибка sonnet 4.6 → opus 4.6 → успех на sonnet 5."""
+    config = ProxyConfig(
+        host="127.0.0.1",
+        port=8080,
+        chain=[
+            BackendConfig(
+                name="claude",
+                style=STYLE_ANTHROPIC,
+                base_url="https://api.anthropic.com",
+                model="claude-sonnet-4-6",
+                api_key="sk-test",
+                timeout_seconds=5.0,
+                display_name="Claude",
+                configured_models=(
+                    "claude-sonnet-4-6",
+                    "claude-opus-4-6",
+                    "claude-sonnet-5",
+                ),
+            ),
+        ],
+    )
+    calls: list[str] = []
+
+    async def fake_call_backend(client, backend, body):
+        model = backend.upstream_model
+        calls.append(model)
+        if model == "claude-sonnet-4-6":
+            raise UpstreamError("HTTP 502: Upstream unavailable", status_code=502)
+        if model == "claude-opus-4-6":
+            raise UpstreamError("HTTP 503: overloaded", status_code=503)
+        if model == "claude-sonnet-5":
+            return build_openai_response("ok sonnet5", model)
+        raise UpstreamError(f"unexpected model {model}")
+
+    monkeypatch.setattr(proxy_app, "call_backend", fake_call_backend)
+
+    payload = _payload()
+    payload["model"] = "claude-sonnet-4-6"
+    with TestClient(proxy_app.create_app(config)) as client:
+        response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ok sonnet5"
+    assert calls == [
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-sonnet-5",
+    ]
+
+
 def test_returns_502_when_all_backends_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

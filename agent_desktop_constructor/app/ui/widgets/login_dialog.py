@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+import math
+
+from PySide6.QtCore import QEvent, QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -15,7 +17,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -44,6 +45,101 @@ _MUTED = "#8a8fa3"
 _BORDER = "#2a2a3d"
 _INPUT_BG = "#0f0f1a"
 _POPUP_MAX_HEIGHT = 260
+
+_LOADING_PHRASES = (
+    "Загружаем пользовательские данные",
+    "Подготавливаем рабочее пространство",
+    "Синхронизируем профиль",
+    "Открываем конструктор",
+)
+
+
+class LoadingOrbitWidget(QWidget):
+    """Анимированный орбитальный индикатор загрузки."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(112, 112)
+        self._angle = 0.0
+        self._pulse = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _tick(self) -> None:
+        self._angle = (self._angle + 5.2) % 360.0
+        self._pulse = (self._pulse + 0.09) % (math.pi * 2)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(self.width(), self.height())
+        cx = self.width() / 2
+        cy = self.height() / 2
+        pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(self._pulse))
+
+        # Мягкое свечение в центре
+        glow = QRadialGradient(cx, cy, side * 0.42)
+        glow.setColorAt(0.0, QColor(88, 86, 214, int(70 * pulse)))
+        glow.setColorAt(0.55, QColor(88, 86, 214, int(22 * pulse)))
+        glow.setColorAt(1.0, QColor(88, 86, 214, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QPoint(int(cx), int(cy)), int(side * 0.42), int(side * 0.42))
+
+        # Фоновые кольца
+        for radius, alpha in ((0.34, 55), (0.26, 35)):
+            pen = QPen(QColor(42, 42, 61, alpha))
+            pen.setWidthF(2.0)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            r = side * radius
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(r), int(r))
+
+        # Две дуги, вращающиеся навстречу
+        outer = QRectF(cx - side * 0.34, cy - side * 0.34, side * 0.68, side * 0.68)
+        inner = QRectF(cx - side * 0.24, cy - side * 0.24, side * 0.48, side * 0.48)
+
+        pen_outer = QPen(QColor(106, 104, 224, 230))
+        pen_outer.setWidthF(3.6)
+        pen_outer.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_outer)
+        painter.drawArc(outer, int((-self._angle) * 16), int(110 * 16))
+        painter.drawArc(outer, int((-self._angle + 180) * 16), int(70 * 16))
+
+        pen_inner = QPen(QColor(168, 164, 255, 200))
+        pen_inner.setWidthF(2.8)
+        pen_inner.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_inner)
+        painter.drawArc(inner, int((self._angle * 1.35) * 16), int(95 * 16))
+        painter.drawArc(inner, int((self._angle * 1.35 + 160) * 16), int(55 * 16))
+
+        # Орбитальные точки
+        for i, (orbit, size, lag) in enumerate(
+            ((0.34, 5.2, 0), (0.34, 3.4, 95), (0.24, 4.0, 40), (0.24, 2.8, 200))
+        ):
+            ang = math.radians(self._angle * (1.0 if i < 2 else -1.35) + lag)
+            x = cx + math.cos(ang) * side * orbit
+            y = cy + math.sin(ang) * side * orbit
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(232, 234, 242, 230 if i % 2 == 0 else 160))
+            painter.drawEllipse(QPoint(int(x), int(y)), int(size), int(size))
+
+        # Центральная «звезда»
+        core = 5.5 + 1.8 * pulse
+        painter.setBrush(QColor(88, 86, 214, int(210 * pulse)))
+        painter.drawEllipse(QPoint(int(cx), int(cy)), int(core), int(core))
+        painter.setBrush(QColor(232, 234, 242, 230))
+        painter.drawEllipse(QPoint(int(cx), int(cy)), 2, 2)
 
 
 class LoginDialog(QDialog):
@@ -96,12 +192,19 @@ class LoginDialog(QDialog):
             f"font-size: 14px; font-weight: 600; }}"
             f"#loginSecondary:hover {{ border-color: {_MUTED}; }}"
             f"#loginStatus {{ color: {_MUTED}; font-size: 12px; }}"
-            f"#loginLoadingTitle {{ color: {_TEXT}; font-size: 22px; font-weight: 800; }}"
-            f"#loginLoadingHint {{ color: {_MUTED}; font-size: 14px; }}"
-            f"QProgressBar {{ background: {_INPUT_BG}; border: 1px solid {_BORDER};"
-            f"border-radius: 8px; height: 10px; text-align: center; }}"
-            f"QProgressBar::chunk {{ background: {_ACCENT}; border-radius: 7px; }}"
+            f"#loginLoadingTitle {{ color: {_TEXT}; font-size: 18px; font-weight: 700; }}"
+            f"#loginLoadingHint {{ color: {_MUTED}; font-size: 13px; }}"
         )
+
+        self._loading_phrase_index = 0
+        self._loading_dot_count = 0
+        self._loading_base_text = _LOADING_PHRASES[0]
+        self._loading_text_timer = QTimer(self)
+        self._loading_text_timer.setInterval(420)
+        self._loading_text_timer.timeout.connect(self._tick_loading_text)
+        self._loading_phrase_timer = QTimer(self)
+        self._loading_phrase_timer.setInterval(2200)
+        self._loading_phrase_timer.timeout.connect(self._tick_loading_phrase)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_login_page())
@@ -222,28 +325,31 @@ class LoginDialog(QDialog):
 
         card = QFrame()
         card.setObjectName("loginCard")
-        card.setMaximumWidth(480)
+        card.setMaximumWidth(520)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(36, 36, 36, 36)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(40, 40, 40, 40)
+        card_layout.setSpacing(16)
 
-        self._loading_title = QLabel("Загрузка")
+        self._orbit = LoadingOrbitWidget()
+        orbit_row = QHBoxLayout()
+        orbit_row.addStretch(1)
+        orbit_row.addWidget(self._orbit)
+        orbit_row.addStretch(1)
+
+        self._loading_title = QLabel(_LOADING_PHRASES[0] + "…")
         self._loading_title.setObjectName("loginLoadingTitle")
         self._loading_title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._loading_hint = QLabel("Подготовка интерфейса…")
+        self._loading_title.setWordWrap(True)
+
+        self._loading_hint = QLabel("Почти готово — собираем интерфейс")
         self._loading_hint.setObjectName("loginLoadingHint")
         self._loading_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._loading_hint.setWordWrap(True)
 
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 0)
-        self._progress.setTextVisible(False)
-        self._progress.setFixedHeight(10)
-
+        card_layout.addLayout(orbit_row)
+        card_layout.addSpacing(4)
         card_layout.addWidget(self._loading_title)
         card_layout.addWidget(self._loading_hint)
-        card_layout.addSpacing(8)
-        card_layout.addWidget(self._progress)
 
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -257,16 +363,57 @@ class LoginDialog(QDialog):
 
     def show_login_form(self) -> None:
         """Показать форму входа."""
+        self._stop_loading_animation()
         self._stack.setCurrentIndex(0)
         self._hide_users_popup()
         if not self._users_load_started:
             QTimer.singleShot(0, self._load_users)
 
-    def show_loading(self, message: str = "Загрузка приложения…") -> None:
+    def show_loading(
+        self,
+        message: str = "Загружаем пользовательские данные",
+        *,
+        hint: str = "Почти готово — собираем интерфейс",
+        cycle_phrases: bool = True,
+    ) -> None:
         """Показать экран загрузки в том же окне (без закрытия)."""
         self._hide_users_popup()
-        self._loading_hint.setText(message)
+        base = message.rstrip(".… ")
+        self._loading_base_text = base or _LOADING_PHRASES[0]
+        self._loading_phrase_index = 0
+        self._loading_dot_count = 0
+        self._loading_hint.setText(hint)
+        self._apply_loading_title()
         self._stack.setCurrentIndex(1)
+        self._orbit.start()
+        self._loading_text_timer.start()
+        if cycle_phrases:
+            self._loading_phrase_timer.start()
+        else:
+            self._loading_phrase_timer.stop()
+
+    def _stop_loading_animation(self) -> None:
+        self._loading_text_timer.stop()
+        self._loading_phrase_timer.stop()
+        if hasattr(self, "_orbit"):
+            self._orbit.stop()
+
+    def _apply_loading_title(self) -> None:
+        dots = "." * self._loading_dot_count
+        # Фиксированная ширина точек, чтобы текст не «прыгал».
+        pad = "\u00a0" * (3 - self._loading_dot_count)
+        self._loading_title.setText(f"{self._loading_base_text}{dots}{pad}")
+
+    def _tick_loading_text(self) -> None:
+        self._loading_dot_count = (self._loading_dot_count + 1) % 4
+        self._apply_loading_title()
+
+    def _tick_loading_phrase(self) -> None:
+        self._loading_phrase_index = (self._loading_phrase_index + 1) % len(
+            _LOADING_PHRASES
+        )
+        self._loading_base_text = _LOADING_PHRASES[self._loading_phrase_index]
+        self._apply_loading_title()
 
     def eventFilter(self, watched, event):  # noqa: N802
         if watched is self.login_edit:
@@ -457,7 +604,7 @@ class LoginDialog(QDialog):
             self._set_busy(False)
 
         # Не закрываем окно: показываем загрузку, пока стартует MainWindow.
-        self.show_loading("Загрузка конструктора…")
+        self.show_loading("Загружаем пользовательские данные")
         self.authenticated.emit()
 
     def _set_busy(self, busy: bool) -> None:

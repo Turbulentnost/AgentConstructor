@@ -26,6 +26,10 @@ ANTHROPIC_VERSION = "2023-06-01"
 class UpstreamError(Exception):
     """Backend недоступен или вернул некорректный ответ."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 async def call_backend(
     client: httpx.AsyncClient,
@@ -65,7 +69,8 @@ async def _call_openai(
 
     if response.status_code >= 400:
         raise UpstreamError(
-            f"HTTP {response.status_code}: {_short_body(response.text)}"
+            f"HTTP {response.status_code}: {_short_body(response.text)}",
+            status_code=response.status_code,
         )
 
     try:
@@ -103,7 +108,8 @@ async def _call_openai_responses(
 
     if response.status_code >= 400:
         raise UpstreamError(
-            f"HTTP {response.status_code}: {_short_body(response.text)}"
+            f"HTTP {response.status_code}: {_short_body(response.text)}",
+            status_code=response.status_code,
         )
 
     try:
@@ -141,7 +147,8 @@ async def _call_anthropic(
 
     if response.status_code >= 400:
         raise UpstreamError(
-            f"HTTP {response.status_code}: {_short_body(response.text)}"
+            f"HTTP {response.status_code}: {_short_body(response.text)}",
+            status_code=response.status_code,
         )
 
     try:

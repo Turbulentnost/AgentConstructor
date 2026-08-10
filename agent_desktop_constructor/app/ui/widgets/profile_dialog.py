@@ -81,7 +81,20 @@ class ProfileDialog(QDialog):
         root.addWidget(note)
         root.addWidget(buttons)
 
+        self._refresh_from_server()
         self._load_avatar()
+
+    def _refresh_from_server(self) -> None:
+        """Подтянуть ФИО/подразделение/email из API (после sync из 1С)."""
+        try:
+            user = self._client.me(self.session.access_token)
+        except Exception:
+            return
+        self.session.user = user
+        save_session(self.session)
+        self.name_edit.setText(user.display_name)
+        self.dept_edit.setText(user.department)
+        self.email_edit.setText(user.email)
 
     def _set_initials_avatar(self) -> None:
         parts = [p for p in self.session.user.display_name.split() if p]

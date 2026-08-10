@@ -20,7 +20,7 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com"
 DEFAULT_OPENAI_MODEL = "gpt-5.5"
 # Единственная LLM, доступная приложению через API-прокси.
-FIXED_LLM_MODEL_NAME = "claude-sonnet-4.6"
+FIXED_LLM_MODEL_NAME = "claude-sonnet-4-6"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 

@@ -8,6 +8,7 @@ from typing import Callable
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -23,6 +24,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from agent_desktop_constructor.app.catalog.client import (
+    CatalogAgentCard,
+    CatalogClient,
+    CatalogClientError,
+)
+from agent_desktop_constructor.app.catalog.local_cache import (
+    ensure_local_agent_from_catalog,
+)
 from agent_desktop_constructor.app.core.bootstrap import ApplicationContainer
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
@@ -40,6 +49,44 @@ from agent_desktop_constructor.core.models.runtime_state import (
     AgentRunStatus,
     AgentRuntimeState,
 )
+
+MODE_CATALOG = "catalog"
+MODE_HOME = "home"
+
+_VISIBILITY_LABELS = {
+    "private": "Приватный",
+    "department": "Отдел",
+    "all": "Все",
+    "selected": "Выбранные отделы",
+}
+
+
+def _post_run_summary(session, agent_id: str, agent_name: str, result: object) -> None:
+    """Отправить краткую сводку запуска на сервер (без падения UI)."""
+    if session is None or not getattr(session, "access_token", None):
+        return
+    if not isinstance(result, AgentRuntimeState):
+        return
+    try:
+        finished = None
+        if result.status not in _PAUSED_STATUSES and result.status != AgentRunStatus.RUNNING:
+            from datetime import datetime, timezone
+
+            finished = datetime.now(timezone.utc)
+        message = str(result.variables.get("final_message") or "")[:2000]
+        if result.errors:
+            message = (message + "\n" + "; ".join(result.errors[:3])).strip()
+        CatalogClient.from_session(session).upsert_run_summary(
+            session.access_token,
+            run_id=result.run_id,
+            agent_id=agent_id,
+            status=result.status.value,
+            title=agent_name,
+            message=message,
+            finished_at=finished,
+        )
+    except Exception:
+        pass
 
 _PAUSED_STATUSES = {
     AgentRunStatus.PAUSED_FOR_HUMAN,
@@ -89,45 +136,66 @@ class DotCanvasWidget(QWidget):
 
 
 class AgentCard(QFrame):
-    """Карточка агента в сетке."""
+    """Карточка агента в сетке (каталог или главная)."""
 
     def __init__(
         self,
-        agent: AgentSpec,
+        card: CatalogAgentCard,
         on_select: Callable[[str], None],
+        *,
+        show_pin: bool = False,
+        on_pin_toggled: Callable[[str, bool], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         """Создать карточку агента."""
         super().__init__(parent)
-        self.agent_id = agent.agent_id
+        self.agent_id = card.agent_id
         self._on_select = on_select
+        self._on_pin_toggled = on_pin_toggled
         self._selected = False
         self.setObjectName("agentCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(220, 268)
+        self.setFixedSize(220, 280)
 
         self._image = QLabel("AI")
         self._image.setObjectName("agentCardImage")
         self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image.setFixedHeight(120)
 
-        self._name = QLabel(agent.name)
+        self._name = QLabel(card.name)
         self._name.setObjectName("agentCardName")
         self._name.setWordWrap(True)
 
-        self._description = QLabel(MOCK_DESCRIPTION)
+        desc = card.short_description or card.description or MOCK_DESCRIPTION
+        self._description = QLabel(desc[:160])
         self._description.setObjectName("agentCardDescription")
         self._description.setWordWrap(True)
 
+        vis = _VISIBILITY_LABELS.get(card.visibility, card.visibility)
+        self._meta = QLabel(vis)
+        self._meta.setObjectName("agentCardDescription")
+
+        self.pin_checkbox: QCheckBox | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         layout.addWidget(self._image)
         layout.addWidget(self._name)
         layout.addWidget(self._description)
+        layout.addWidget(self._meta)
+        if show_pin:
+            self.pin_checkbox = QCheckBox("Закрепить у себя")
+            self.pin_checkbox.setChecked(card.pinned)
+            self.pin_checkbox.setStyleSheet("color:#c7d2e5; font-size:12px;")
+            self.pin_checkbox.toggled.connect(self._emit_pin)
+            layout.addWidget(self.pin_checkbox)
         layout.addStretch(1)
 
         self._apply_style()
+
+    def _emit_pin(self, checked: bool) -> None:
+        if self._on_pin_toggled is not None:
+            self._on_pin_toggled(self.agent_id, checked)
 
     def set_selected(self, selected: bool) -> None:
         """Подсветить выбранную карточку."""
@@ -152,24 +220,35 @@ class AgentCard(QFrame):
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        """Выбрать агента по клику."""
+        """Выбрать агента по клику (не с чекбокса)."""
+        child = self.childAt(event.position().toPoint())
+        if isinstance(child, QCheckBox):
+            super().mousePressEvent(event)
+            return
         self._on_select(self.agent_id)
         super().mousePressEvent(event)
 
 
 class AgentListWidget(QWidget):
-    """Показывает сохранённых агентов карточками и позволяет запускать их."""
+    """Каталог доступных агентов (галочки) или Главная (закреплённые + запуск)."""
 
     def __init__(
         self,
         container: ApplicationContainer,
         parent: QWidget | None = None,
+        *,
+        auth_session=None,
+        mode: str = MODE_CATALOG,
     ) -> None:
         """Создать каталог агентов и сразу подгрузить список."""
         super().__init__(parent)
         self._container = container
-        self._agents: list[AgentSpec] = []
+        self._auth_session = auth_session
+        self._mode = mode if mode in {MODE_CATALOG, MODE_HOME} else MODE_CATALOG
+        self._catalog: list[CatalogAgentCard] = []
+        self._pinned_ids: set[str] = set()
         self._agent_cards: list[AgentCard] = []
+        self._selected_card: CatalogAgentCard | None = None
         self._selected_agent: AgentSpec | None = None
         self._paused_state: AgentRuntimeState | None = None
         self._cancel_event = Event()
@@ -178,17 +257,32 @@ class AgentListWidget(QWidget):
 
         self._build_ui()
         self._wire_signals()
-        self.refresh()
+        # Не грузим каталог в __init__: MainWindow дергает refresh при показе
+        # страницы. Иначе при сборке окна после логина всплывает modal 404,
+        # если прокси ещё без новых роутов.
+
+    def set_auth_session(self, session) -> None:
+        """Обновить сессию пользователя для API каталога."""
+        self._auth_session = session
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
         """Построить каркас: слева карточки, справа панель запуска/истории."""
-        self.title_label = QLabel("Каталог агентов")
+        if self._mode == MODE_HOME:
+            title = "Мои агенты"
+            subtitle_hint = "Агенты, которые вы закрепили из «Доступные агенты»."
+        else:
+            title = "Доступные агенты"
+            subtitle_hint = (
+                "Отметьте галочкой агентов, которых хотите видеть на Главной."
+            )
+        self.title_label = QLabel(title)
         self.title_label.setStyleSheet(
             "font-size:16px; font-weight:700; color:#e6e9ef;"
         )
-        self.status_label = QLabel("")
+        self.status_label = QLabel(subtitle_hint)
         self.status_label.setStyleSheet("color:#9aa0ac; font-size:12px;")
+        self.status_label.setWordWrap(True)
 
         self.cards_host = QWidget()
         self.cards_layout = QGridLayout(self.cards_host)
@@ -219,9 +313,20 @@ class AgentListWidget(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
-        splitter.addWidget(self._build_run_panel())
+        self._run_panel = self._build_run_panel()
+        splitter.addWidget(self._run_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 4)
+        if self._mode == MODE_CATALOG:
+            # В каталоге акцент на галочках; запуск — с Главной.
+            self.run_button.setVisible(False)
+            self.stop_button.setVisible(False)
+            self.attach_button.setVisible(False)
+            self.clear_attach_button.setVisible(False)
+            self.open_workspace_button.setVisible(False)
+            self.delete_button.setVisible(False)
+            self.human_panel.setVisible(False)
+            self.history_list.setVisible(False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -325,11 +430,35 @@ class AgentListWidget(QWidget):
 
     # -------------------------------------------------------------- loading
     def refresh(self) -> None:
-        """Подгрузить агентов и перерисовать карточки."""
+        """Подгрузить агентов с сервера и перерисовать карточки."""
+        session = self._auth_session
+        if session is None or not session.proxy_url or not session.access_token:
+            self._catalog = []
+            self._pinned_ids = set()
+            self.status_label.setText("Войдите в систему, чтобы увидеть каталог агентов.")
+            self._render_cards()
+            return
         try:
-            self._agents = self._container.agent_service.list_agents()
+            client = CatalogClient.from_session(session)
+            if self._mode == MODE_HOME:
+                self._catalog = client.list_pins(session.access_token)
+            else:
+                self._catalog = client.list_catalog(session.access_token)
+            self._pinned_ids = {item.agent_id for item in self._catalog if item.pinned}
+            if self._mode == MODE_HOME:
+                self._pinned_ids = {item.agent_id for item in self._catalog}
+        except CatalogClientError as exc:
+            self._catalog = []
+            self._pinned_ids = set()
+            self.status_label.setText(str(exc))
+            self._render_cards()
+            # Не блокируем вход modal-ом: пустая главная + текст в status.
+            return
         except Exception as exc:
-            show_error(self, "Ошибка загрузки агентов", exc)
+            self._catalog = []
+            self._pinned_ids = set()
+            self.status_label.setText(f"Ошибка загрузки каталога: {exc}")
+            self._render_cards()
             return
         self._render_cards()
 
@@ -342,27 +471,70 @@ class AgentListWidget(QWidget):
                 widget.deleteLater()
         self._agent_cards.clear()
 
-        if not self._agents:
-            self.status_label.setText("Сохранённых агентов пока нет.")
+        if not self._catalog:
+            if self._mode == MODE_HOME:
+                self.status_label.setText(
+                    "Нет закреплённых агентов. Откройте «Доступные агенты» "
+                    "и отметьте нужных галочкой."
+                )
+            else:
+                self.status_label.setText("Доступных агентов пока нет.")
             return
-        self.status_label.setText(f"Агентов в каталоге: {len(self._agents)}")
+        if self._mode == MODE_HOME:
+            self.status_label.setText(f"Закреплено: {len(self._catalog)}")
+        else:
+            self.status_label.setText(
+                f"Доступно: {len(self._catalog)}. "
+                f"Закреплено: {len(self._pinned_ids)}."
+            )
         selected_id = (
-            self._selected_agent.agent_id if self._selected_agent is not None else None
+            self._selected_card.agent_id if self._selected_card is not None else None
         )
-        for index, agent in enumerate(self._agents):
-            card = AgentCard(agent, self._on_card_selected)
-            card.set_selected(agent.agent_id == selected_id)
+        show_pin = self._mode == MODE_CATALOG
+        for index, item in enumerate(self._catalog):
+            card = AgentCard(
+                item,
+                self._on_card_selected,
+                show_pin=show_pin,
+                on_pin_toggled=self._on_pin_toggled if show_pin else None,
+            )
+            card.set_selected(item.agent_id == selected_id)
             row = index // GRID_COLUMNS
             column = index % GRID_COLUMNS
             self.cards_layout.addWidget(card, row, column, Qt.AlignmentFlag.AlignTop)
             self._agent_cards.append(card)
         self.cards_host.adjustSize()
 
+    def _on_pin_toggled(self, agent_id: str, pinned: bool) -> None:
+        """Обновить набор pins на сервере."""
+        session = self._auth_session
+        if session is None or not session.access_token:
+            return
+        if pinned:
+            self._pinned_ids.add(agent_id)
+        else:
+            self._pinned_ids.discard(agent_id)
+        try:
+            CatalogClient.from_session(session).replace_pins(
+                session.access_token, sorted(self._pinned_ids)
+            )
+        except Exception as exc:
+            show_error(self, "Не удалось сохранить закрепления", exc)
+            self.refresh()
+            return
+        for item in self._catalog:
+            if item.agent_id == agent_id:
+                item.pinned = pinned
+                break
+        self.status_label.setText(
+            f"Доступно: {len(self._catalog)}. Закреплено: {len(self._pinned_ids)}."
+        )
+
     def _on_card_selected(self, agent_id: str) -> None:
         """Открыть агента при выборе карточки."""
-        for agent in self._agents:
-            if agent.agent_id == agent_id:
-                self.open_agent(agent)
+        for item in self._catalog:
+            if item.agent_id == agent_id:
+                self.open_catalog_card(item)
                 return
 
     def _highlight_card(self, agent_id: str | None) -> None:
@@ -371,30 +543,52 @@ class AgentListWidget(QWidget):
             card.set_selected(card.agent_id == agent_id)
 
     # ------------------------------------------------------- agent selection
-    def open_agent(self, agent: AgentSpec) -> None:
-        """Открыть правую панель агента: история запусков и запуск."""
+    def open_catalog_card(self, card: CatalogAgentCard) -> None:
+        """Открыть правую панель по карточке каталога."""
         if self._is_busy():
-            show_info(self, "Идёт выполнение", "Дождитесь завершения текущего запуска.")
+            show_info(self, "Идёт задание", "Дождитесь завершения текущего запуска.")
             return
-        self._selected_agent = agent
-        self._highlight_card(agent.agent_id)
+        self._selected_card = card
+        self._selected_agent = None
+        self._highlight_card(card.agent_id)
         self._paused_state = None
         self.human_panel.hide_panel()
         self.clear_attachments()
-        self.panel_title.setText(agent.name)
+        self.panel_title.setText(card.name)
+        vis = _VISIBILITY_LABELS.get(card.visibility, card.visibility)
+        dept = card.owner_department or "—"
         self.panel_subtitle.setText(
-            agent.short_description or agent.description or agent.goal.main_goal
+            f"{card.short_description or card.description or ''}\n"
+            f"Доступ: {vis}. Отдел владельца: {dept}."
         )
-        self.run_button.setEnabled(True)
-        self.attach_button.setEnabled(True)
-        self.open_workspace_button.setEnabled(True)
-        self.delete_button.setEnabled(True)
+        can_run = self._mode == MODE_HOME
+        self.run_button.setEnabled(can_run)
+        self.attach_button.setEnabled(can_run)
+        self.open_workspace_button.setEnabled(can_run)
+        self.delete_button.setEnabled(False)
         self.live_log.clear()
-        self.live_log.append(
-            "Готов к запуску. При необходимости прикрепите Excel/документ "
-            "кнопкой «Прикрепить файл», затем нажмите «Запустить»."
+        if can_run:
+            self.live_log.append(
+                "Готов к запуску. При необходимости прикрепите Excel/документ "
+                "кнопкой «Прикрепить файл», затем нажмите «Запустить»."
+            )
+            self._load_history(card.agent_id)
+        else:
+            self.live_log.append(
+                "Отметьте «Закрепить у себя», затем откройте Главную, "
+                "чтобы запустить агента."
+            )
+
+    def open_agent(self, agent: AgentSpec) -> None:
+        """Совместимость: открыть по локальному AgentSpec."""
+        card = CatalogAgentCard(
+            agent_id=agent.agent_id,
+            name=agent.name,
+            description=agent.description or "",
+            short_description=agent.short_description or "",
         )
-        self._load_history(agent.agent_id)
+        self.open_catalog_card(card)
+        self._selected_agent = agent
 
     def delete_current_agent(self) -> None:
         """Удалить выбранного агента."""
@@ -431,14 +625,19 @@ class AgentListWidget(QWidget):
 
     def open_selected_agent_workspace(self) -> None:
         """Открыть папку документов выбранного агента."""
-        if self._selected_agent is None:
+        agent_id = None
+        if self._selected_agent is not None:
+            agent_id = self._selected_agent.agent_id
+        elif self._selected_card is not None:
+            agent_id = self._selected_card.agent_id
+        if not agent_id:
             show_info(self, "Агент не выбран", "Сначала выберите агента.")
             return
         service = self._container.agent_service
         if not hasattr(service, "agent_workspace_dir"):
             show_error(self, "Папка недоступна", "Сервис не поддерживает workspace агента.")
             return
-        folder = service.agent_workspace_dir(self._selected_agent.agent_id)
+        folder = service.agent_workspace_dir(agent_id)
         if not folder:
             show_error(self, "Папка недоступна", "Не удалось определить папку агента.")
             return
@@ -486,19 +685,34 @@ class AgentListWidget(QWidget):
 
     # --------------------------------------------------------------- run
     def run_current_agent(self) -> None:
-        """Запустить выбранного агента по его сохранённой схеме с live-логом."""
-        agent = self._selected_agent
-        if agent is None:
+        """Запустить выбранного агента: скачать spec с сервера в локальный кэш."""
+        card = self._selected_card
+        if card is None and self._selected_agent is None:
             show_error(self, "Агент не выбран", "Откройте карточку агента.")
             return
         if self._is_busy():
             return
+        session = self._auth_session
+        if session is None or not session.access_token:
+            show_error(self, "Нет сессии", "Войдите в систему для запуска агента.")
+            return
+        agent_id = card.agent_id if card is not None else self._selected_agent.agent_id
+        agent_name = card.name if card is not None else self._selected_agent.name
+        try:
+            agent = ensure_local_agent_from_catalog(
+                self._container.agent_service, session, agent_id
+            )
+            self._selected_agent = agent
+        except Exception as exc:
+            show_error(self, "Не удалось загрузить агента", exc)
+            return
+
         self._paused_state = None
         self.human_panel.hide_panel()
         self.files_label.setVisible(False)
         self._cancel_event.clear()
         self.live_log.clear()
-        self.live_log.append(f"▶ Запуск агента «{agent.name}»…")
+        self.live_log.append(f"▶ Запуск агента «{agent_name}»…")
         if self._attachment_paths:
             from pathlib import Path
 
@@ -507,16 +721,18 @@ class AgentListWidget(QWidget):
 
         service = self._container.agent_service
         cancel_event = self._cancel_event
-        agent_id = agent.agent_id
         attachment_paths = list(self._attachment_paths)
+        auth_session = session
 
         def job(progress: Callable[[str], None]) -> object:
-            return service.run_saved_agent(
+            result = service.run_saved_agent(
                 agent_id,
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
                 attachment_paths=attachment_paths or None,
             )
+            _post_run_summary(auth_session, agent_id, agent_name, result)
+            return result
 
         self._run_in_background(job, self._on_run_completed, self._on_run_failed)
 
@@ -572,9 +788,12 @@ class AgentListWidget(QWidget):
 
         service = self._container.agent_service
         cancel_event = self._cancel_event
+        auth_session = self._auth_session
+        agent_id = agent.agent_id
+        agent_name = agent.name
 
         def job(progress: Callable[[str], None]) -> object:
-            return service.resume_saved_agent_after_human(
+            result = service.resume_saved_agent_after_human(
                 agent,
                 state,
                 answer,
@@ -582,6 +801,8 @@ class AgentListWidget(QWidget):
                 progress_callback=progress,
                 cancel_callback=cancel_event.is_set,
             )
+            _post_run_summary(auth_session, agent_id, agent_name, result)
+            return result
 
         self._run_in_background(job, self._on_run_completed, self._on_run_failed)
 

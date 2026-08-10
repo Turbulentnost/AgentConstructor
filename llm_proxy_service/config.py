@@ -40,7 +40,8 @@ _BUILTIN_DEFAULTS: dict[str, dict[str, str]] = {
         "style": STYLE_ANTHROPIC,
         "base_url": "https://api.claudehub.fun",
         "model": "claude-sonnet-4-6",
-        "models": "claude-sonnet-4-6,claude-opus-4-1",
+        # UI + runtime fallback: sonnet 4.6 → opus 4.6 → sonnet 5.
+        "models": "claude-sonnet-4-6,claude-opus-4-6,claude-sonnet-5",
         "api_key_env": "CLAUDE_API_KEY,OPENAI_API_KEY_CLAUDE",
         "display_name": "Claude",
         "supports_reasoning": "true",

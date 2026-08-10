@@ -22,6 +22,12 @@ from agent_desktop_constructor.app.llm.goal_checklist import (
     ensure_goal_checklist,
     validate_finish_success,
 )
+from agent_desktop_constructor.app.llm.run_memory import (
+    apply_memory_notes,
+    compact_overflow_steps_into_memory,
+    ensure_run_memory,
+    update_run_memory_from_tool,
+)
 from agent_desktop_constructor.app.llm.supervisor_models import (
     SupervisorDecision,
     SupervisorDecisionType,
@@ -271,6 +277,7 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
         )
         state.variables.setdefault("code_run_approved_files", [])
         ensure_goal_checklist(agent_spec, state.variables)
+        ensure_run_memory(state.variables)
         self._refresh_context(state, agent_spec)
         self._create_run(agent_spec, state)
         self._add_run_event(
@@ -522,9 +529,33 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             if emit_usage:
                 usage = snapshot.usage
                 if usage is not None:
-                    self._emit_context_usage(usage.model_dump(mode="json"))
+                    payload = usage.model_dump(mode="json")
+                    self._merge_prompt_budget_into_usage(state, payload)
+                    self._emit_context_usage(payload)
         except Exception as exc:
             state.variables["context_snapshot_error"] = str(exc)
+
+    def _merge_prompt_budget_into_usage(
+        self,
+        state: AgentRuntimeState,
+        usage: dict,
+    ) -> None:
+        """Добавить давление реального LLM-payload в usage для UI."""
+        chars = state.variables.get("prompt_payload_chars")
+        limit = state.variables.get("prompt_payload_limit")
+        if not isinstance(chars, int) or chars <= 0:
+            return
+        soft_limit = int(limit) if isinstance(limit, int) and limit > 0 else 90_000
+        prompt_percent = min(100.0, (chars / soft_limit) * 100.0)
+        usage["prompt_payload_chars"] = chars
+        usage["prompt_payload_limit"] = soft_limit
+        usage["prompt_payload_percent"] = round(prompt_percent, 1)
+        # Показывать реальное давление промпта, если оно выше snapshot.
+        snapshot_percent = float(usage.get("total_percent") or 0.0)
+        if prompt_percent > snapshot_percent:
+            usage["total_percent"] = prompt_percent
+            usage["total_chars"] = chars
+            usage["total_limit"] = soft_limit
 
     def _emit_context_usage(self, usage: dict) -> None:
         """Отправить UI машинно-читаемое обновление индикатора контекста."""
@@ -707,6 +738,9 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
             self._log_transcript_decision(agent_spec, state, decision)
             self._emit_think_progress(decision, state, agent_spec)
             self._emit_decision_progress(decision, state, agent_spec)
+            if decision.memory_notes:
+                apply_memory_notes(state.variables, decision.memory_notes)
+            compact_overflow_steps_into_memory(state)
             self._refresh_context(state, agent_spec)
 
             stop = self._apply_loop_decision(
@@ -1300,10 +1334,29 @@ class LLMAgentLoopRuntime(SimpleAgentRuntime):
     ) -> None:
         """Сохранить результат инструмента и отразить его в контексте."""
         super()._record_tool_result(state, input_data, result)
+        if state.tool_results:
+            update_run_memory_from_tool(
+                state.variables,
+                state.tool_results[-1],
+                step=state.step_counter,
+            )
+            compact_overflow_steps_into_memory(state)
         try:
             snapshot = self._context_manager.restore_from_state(state)
             if state.tool_results:
                 self._context_manager.record_tool_result(snapshot, state.tool_results[-1])
+            memory = ensure_run_memory(state.variables)
+            self._context_manager.record_persistent_fact(
+                snapshot,
+                key="run_memory",
+                value={
+                    "facts": memory.get("facts", [])[-12:],
+                    "artifacts": memory.get("artifacts", [])[-12:],
+                    "last_failures": memory.get("last_failures", [])[-6:],
+                    "compacted_steps": memory.get("compacted_steps", 0),
+                },
+                priority=85,
+            )
             self._context_manager.save_to_state(state, snapshot)
         except Exception as exc:
             state.variables["context_snapshot_error"] = str(exc)

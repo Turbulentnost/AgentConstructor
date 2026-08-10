@@ -61,9 +61,13 @@ from agent_desktop_constructor.app.core.bootstrap import (
 )
 from agent_desktop_constructor.app.core.config import FIXED_LLM_MODEL_NAME
 from agent_desktop_constructor.app.core.settings import save_llm_model_name
+from agent_desktop_constructor.app.catalog.client import CatalogClient, CatalogClientError
 from agent_desktop_constructor.app.ui.widgets.agent_card_panel import AgentCardPanel
-from agent_desktop_constructor.app.ui.widgets.app_header_bar import AppHeaderBar
 from agent_desktop_constructor.app.ui.widgets.context_indicator import ContextIndicator
+from agent_desktop_constructor.app.ui.widgets.publication_access_panel import (
+    PublicationAccessPanel,
+    VISIBILITY_SELECTED,
+)
 from agent_desktop_constructor.app.ui.helpers import (
     build_file_links_html,
     collect_produced_files,
@@ -1520,54 +1524,22 @@ class AgentCreateWidget(QWidget):
         self._reset_stages()
         self.select_stage(STAGE_REQUEST)
         self._goto_wizard_step(WizardStep.PLANNING)
-        self._apply_auth_session_to_header()
+
+    def reset_wizard_for_new_agent(self) -> None:
+        """Публичный сброс мастера (кнопка «+ Создать агента» в общей шапке)."""
+        self._reset_wizard_for_new_agent()
 
     def set_auth_session(self, session) -> None:
-        """Обновить сессию пользователя и шапку."""
+        """Обновить сессию пользователя."""
         self._auth_session = session
-        self._apply_auth_session_to_header()
-
-    def _apply_auth_session_to_header(self) -> None:
-        session = self._auth_session
-        if session is None or not hasattr(self, "_header"):
-            return
-        name = session.user.display_name or session.user.login
-        avatar_bytes = None
-        if session.user.has_avatar and session.proxy_url and session.access_token:
-            try:
-                from agent_desktop_constructor.app.auth.client import AuthClient
-
-                avatar_bytes = AuthClient(session.proxy_url).fetch_avatar(
-                    session.access_token
-                )
-            except Exception:
-                avatar_bytes = None
-        self._header.set_profile(name, avatar_bytes)
-
-    def _open_profile_dialog(self) -> None:
-        if self._auth_session is None:
-            return
-        from agent_desktop_constructor.app.ui.widgets.profile_dialog import ProfileDialog
-
-        dialog = ProfileDialog(self._auth_session, self)
-        if dialog.exec():
-            self._auth_session = dialog.session
-            self._apply_auth_session_to_header()
 
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        """Собрать мастер: header, stepper и 4 шага."""
+        """Собрать мастер: stepper и 4 шага (общая шапка — в MainWindow)."""
         self.setObjectName("agentCreateRoot")
         self.setStyleSheet("#agentCreateRoot { background: #0B0B14; }")
 
-        profile_name = "Пользователь"
-        session = getattr(self, "_auth_session", None)
-        if session is not None and getattr(session, "user", None) is not None:
-            profile_name = session.user.display_name or session.user.login or profile_name
-        self._header = AppHeaderBar(profile_name=profile_name)
-        self._header.create_clicked.connect(self._reset_wizard_for_new_agent)
-        self._header.profile_clicked.connect(self._open_profile_dialog)
         self._stepper = WizardStepper()
         self._stepper.step_clicked.connect(self._on_wizard_step_clicked)
         self._wizard_stack = QStackedWidget()
@@ -1622,7 +1594,8 @@ class AgentCreateWidget(QWidget):
             "color:#e8eaf2; font-size:18px; font-weight:800;"
         )
         self._publication_summary = QLabel(
-            "После успешного теста сохраните агента — workflow появится в каталоге."
+            "После успешного теста опубликуйте агента в общий каталог "
+            "и выберите, кому он будет доступен."
         )
         self._publication_summary.setWordWrap(True)
         self._publication_summary.setStyleSheet("color:#8a8fa3; font-size:13px;")
@@ -1630,9 +1603,11 @@ class AgentCreateWidget(QWidget):
         self._publication_card.set_next_label("Опубликовать агента")
         self._publication_card.draft_button.setVisible(False)
         self._publication_card.setMinimumWidth(420)
+        self._publication_access = PublicationAccessPanel()
+        self._publication_access.setMinimumWidth(320)
         pub_row = QHBoxLayout()
         pub_row.addWidget(self._publication_card, 1)
-        pub_row.addStretch(1)
+        pub_row.addWidget(self._publication_access, 1)
         pub_layout.addWidget(pub_title)
         pub_layout.addWidget(self._publication_summary)
         pub_layout.addLayout(pub_row, 1)
@@ -1640,9 +1615,8 @@ class AgentCreateWidget(QWidget):
 
         chrome = QWidget()
         chrome_layout = QVBoxLayout(chrome)
-        chrome_layout.setContentsMargins(18, 12, 18, 0)
+        chrome_layout.setContentsMargins(0, 0, 0, 0)
         chrome_layout.setSpacing(4)
-        chrome_layout.addWidget(self._header)
         chrome_layout.addWidget(self._stepper)
 
         root = QVBoxLayout(self)
@@ -2335,6 +2309,7 @@ class AgentCreateWidget(QWidget):
                 self._attachment_paths,
             )
             self._publication_card.set_next_enabled(True)
+            self._load_publication_departments()
 
     def _reset_wizard_for_new_agent(self) -> None:
         """Сбросить мастер для нового агента."""
@@ -2382,8 +2357,22 @@ class AgentCreateWidget(QWidget):
         )
         show_info(self, "Черновик сохранён", f"Файл: {path}")
 
+    def _load_publication_departments(self) -> None:
+        """Подтянуть список отделов для выбора доступа."""
+        session = self._auth_session
+        if session is None or not session.proxy_url or not session.access_token:
+            self._publication_access.set_departments([])
+            return
+        try:
+            departments = CatalogClient.from_session(session).list_departments(
+                session.access_token
+            )
+            self._publication_access.set_departments(departments)
+        except Exception:
+            self._publication_access.set_departments([])
+
     def _publish_agent(self) -> None:
-        """Опубликовать агента в каталог и уведомить главное окно."""
+        """Опубликовать агента в общий каталог (Postgres) и локальный кэш."""
         if self._preview_agent is None:
             show_error(self, "Нечего публиковать", "Сначала пройдите тестирование.")
             return
@@ -2394,10 +2383,52 @@ class AgentCreateWidget(QWidget):
                 "Опубликовать можно только после успешного пробного запуска.",
             )
             return
+        session = self._auth_session
+        if session is None or not session.proxy_url or not session.access_token:
+            show_error(
+                self,
+                "Нет сессии",
+                "Войдите в систему, чтобы опубликовать агента в общий каталог.",
+            )
+            return
+        visibility = self._publication_access.visibility()
+        departments = self._publication_access.selected_departments()
+        if visibility == VISIBILITY_SELECTED and not departments:
+            show_error(
+                self,
+                "Не выбраны отделы",
+                "Отметьте хотя бы один отдел или выберите другой режим доступа.",
+            )
+            return
         self._preview_agent = self._publication_card.apply_edits_to_spec(
             self._preview_agent
         )
-        self.save_agent()
+        self.save_agent(quiet=True)
+        agent = self._preview_agent
+        if agent is None:
+            return
+        try:
+            CatalogClient.from_session(session).publish_agent(
+                session.access_token,
+                agent_id=agent.agent_id,
+                name=agent.name,
+                description=agent.description or "",
+                short_description=agent.short_description or "",
+                agent_spec=agent.model_dump(mode="json"),
+                visibility=visibility,
+                departments=departments,
+            )
+        except CatalogClientError as exc:
+            show_error(self, "Ошибка публикации в каталог", exc)
+            return
+        except Exception as exc:
+            show_error(self, "Ошибка публикации в каталог", exc)
+            return
+        show_info(
+            self,
+            "Агент опубликован",
+            f"«{agent.name}» доступен в каталоге и закреплён на Главной.",
+        )
         self.agent_published.emit()
 
     def _toggle_dev(self, checked: bool) -> None:
@@ -3309,7 +3340,7 @@ class AgentCreateWidget(QWidget):
         self._pause_elapsed_timer()
         show_error(self, "Ошибка проверки и запуска", message)
 
-    def save_agent(self) -> None:
+    def save_agent(self, *, quiet: bool = False) -> None:
         """Сохранить preview или создать и сохранить агента из запроса."""
         user_request = self.request_edit.toPlainText().strip()
         if not user_request and self._preview_agent is None:
@@ -3339,11 +3370,12 @@ class AgentCreateWidget(QWidget):
             show_error(self, "Ошибка сохранения агента", exc)
             return
 
-        show_info(
-            self,
-            "Агент сохранён",
-            f"«{agent_spec.name}» сохранён в каталоге.",
-        )
+        if not quiet:
+            show_info(
+                self,
+                "Агент сохранён",
+                f"«{agent_spec.name}» сохранён локально.",
+            )
 
     def open_agent_workspace(self) -> None:
         """Открыть папку документов текущего preview/созданного агента."""

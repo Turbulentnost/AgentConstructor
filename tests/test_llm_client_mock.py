@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from io import BytesIO
 from urllib.error import HTTPError
 from urllib.error import URLError
@@ -69,6 +70,61 @@ def test_client_calls_chat_completions_endpoint(monkeypatch: pytest.MonkeyPatch)
     client.complete(make_request())
 
     assert captured["url"].endswith("/v1/chat/completions")
+
+
+def test_client_serializes_parallel_complete_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Параллельные complete() на одном client не отправляют HTTP одновременно."""
+    active = 0
+    max_active = 0
+    calls = 0
+    lock = threading.Lock()
+    first_inside = threading.Event()
+    release_first = threading.Event()
+
+    def fake_urlopen(http_request, timeout):
+        nonlocal active, max_active, calls
+        with lock:
+            calls += 1
+            active += 1
+            max_active = max(max_active, active)
+            call_no = calls
+        if call_no == 1:
+            first_inside.set()
+            assert release_first.wait(timeout=3)
+        with lock:
+            active -= 1
+        return FakeHTTPResponse(
+            {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+        )
+
+    monkeypatch.setattr(
+        "agent_desktop_constructor.app.llm.client.request.urlopen",
+        fake_urlopen,
+    )
+
+    client = OpenAICompatibleLLMClient(LLMConfig())
+    errors: list[BaseException] = []
+
+    def run_complete() -> None:
+        try:
+            client.complete(make_request())
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    first = threading.Thread(target=run_complete)
+    second = threading.Thread(target=run_complete)
+    first.start()
+    assert first_inside.wait(timeout=3)
+    second.start()
+    release_first.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert calls == 2
+    assert max_active == 1
 
 
 def test_client_uses_base_url_from_config(monkeypatch: pytest.MonkeyPatch) -> None:

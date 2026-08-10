@@ -74,6 +74,8 @@ class SupervisorDecision(BaseModel):
     # None = модель не указала уверенность (не блокируем finish).
     confidence: float | None = Field(default=None, ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)
+    # Короткие факты для rolling memory (пути, выводы, роли листов) — без дампов.
+    memory_notes: list[str] = Field(default_factory=list)
 
     @field_validator("reason")
     @classmethod
